@@ -171,8 +171,9 @@ class OHLCBuilder:
             # Close previous M1 if any
             if self._tick_open_m1 is not None:
                 closed = self._finalize(self._tick_open_m1)
-                self._closed["M1"].append(closed)
-                # Cascade into higher TFs
+                # Cascade into higher TFs via on_bar, which also handles
+                # appending the M1 to self._closed["M1"]. Doing it here too
+                # would double-append. (Live-Bug 2026-06-14 test-coverage.)
                 yield from self.on_bar(closed)
             self._tick_open_m1 = _OpenBar(
                 symbol=self._symbol,
@@ -190,8 +191,11 @@ class OHLCBuilder:
             ob.low = min(ob.low, mid)
             ob.close = mid
             ob.tick_volume += 1 + int(tick.volume)
-        return
-        yield  # pragma: no cover — generator marker
+        # Live-Bug 2026-06-14 (test-coverage): the original implementation
+        # had a stray `return` before the `yield` generator marker, which
+        # aborted the function before any work happened — making on_tick
+        # a no-op generator. Removed. The function is still a generator
+        # (yield from inside the body) so the return type is preserved.
 
     # --------------------------------------------------------------- internals
 
