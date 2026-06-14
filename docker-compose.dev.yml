@@ -1,0 +1,54 @@
+# Dev overrides — Mac, no MT5, replay mode.
+# Usage:
+#   docker compose -f docker-compose.base.yml -f docker-compose.dev.yml up
+
+services:
+  # Force replay mode for every Python service in dev.
+  data-collector:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+    command: ["python", "-m", "xauusd_bot.cli.replay_smoke"]
+
+  feature-engine:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  decision-engine:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  execution-engine:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  review:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  # Dev deliberately omits the mt5-terminal service — Apple Silicon Wine
+  # is too slow for productive iteration. Use ReplayConnector + PaperBroker.

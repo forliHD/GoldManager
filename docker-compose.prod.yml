@@ -1,0 +1,66 @@
+# Prod overrides — Ubuntu VM, +mt5-terminal (Wine), live connector.
+# Usage:
+#   docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up
+
+services:
+  data-collector:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+    restart: unless-stopped
+
+  feature-engine:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+    restart: unless-stopped
+
+  decision-engine:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+    restart: unless-stopped
+
+  execution-engine:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+    restart: unless-stopped
+
+  review:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+    restart: unless-stopped
+
+  # Wine + MT5 + Windows-Python-RPyC bridge. The Python client on the
+  # host (LiveMT5Connector) connects to this over the internal network.
+  mt5-terminal:
+    build:
+      context: .
+      dockerfile: docker/mt5-terminal/Dockerfile
+    image: xauusd-bot/mt5-terminal:0.1.0
+    container_name: xauusd-mt5-terminal
+    environment:
+      MT5_LOGIN: ${MT5_LOGIN}
+      MT5_PASSWORD: ${MT5_PASSWORD}
+      MT5_SERVER: ${MT5_SERVER}
+      VNC_PASSWORD: ${VNC_PASSWORD:-changeme}
+    volumes:
+      - mt5_data:/root/.mt5
+    # VNC is for initial manual login only; never expose publicly.
+    # The RPyC bridge port is exposed only to the internal network.
+    ports:
+      - "127.0.0.1:5900:5900"   # VNC, bound to loopback
+    networks:
+      - default
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    # healthcheck defined in Dockerfile once the bridge is wired.
+
+volumes:
+  mt5_data:

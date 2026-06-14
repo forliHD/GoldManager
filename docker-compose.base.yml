@@ -1,0 +1,108 @@
+# Common base for all Python services + shared infra (redis, timescaledb).
+# This file is the single source of truth for service definitions; dev/prod
+# overrides live in docker-compose.dev.yml and docker-compose.prod.yml.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-service-base: &service-base
+  build:
+    context: .
+    dockerfile: docker/service/Dockerfile
+  image: xauusd-bot/service:0.1.0
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    PYTHONUNBUFFERED: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+  volumes:
+    - vantage_data:/var/lib/xauusd/vantage
+  logging: *default-logging
+  depends_on:
+    redis:
+      condition: service_healthy
+    timescaledb:
+      condition: service_healthy
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: xauusd-redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ports:
+      - "6379:6379"
+    logging: *default-logging
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: xauusd-timescaledb
+    environment:
+      POSTGRES_USER: xauusd
+      POSTGRES_PASSWORD: xauusd
+      POSTGRES_DB: xauusd
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xauusd -d xauusd"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+    logging: *default-logging
+
+  # Python services — all use the same image, dispatched by SERVICE_ROLE env
+  data-collector:
+    <<: *service-base
+    container_name: xauusd-data-collector
+    environment:
+      SERVICE_ROLE: data-collector
+    command: ["python", "-m", "xauusd_bot.cli.replay_smoke"]
+
+  feature-engine:
+    <<: *service-base
+    container_name: xauusd-feature-engine
+    environment:
+      SERVICE_ROLE: feature-engine
+    command: ["python", "-m", "xauusd_bot.feature_engine"]
+
+  decision-engine:
+    <<: *service-base
+    container_name: xauusd-decision-engine
+    environment:
+      SERVICE_ROLE: decision-engine
+    command: ["python", "-m", "xauusd_bot.decision_engine"]
+
+  execution-engine:
+    <<: *service-base
+    container_name: xauusd-execution-engine
+    environment:
+      SERVICE_ROLE: execution-engine
+    command: ["python", "-m", "xauusd_bot.execution_engine"]
+
+  review:
+    <<: *service-base
+    container_name: xauusd-review
+    environment:
+      SERVICE_ROLE: review
+    command: ["python", "-m", "xauusd_bot.review_engine"]
+
+volumes:
+  redis_data:
+  timescale_data:
+  vantage_data:
+
+networks:
+  default:
+    name: xauusd-net

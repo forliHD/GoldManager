@@ -1,0 +1,116 @@
+"""Pydantic-Settings — typed configuration loaded from .env / env.
+
+Fail-fast: missing required keys raise at startup, not in the middle of
+a trade. Each setting is documented; the model dump is what the
+:func:`xauusd_bot.common.logging.setup.setup_logging` function uses
+to enrich every log line.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Literal
+
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ConnectorMode(str, Enum):
+    """Connector selection — see ``00_FINAL_PLAN.md`` §10."""
+
+    REPLAY = "replay"
+    LIVE = "live"
+
+
+class NewsProvider(str, Enum):
+    """News / macro calendar provider."""
+
+    TRADING_ECONOMICS = "tradingeconomics"
+    FXSTREET = "fxstreet"
+    STUB = "stub"
+
+
+class ServiceRole(str, Enum):
+    """Which service a container is running as — picked by docker/service entrypoint."""
+
+    DATA_COLLECTOR = "data-collector"
+    FEATURE_ENGINE = "feature-engine"
+    DECISION_ENGINE = "decision-engine"
+    EXECUTION_ENGINE = "execution-engine"
+    REVIEW = "review"
+
+
+class Settings(BaseSettings):
+    """Top-level typed configuration.
+
+    Reads from:
+    * process environment
+    * ``.env`` in the current working directory
+    * ``.env.example`` is shipped as a *template* and is NOT auto-loaded.
+
+    Required keys (validated at startup, fail-fast):
+        ``REDIS_URL``, ``TIMESCALEDB_URL``, ``SYMBOL``
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # --- AI / Decision layer
+    openrouter_api_key: SecretStr | None = Field(default=None, description="OpenRouter BYOK key.")
+    openrouter_model: str = Field(default="minimax/minimax-m2", description="Model string on OpenRouter.")
+
+    # --- Messaging / storage
+    redis_url: str = Field(..., description="Redis connection URL.")
+    timescaledb_url: str = Field(..., description="TimescaleDB async SQLAlchemy URL.")
+
+    # --- Connector
+    connector_mode: ConnectorMode = Field(default=ConnectorMode.REPLAY)
+    symbol: str = Field(default="XAUUSD")
+    vantage_data_dir: str = Field(default="/var/lib/xauusd/vantage")
+
+    # --- News
+    news_api_provider: NewsProvider = Field(default=NewsProvider.STUB)
+    news_api_key: SecretStr | None = Field(default=None)
+
+    # --- MT5 (prod only)
+    mt5_login: str | None = None
+    mt5_password: SecretStr | None = None
+    mt5_server: str | None = None
+
+    # --- Risk (fractions, e.g. 0.04 = 4%)
+    risk_max_daily: float = Field(default=0.04, ge=0, le=1)
+    risk_max_weekly: float = Field(default=0.08, ge=0, le=1)
+
+    # --- Service selection
+    service_role: ServiceRole = Field(default=ServiceRole.DATA_COLLECTOR)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    environment: Literal["development", "test", "production"] = "development"
+
+    @field_validator("risk_max_weekly")
+    @classmethod
+    def _weekly_geq_daily(cls, v: float, info) -> float:
+        daily = info.data.get("risk_max_daily", 0.0)
+        if v < daily:
+            raise ValueError(f"risk_max_weekly ({v}) must be >= risk_max_daily ({daily})")
+        return v
+
+    def is_prod(self) -> bool:
+        return self.environment == "production"
+
+    def is_live_connector(self) -> bool:
+        return self.connector_mode == ConnectorMode.LIVE
+
+    def require_openrouter(self) -> SecretStr:
+        if self.openrouter_api_key is None:
+            raise RuntimeError("OPENROUTER_API_KEY is required for the AI decision layer")
+        return self.openrouter_api_key
+
+
+def load_settings() -> Settings:
+    """Construct :class:`Settings` from current environment, with validation."""
+
+    return Settings()  # type: ignore[call-arg]

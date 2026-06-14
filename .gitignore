@@ -1,0 +1,54 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+coverage.xml
+
+# Logs and runtime
+logs/*.log
+logs/*.json
+!logs/.gitkeep
+!data/sample/.gitkeep
+
+# Local data (sample parquet IS committed, see data/sample/)
+data/live/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Local docker volumes
+.docker-data/
+
+# Tool state (not part of the project)
+.mavis/
+.opencode/
