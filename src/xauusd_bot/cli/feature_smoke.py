@@ -104,6 +104,65 @@ def main(argv: list[str] | None = None) -> int:
     for i in range(n_target):
         row = connector.bars.iloc[i]
         bars.append(connector._row_to_bar(row, "M1"))  # noqa: SLF001 - internal API, fine here
+    if not bars:
+        # Edge case: no bars to replay (n_bars=0 or empty sample). Emit a
+        # minimal valid snapshot with all engine outputs in their "empty"
+        # defaults. The CLI must not crash on this — the verifier's
+        # regression suite uses n_bars=0 as a smoke check.
+        log.warning("feature_smoke_no_bars", n_target=n_target, n_bars=args.n_bars)
+        first_bar_time = connector.bars["time"].iloc[0].to_pydatetime() if len(connector.bars) > 0 else datetime.now(tz=UTC)
+        empty_session = session_eng.compute([], first_bar_time)
+        empty_vwap = vwap_eng.compute([], first_bar_time)
+        empty_vr = vr_eng.compute([], first_bar_time)
+        empty_fvg = fvg_eng.compute([], first_bar_time)
+        empty_structure = structure_eng.compute([], first_bar_time)
+        empty_momentum = momentum_eng.compute([], first_bar_time)
+        empty_liquidity = liquidity_eng.compute([], 0.0, [], first_bar_time)
+        empty_news = news_eng.compute(first_bar_time)
+        bundle = FeatureSnapshotBundle(
+            ts=first_bar_time,
+            session=empty_session,
+            vwap=empty_vwap,
+            volume_range=empty_vr,
+            fvg=empty_fvg,
+            structure=empty_structure,
+            momentum=empty_momentum,
+            liquidity=empty_liquidity,
+            news=empty_news,
+        )
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(bundle.model_dump(mode="json"), indent=2, default=str))
+        overlay_writer.write(ts=first_bar_time, vwap=empty_vwap, volume_range=empty_vr, fvg=empty_fvg)
+        report = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "sample": str(args.sample),
+            "n_bars_consumed": 0,
+            "elapsed_seconds": 0.0,
+            "bars_per_second": 0.0,
+            "current_t": first_bar_time.isoformat(),
+            "snapshot_path": str(args.report),
+            "overlay_path": str(args.overlay),
+            "snapshot_exists": args.report.exists(),
+            "overlay_exists": args.overlay.exists(),
+            "engines": {
+                "session": empty_session.current_session.value,
+                "session_risk_factor": empty_session.session_risk_factor,
+                "vwap_is_cluster": empty_vwap.is_cluster,
+                "weekly_state": empty_vr.weekly.state.value,
+                "monthly_state": empty_vr.monthly.state.value,
+                "yearly_state": empty_vr.yearly.state.value,
+                "fvg_zones_count": len(empty_fvg.zones),
+                "fvg_top_zones_count": len(empty_fvg.top_zones),
+                "structure_trend": empty_structure.trend,
+                "structure_last_bos": None,
+                "structure_last_choch": None,
+                "liquidity_pools_count": 0,
+                "momentum_score": 0.0,
+                "news_in_blackout": empty_news.in_blackout_flag,
+            },
+        }
+        print(json.dumps(report, indent=2, default=str))
+        return 0
     last_bar_time: datetime = connector.bars["time"].iloc[n_target - 1].to_pydatetime()
 
     # Run all engines. Each is PIT-safe: passing last_bar_time as the cursor

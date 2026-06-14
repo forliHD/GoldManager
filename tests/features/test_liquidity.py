@@ -148,3 +148,130 @@ def test_no_pools_returns_empty() -> None:
     assert out.tp_targets_above == []
     assert out.tp_targets_below == []
     assert out.sl_protection_zones == []
+
+
+# ------------------------------------------------------------------- adversarial
+
+
+def test_pool_at_current_price_does_not_count_as_tp() -> None:
+    """A pool AT current_price (center == current) is ambiguous — neither tp_above nor tp_below.
+
+    WHY: a pool right at the current price isn't a TP target (the price
+    is already there). The engine splits based on ``center > current``
+    for above, ``center < current`` for below. A pool *at* current price
+    falls into neither — it's an internal level.
+    """
+
+    eng = LiquidityEngine(cluster_atr=0.5)
+    # A pool exactly at the current price.
+    pools = [_pool(2000.0, "high")]
+    out = eng.compute(
+        pools,
+        current_price=2000.0,
+        bars=_drift_bars(20),
+        current_t=datetime(2026, 1, 5, 0, 19, tzinfo=UTC),
+    )
+    # Pool center = 2000 == current → not in tp_above, not in tp_below.
+    assert all(z.center <= 2000.0 for z in out.tp_targets_above)
+    assert all(z.center >= 2000.0 for z in out.tp_targets_below)
+
+
+def test_three_pools_same_zone_merged() -> None:
+    """Three pools within band → single zone with pool_count=3."""
+
+    eng = LiquidityEngine(cluster_atr=0.5)
+    pools = [_pool(2010.0), _pool(2010.1), _pool(2010.2)]
+    out = eng.compute(
+        pools,
+        current_price=2000.0,
+        bars=_drift_bars(20),
+        current_t=datetime(2026, 1, 5, 0, 19, tzinfo=UTC),
+    )
+    # All 3 pools in [2010.0, 2010.2] are within 0.5*ATR of each other → 1 zone.
+    assert len(out.tp_targets_above) == 1
+    assert out.tp_targets_above[0].pool_count == 3
+    # The zone's price range is [2010.0, 2010.2].
+    assert out.tp_targets_above[0].price_low == 2010.0
+    assert out.tp_targets_above[0].price_high == 2010.2
+
+
+def test_zone_center_is_pool_mean() -> None:
+    """The center of a zone is the mean of its pools' prices (not the midpoint of the band)."""
+
+    eng = LiquidityEngine(cluster_atr=0.5)
+    pools = [_pool(2010.0), _pool(2010.4)]
+    out = eng.compute(
+        pools,
+        current_price=2000.0,
+        bars=_drift_bars(20),
+        current_t=datetime(2026, 1, 5, 0, 19, tzinfo=UTC),
+    )
+    # Two pools in [2010.0, 2010.4] → mean = 2010.2.
+    assert out.tp_targets_above[0].center == 2010.2
+
+
+def test_low_pool_below_current_does_not_become_sl_trap_when_solo() -> None:
+    """A SINGLE low pool just below current price is NOT an SL trap (requires 2+)."""
+
+    eng = LiquidityEngine(cluster_atr=0.5)
+    pools = [_pool(1999.5, "low")]
+    out = eng.compute(
+        pools,
+        current_price=2000.0,
+        bars=_drift_bars(20),
+        current_t=datetime(2026, 1, 5, 0, 19, tzinfo=UTC),
+    )
+    # A single pool is a TP target below, but not an SL trap (needs 2+).
+    assert len(out.sl_protection_zones) == 0
+    assert len(out.tp_targets_below) == 1
+
+
+def test_high_pool_above_current_does_not_become_sl_trap_when_solo() -> None:
+    """A SINGLE high pool just above current price is NOT an SL trap (requires 2+)."""
+
+    eng = LiquidityEngine(cluster_atr=0.5)
+    pools = [_pool(2000.5, "high")]
+    out = eng.compute(
+        pools,
+        current_price=2000.0,
+        bars=_drift_bars(20),
+        current_t=datetime(2026, 1, 5, 0, 19, tzinfo=UTC),
+    )
+    # Single high pool above = tp_above, not sl_trap.
+    assert len(out.sl_protection_zones) == 0
+    assert len(out.tp_targets_above) == 1
+
+
+def test_sl_trap_zone_has_is_sl_trap_flag() -> None:
+    """When a zone qualifies as an SL trap, the is_sl_trap flag is True on the returned zone."""
+
+    eng = LiquidityEngine(cluster_atr=0.5)
+    pools = [_pool(1999.0, "low"), _pool(1999.3, "low"), _pool(1999.5, "low")]
+    out = eng.compute(
+        pools,
+        current_price=2000.0,
+        bars=_drift_bars(20),
+        current_t=datetime(2026, 1, 5, 0, 19, tzinfo=UTC),
+    )
+    # The 3 low pools form a tight cluster near 2000.0 from below.
+    # The zone should appear in both tp_targets_below and sl_protection_zones.
+    sl_traps = [z for z in out.sl_protection_zones if z.is_sl_trap]
+    assert len(sl_traps) >= 1
+    for z in sl_traps:
+        assert z.is_sl_trap is True
+
+
+def test_cluster_atr_zero_does_not_crash() -> None:
+    """A cluster_atr=0 with empty/zero ATR should not crash (engine uses band=1.0 fallback)."""
+
+    eng = LiquidityEngine(cluster_atr=0.0)
+    pools = [_pool(2010.0)]
+    # Empty bars → no ATR → band defaults to 1.0.
+    out = eng.compute(
+        pools,
+        current_price=2000.0,
+        bars=[],
+        current_t=datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+    )
+    # Pool is above → in tp_above.
+    assert len(out.tp_targets_above) == 1

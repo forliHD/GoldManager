@@ -214,6 +214,99 @@ def test_end_time_above_current_t_is_capped(tmp_path: Path) -> None:
     ]
 
 
+def test_end_time_none_uses_current_t(tmp_path: Path) -> None:
+    """end_time=None is the default and means "use the cursor".
+
+    WHY: backtest callers (smoke CLI, Jupyter notebooks) typically pass
+    end_time=None and expect the cursor to govern visibility. This test
+    proves the default branch is the "use cursor" branch and is the
+    strictest possible PIT filter (no look-ahead under any condition).
+    """
+
+    sample = _build_sample(tmp_path, n_bars=5)
+    conn = ReplayConnector(source_path=sample, symbol="XAUUSD")
+    cursor = datetime(2026, 1, 1, 0, 3, tzinfo=UTC)
+    conn.advance_time(cursor)
+
+    # No end_time at all → cursor governs → bars 0..3 visible.
+    none_call = conn.get_rates("XAUUSD", "M1", count=100, end_time=None)
+    assert [b.time for b in none_call] == [
+        datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
+        datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+        datetime(2026, 1, 1, 0, 3, tzinfo=UTC),
+    ]
+    # Every visible bar is strictly <= the cursor (PIT).
+    assert all(b.time <= cursor for b in none_call)
+    # And it must equal the no-end_time positional call.
+    implicit_none = conn.get_rates("XAUUSD", "M1", count=100)
+    assert [b.time for b in none_call] == [b.time for b in implicit_none]
+
+    # At the very end of the dataset, end_time=None must still honor the
+    # cursor, not return more bars than exist.
+    far_future_cursor = datetime(2030, 1, 1, tzinfo=UTC)
+    conn.advance_time(far_future_cursor)
+    all_bars = conn.get_rates("XAUUSD", "M1", count=100, end_time=None)
+    assert len(all_bars) == 5
+
+
+def test_end_time_above_current_t_logs_warning(tmp_path: Path) -> None:
+    """When end_time > current_t, the connector must emit a defensive debug log.
+
+    WHY: the log is the only runtime evidence the cap fired. Without it, a
+    caller that accidentally passes a future end_time would silently get
+    a (correct, capped) result and never know they had a bug. The log
+    is what makes the hardening *visible*.
+
+    Implementation note: we use ``structlog.testing.capture_logs()``,
+    which intercepts the log call at the structlog layer (before it
+    reaches stdlib logging) so we can assert on the event payload
+    directly. This is the only reliable way to capture structlog
+    debug-level events in a pytest test, because structlog's
+    ``make_filtering_bound_logger`` short-circuits lower levels before
+    they reach the stdlib ``logging.Handler`` chain.
+    """
+
+    import structlog
+
+    sample = _build_sample(tmp_path, n_bars=4)
+    conn = ReplayConnector(source_path=sample, symbol="XAUUSD")
+    conn.advance_time(datetime(2026, 1, 1, 0, 1, tzinfo=UTC))
+
+    with structlog.testing.capture_logs() as cap:
+        conn.get_rates(
+            "XAUUSD",
+            "M1",
+            count=100,
+            end_time=datetime(2026, 1, 1, 1, 0, 0, tzinfo=UTC),
+        )
+    # The hardening log must be present with the cap event. We assert
+    # the *event name* because the message format can evolve.
+    cap_events = [e["event"] for e in cap]
+    assert "replay_end_time_capped_to_cursor" in cap_events, (
+        f"expected cap log, got: {cap_events}"
+    )
+    # The payload must include the requested time, the cursor, and the
+    # note — so an operator reading the log can reconstruct the bug.
+    cap_event = next(e for e in cap if e["event"] == "replay_end_time_capped_to_cursor")
+    assert "requested" in cap_event
+    assert "cursor" in cap_event
+
+    # The no-cap branch must NOT log this event — only the over-cutoff
+    # branch. Reset and run an in-the-past query.
+    with structlog.testing.capture_logs() as cap2:
+        conn.get_rates(
+            "XAUUSD",
+            "M1",
+            count=100,
+            end_time=datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        )
+    cap_events2 = [e["event"] for e in cap2]
+    assert "replay_end_time_capped_to_cursor" not in cap_events2, (
+        f"cap log fired on a valid (in-past) end_time — false positive: {cap_events2}"
+    )
+
+
 # --------------------------------------------------------------- monotone time
 
 

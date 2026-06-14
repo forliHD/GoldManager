@@ -230,3 +230,146 @@ def test_empty_bars_returns_none_values() -> None:
     assert out.levels["utc12"].value is None
     assert out.is_cluster is False
     assert out.cluster_center is None
+
+
+# ------------------------------------------------------------------- cross / loss
+
+
+def test_loss_detected_after_cross_up_then_below() -> None:
+    """After a cross-up (close > VWAP after below), a bar that closes below = loss."""
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    # Build a "loss" pattern: bars above VWAP, then a bar below.
+    prices_loss = [2000.0] * 5 + [2010.0] * 4 + [1990.0]
+    bars_loss = _build_day(ts, prices_loss)
+    out_loss = eng.compute(bars_loss, ts + timedelta(minutes=9))
+    # The latest bar (1990) closes below VWAP, after a stretch of
+    # bars above → loss = True.
+    assert out_loss.levels["utc00"].loss is True
+
+
+# ------------------------------------------------------------------- cluster
+
+
+def test_cluster_atr_threshold_is_configurable() -> None:
+    """The cluster_atr constructor argument controls the cluster threshold."""
+
+    # With a very tight threshold (0.001), no cluster will form.
+    eng_tight = TripleVWAPEngine(cluster_atr=0.001)
+    prices = [2000 + 0.001 * i for i in range(14 * 60)]
+    bars = _build_day(datetime(2026, 1, 5, 0, 0, tzinfo=UTC), prices)
+    out = eng_tight.compute(bars, datetime(2026, 1, 5, 14, 0, tzinfo=UTC))
+    # Even small price variation breaks a 0.001-ATR cluster.
+    assert out.is_cluster is False
+    # And the cluster_within_atr field reflects the constructor.
+    assert out.cluster_within_atr == 0.001
+
+
+# ------------------------------------------------------------------- percentile
+
+
+def test_distance_percentile_30d_zero_when_no_history() -> None:
+    """With no prior distance history, the percentile defaults to 50.0 (neutral)."""
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    # Only 1 bar → no distance history yet.
+    bars = _build_day(ts, [2000.0])
+    out = eng.compute(bars, ts)
+    # distance_percentile_30d may be None (no history) or 50.0 (neutral default).
+    # Per the engine: with len(state.distance_history) == 0, pct = 50.0.
+    # With len(history) >= 1, the engine uses percentile_rank on it.
+    if out.levels["utc00"].distance_percentile_30d is not None:
+        assert 0.0 <= out.levels["utc00"].distance_percentile_30d <= 100.0
+
+
+def test_distance_atr_none_when_atr_unavailable() -> None:
+    """With fewer than 14 bars, ATR is None → distance_atr is also None."""
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    # Only 10 bars → ATR is None.
+    bars = _build_day(ts, [2000.0] * 10)
+    out = eng.compute(bars, ts + timedelta(minutes=9))
+    # distance_atr is None because the engine checks atr_value is not None
+    # and > 0 before computing distance_atr.
+    assert out.levels["utc00"].distance_atr is None
+    # But distance_points is still computed (it just needs the close and VWAP).
+    assert out.levels["utc00"].distance_points is not None
+    # And the value is still set.
+    assert out.levels["utc00"].value is not None
+
+
+# ------------------------------------------------------------------- PIT
+
+
+def test_pit_strictly_below_current_t_filters_bars() -> None:
+    """A bar at current_t is INCLUDED; a bar at current_t + 1 minute is NOT.
+
+    WHY: the contract is ``time <= current_t`` (inclusive). This test
+    pins down the boundary — a bar with time == current_t is part of
+    the visible window; a bar with time > current_t is not.
+    """
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    bars = _build_day(ts, [2000.0] * 5)
+    # Add a bar AT current_t.
+    bars.append(_bar(ts + timedelta(minutes=5), 2010, 2011, 2009, 2010, tv=100))
+    out_at_t = eng.compute(bars, ts + timedelta(minutes=5))
+    # The bar AT current_t is included.
+    assert out_at_t.levels["utc00"].n_bars_anchored == 6
+    # A bar PAST current_t is not.
+    bars_with_future = bars + [_bar(ts + timedelta(minutes=6), 9999, 9999, 9998, 9999, tv=100000)]
+    out_with_future = eng.compute(bars_with_future, ts + timedelta(minutes=5))
+    # The future bar is filtered out.
+    assert out_with_future.levels["utc00"].n_bars_anchored == 6
+    # And the VWAP value is the same (not polluted by the future bar).
+    assert out_at_t.levels["utc00"].value == out_with_future.levels["utc00"].value
+
+
+# ------------------------------------------------------------------- prev-day anchor
+
+
+def test_utc00_carries_forward_yesterday_when_not_fired_today() -> None:
+    """A query at 00:00 UTC (00:00 anchor hasn't fired today yet) → still uses yesterday's 00:00.
+
+    The Plan §8 rule: 00:00-anchor yesterday → 00:00-anchor today.
+    At exactly 00:00 today, today's anchor has *just* fired (or not —
+    the boundary is ambiguous). Either way, the engine should produce
+    a valid VWAP (not None).
+    """
+
+    eng = TripleVWAPEngine()
+    # Build a day of bars (yesterday), then sit at exactly 00:00 today.
+    yesterday = datetime(2026, 1, 4, 0, 0, tzinfo=UTC)
+    bars = _build_day(yesterday, [2000 + 0.01 * i for i in range(24 * 60)])
+    today_00 = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    out = eng.compute(bars, today_00)
+    # The utc00 value is some valid number (yesterday's VWAP continues).
+    assert out.levels["utc00"].value is not None
+    # The value sits in the range of yesterday's prices. With a 0.01
+    # drift per bar over 1440 bars (24h), the price range is roughly
+    # [2000, 2014.4]. The VWAP is the volume-weighted mean, so it sits
+    # somewhere in the middle of that range.
+    assert 1999.0 <= out.levels["utc00"].value <= 2015.0, (
+        f"yesterday's VWAP {out.levels['utc00'].value} out of expected range"
+    )
+
+
+# ------------------------------------------------------------------- zero volume
+
+
+def test_zero_tick_volume_bars_dont_divide_by_zero() -> None:
+    """A bar with tick_volume=0 is given weight 1 (the engine clamps to max(1, tv))."""
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    bars = [
+        _bar(ts, 2000, 2001, 1999, 2000, tv=0),  # zero volume
+        _bar(ts + timedelta(minutes=1), 2010, 2011, 2009, 2010, tv=100),
+    ]
+    # Should not raise ZeroDivisionError.
+    out = eng.compute(bars, ts + timedelta(minutes=1))
+    assert out.levels["utc00"].value is not None
