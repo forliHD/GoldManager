@@ -166,6 +166,54 @@ def test_point_in_time_cursor_after_all_bars(tmp_path: Path) -> None:
     assert all(b.time <= early_end for b in clipped)
 
 
+def test_end_time_above_current_t_is_capped(tmp_path: Path) -> None:
+    """end_time > current_t must be capped to current_t (Caveat I-3a / AGENTS.md §3 I-3).
+
+    A caller passing end_time in the future used to silently receive
+    look-ahead bars. The hardening fix: cap to min(end_time, current_t)
+    and emit a debug log. This test asserts the visible window is
+    bounded by the cursor, NOT by the requested end_time, and that
+    the result equals the result of an equivalent query without
+    end_time (both should be the same set of visible bars).
+    """
+
+    sample = _build_sample(tmp_path, n_bars=6)
+    conn = ReplayConnector(source_path=sample, symbol="XAUUSD")
+    # Pin the cursor at bar index 2 (time 00:02:00). Bars at 00:03, 00:04, 00:05
+    # exist in the source but are "future" relative to the cursor.
+    cursor = datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+    conn.advance_time(cursor)
+
+    # Caller asks for everything up to a time 1 hour in the future. Before
+    # the fix, this would have returned all 6 bars (look-ahead). After the
+    # fix, the cutoff is capped to the cursor (00:02) → exactly 3 bars.
+    far_future = datetime(2026, 1, 1, 1, 0, 0, tzinfo=UTC)
+    capped = conn.get_rates("XAUUSD", "M1", count=100, end_time=far_future)
+    assert [b.time for b in capped] == [
+        datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
+        datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+    ]
+    # The cap is on the *time axis*, not on `count`. We asked for 100
+    # bars; the cap is what limits the result, not the count.
+    assert all(b.time <= cursor for b in capped)
+
+    # The capped result must equal a no-end_time query at the same cursor —
+    # both should see exactly the same 3 bars.
+    no_end = conn.get_rates("XAUUSD", "M1", count=100)
+    assert [b.time for b in capped] == [b.time for b in no_end]
+
+    # And a valid (in-the-past) end_time still works: an even earlier cutoff
+    # should return fewer bars. This proves the cap branch is independent
+    # from the normal filtering branch.
+    earlier = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+    earlier_bars = conn.get_rates("XAUUSD", "M1", count=100, end_time=earlier)
+    assert [b.time for b in earlier_bars] == [
+        datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
+    ]
+
+
 # --------------------------------------------------------------- monotone time
 
 

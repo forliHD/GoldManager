@@ -1,0 +1,232 @@
+"""Tests for the TripleVWAPEngine."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from xauusd_bot.connectors.schemas import Bar
+from xauusd_bot.features.vwap import TripleVWAPEngine
+
+
+def _bar(time: datetime, o: float, h: float, low: float, c: float, tv: int = 100) -> Bar:
+    return Bar(
+        symbol="XAUUSD",
+        timeframe="M1",
+        time=time,
+        open=Decimal(str(o)),
+        high=Decimal(str(h)),
+        low=Decimal(str(low)),
+        close=Decimal(str(c)),
+        tick_volume=tv,
+    )
+
+
+def _build_day(date: datetime, prices: list[float], tv: list[int] | None = None) -> list[Bar]:
+    """Build 1-minute bars starting at ``date`` and going forward."""
+
+    if tv is None:
+        tv = [100] * len(prices)
+    bars: list[Bar] = []
+    for i, p in enumerate(prices):
+        t = date + timedelta(minutes=i)
+        bars.append(
+            _bar(
+                t,
+                o=p,
+                h=p + 0.5,
+                low=p - 0.5,
+                c=p,
+                tv=tv[i],
+            )
+        )
+    return bars
+
+
+# ---------------------------------------------------------------- anchors
+
+
+def test_anchors_utc00_when_in_asia() -> None:
+    """00:00 UTC anchor fires at the start of the day; engine sees bars since 00:00."""
+
+    eng = TripleVWAPEngine()
+    # Monday 2026-01-05 03:00 UTC. Asia. 00:00 anchor is at 00:00 today.
+    # Bars run from 00:00 → 03:00 (current_t), 3h of M1 = 180 bars.
+    bars = _build_day(
+        datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+        [2000 + 0.01 * i for i in range(180)],
+    )
+    current_t = datetime(2026, 1, 5, 3, 0, tzinfo=UTC)
+    out = eng.compute(bars, current_t)
+    assert "utc00" in out.levels
+    assert "utc07" in out.levels
+    assert "utc12" in out.levels
+    # utc00 should have 180 bars (all 3 hours).
+    assert out.levels["utc00"].n_bars_anchored == 180
+    # utc07 has not fired yet (3:00 < 7:00), so 0 bars.
+    assert out.levels["utc07"].n_bars_anchored == 0
+    assert out.levels["utc12"].n_bars_anchored == 0
+
+
+def test_anchors_utc07_fires_at_7am() -> None:
+    """At 08:00 UTC the 07:00 anchor has 60 minutes of bars."""
+
+    eng = TripleVWAPEngine()
+    bars = _build_day(
+        datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+        [2000 + 0.01 * i for i in range(480)],
+    )
+    current_t = datetime(2026, 1, 5, 8, 0, tzinfo=UTC)
+    out = eng.compute(bars, current_t)
+    assert out.levels["utc00"].n_bars_anchored == 480
+    assert out.levels["utc07"].n_bars_anchored == 60  # 7:00 → 8:00
+    assert out.levels["utc12"].n_bars_anchored == 0
+
+
+def test_anchors_utc12_fires_at_noon() -> None:
+    """At 14:00 UTC the 12:00 anchor has 120 minutes of bars."""
+
+    eng = TripleVWAPEngine()
+    bars = _build_day(
+        datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+        [2000 + 0.01 * i for i in range(840)],
+    )
+    current_t = datetime(2026, 1, 5, 14, 0, tzinfo=UTC)
+    out = eng.compute(bars, current_t)
+    assert out.levels["utc00"].n_bars_anchored == 840
+    assert out.levels["utc07"].n_bars_anchored == 7 * 60  # 7h
+    assert out.levels["utc12"].n_bars_anchored == 2 * 60  # 2h
+
+
+# ---------------------------------------------------------------- value math
+
+
+def test_constant_price_anchored_vwap_equals_price() -> None:
+    """If all bars have the same typical_price, the VWAP equals that price."""
+
+    eng = TripleVWAPEngine()
+    prices = [2000.0] * 60  # 1h of bars at exactly 2000
+    bars = _build_day(
+        datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+        prices,
+    )
+    out = eng.compute(bars, datetime(2026, 1, 5, 1, 0, tzinfo=UTC))
+    assert out.levels["utc00"].value is not None
+    assert abs(out.levels["utc00"].value - 2000.0) < 1e-6
+
+
+def test_vwap_weighted_by_volume() -> None:
+    """Bars with more volume pull the VWAP toward their typical price."""
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    # 2 bars: bar 0 at 2000 with tv=10, bar 1 at 2010 with tv=990.
+    # Weighted: (2000*10 + 2010*990) / 1000 = 2009.9
+    bars = [
+        _bar(ts, 2000, 2000.5, 1999.5, 2000, tv=10),
+        _bar(ts + timedelta(minutes=1), 2010, 2010.5, 2009.5, 2010, tv=990),
+    ]
+    out = eng.compute(bars, ts + timedelta(minutes=1))
+    v = out.levels["utc00"].value
+    assert v is not None
+    # Expected ≈ 2009.9 (typical price = (H+L+C)/3 = same as close here).
+    assert abs(v - 2009.9) < 0.1
+
+
+# ---------------------------------------------------------------- cross / reclaim / loss
+
+
+def test_cross_up_detected_when_close_crosses_above() -> None:
+    """A bar that closes above VWAP after a bar that closed below → cross_up."""
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    # 5 bars at 2000, then one at 2010 (above the constant VWAP of 2000).
+    bars = _build_day(ts, [2000.0] * 5 + [2010.0])
+    out = eng.compute(bars, ts + timedelta(minutes=5))
+    assert out.levels["utc00"].cross_up is True
+    assert out.levels["utc00"].cross_down is False
+
+
+def test_reclaim_detected_after_prior_below_vwap() -> None:
+    """After a stretch of closes below VWAP, a bar that closes above = reclaim."""
+
+    eng = TripleVWAPEngine()
+    ts = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    # First 5 bars at 2000, next 5 at 1990 (below), then one at 2010.
+    # Constant VWAP is 2000 (assuming uniform vol). The 2010 bar crosses
+    # up and reclaims.
+    prices = [2000.0] * 5 + [1990.0] * 5 + [2010.0]
+    bars = _build_day(ts, prices)
+    out = eng.compute(bars, ts + timedelta(minutes=10))
+    assert out.levels["utc00"].cross_up is True
+    assert out.levels["utc00"].reclaim is True
+
+
+# ---------------------------------------------------------------- cluster
+
+
+def test_cluster_when_three_vwaps_close() -> None:
+    """All 3 VWAPs within 1.5*ATR → cluster."""
+
+    eng = TripleVWAPEngine()
+    # 14h of bars with low volatility (price drifts by 0.001 per bar).
+    prices = [2000 + 0.001 * i for i in range(14 * 60)]
+    bars = _build_day(
+        datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+        prices,
+    )
+    out = eng.compute(bars, datetime(2026, 1, 5, 14, 0, tzinfo=UTC))
+    # The 3 VWAPs are anchored to different times so they will all sit
+    # near 2000-ish; the cluster should fire (spread < 1.5*ATR).
+    assert out.is_cluster is True
+    assert out.cluster_center is not None
+
+
+def test_no_cluster_when_vwaps_diverge() -> None:
+    """Wide-ranging price action → VWAPs diverge, no cluster."""
+
+    eng = TripleVWAPEngine()
+    # 12h at 2000, then 2h at 2050 (big jump). At 14:00, the 00:00
+    # anchor (14h) has a VWAP dragged up by the 2050 bars; the 07:00
+    # anchor (7h) also has a high VWAP; the 12:00 anchor (2h) is at 2050
+    # exactly. The spread between anchors is large.
+    prices = [2000.0] * (12 * 60) + [2050.0] * (2 * 60)
+    bars = _build_day(
+        datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+        prices,
+    )
+    out = eng.compute(bars, datetime(2026, 1, 5, 14, 0, tzinfo=UTC))
+    # Spread is large, ATR will be smaller, so no cluster.
+    assert out.is_cluster is False
+
+
+# ---------------------------------------------------------------- PIT
+
+
+def test_pit_excludes_bars_after_current_t() -> None:
+    """Bars past current_t must not affect the VWAP."""
+
+    eng = TripleVWAPEngine()
+    bars_pre = _build_day(
+        datetime(2026, 1, 5, 0, 0, tzinfo=UTC),
+        [2000.0] * 60,
+    )
+    # Add a future bar with price 9999. If included, VWAP would explode.
+    cutoff = datetime(2026, 1, 5, 1, 0, tzinfo=UTC)
+    fut = _bar(cutoff + timedelta(minutes=1), 9999, 9999, 9998, 9999, tv=100000)
+    out_pre = eng.compute(bars_pre, cutoff)
+    out_with_fut = eng.compute(bars_pre + [fut], cutoff)
+    assert out_pre.levels["utc00"].value == out_with_fut.levels["utc00"].value
+
+
+def test_empty_bars_returns_none_values() -> None:
+    """No bars at all → all VWAPs are None, no cluster."""
+
+    eng = TripleVWAPEngine()
+    out = eng.compute([], datetime(2026, 1, 5, 12, 0, tzinfo=UTC))
+    assert out.levels["utc00"].value is None
+    assert out.levels["utc07"].value is None
+    assert out.levels["utc12"].value is None
+    assert out.is_cluster is False
+    assert out.cluster_center is None

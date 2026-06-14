@@ -208,10 +208,28 @@ class ReplayConnector:
             # For non-M1 we approximate by taking every Nth bar. We always serve
             # at least M1; consumers should resample if they need M5/H1.
             log.debug("replay_serving_m1_for", requested=timeframe, served="M1")
-        cutoff = end_time if end_time is not None else self._current_t
-        if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=UTC)
-        cutoff = cutoff.astimezone(UTC)
+
+        # Point-in-Time hardening (AGENTS.md I-3 / Caveat I-3a, Block 2 fix):
+        # if the caller passes an end_time past the cursor, cap it to the cursor
+        # and warn. Never silently return bars from the future. If end_time is
+        # None, we just use the cursor.
+        if end_time is not None:
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=UTC)
+            end_time = end_time.astimezone(UTC)
+            if end_time > self._current_t:
+                log.debug(
+                    "replay_end_time_capped_to_cursor",
+                    requested=end_time.isoformat(),
+                    cursor=self._current_t.isoformat(),
+                    note="end_time > current_t would be look-ahead; clamping to cursor.",
+                )
+                cutoff = self._current_t
+            else:
+                cutoff = end_time
+        else:
+            cutoff = self._current_t
+
         mask = self._df["time"] <= pd.Timestamp(cutoff)
         visible = self._df.loc[mask].tail(count)
         return [self._row_to_bar(row, timeframe) for _, row in visible.iterrows()]

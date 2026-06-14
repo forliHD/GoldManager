@@ -20,7 +20,7 @@
 | Block | Inhalt | Status |
 |-------|--------|--------|
 | 1 | Repo-Skeleton, Docker-Stack, Connector-Abstraktion, Replay/Paper, Data Layer | ✅ ship-ready, dev-branch |
-| 2 | Feature-Engine (Session, Triple-VWAP, FixedVolumeRange, FVG, MarketStructure, CandleMomentum, Liquidity, News) + Overlay-Writer | offen |
+| 2 | Feature-Engine (Session, Triple-VWAP, FixedVolumeRange, FVG, MarketStructure, CandleMomentum, Liquidity, News) + Overlay-Writer | ✅ ship-ready, dev-branch |
 | 3 | Aggregator + Scoring + RuleBasedFallback + TradeQualification | offen |
 | 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | offen |
 | 5 | Journal (TimescaleDB) + BacktestEngine + WalkForward + Review | offen |
@@ -86,7 +86,10 @@ Worker, der sie bricht, macht den Block ungültig.
 Diese sind KEINE Blocker, aber VOR Block 2 (oder spätestens vor dem
 ersten Backtest) zu fixen:
 
-1. **Caveat I-3a:** `end_time` Override (siehe oben). Fix in `replay.py`.
+1. **Caveat I-3a (FIXED in Block 2):** `end_time` Override in
+   `replay.py` — jetzt wird `cutoff = min(end_time, current_t)` mit
+   Debug-Log verwendet. Regression-Test:
+   `tests/connectors/test_replay.py::test_end_time_above_current_t_is_capped`.
 2. **Pydantic-Positivität:** `Bar`/`Tick`/`AccountInfo` haben keine `gt=0`
    Constraints auf Preis/Balance/Spread-Feldern. Domain-Validation in
    Block 2 hinzufügen, wo die Felder tatsächlich verwendet werden.

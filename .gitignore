@@ -40,6 +40,8 @@ logs/*.json
 
 # Local data (sample parquet IS committed, see data/sample/)
 data/live/
+data/overlay/*.json
+!data/overlay/.gitkeep
 
 # Secrets
 .env
