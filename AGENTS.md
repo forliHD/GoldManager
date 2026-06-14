@@ -99,6 +99,22 @@ ersten Backtest) zu fixen:
    `SecretStr('')` führt. Pydantic-Settings-Test toleranter machen oder
    `SecretStr` in der Test-Fixture explizit setzen.
 
+## 4b. Caveats aus Block 2
+
+Diese Caveats sind KEINE Blocker, aber zu beachten:
+
+1. **Overlay `prev_*` Levels am ersten Tag einer neuen Periode sind `null`.**
+   Wenn z.B. der Bot am 1. Januar startet, gibt es kein `prev_year`-Profil
+   (das Jahr 2025 existiert noch nicht im Journal). Der Overlay-Writer
+   schreibt `null` in das JSON, und `BotOverlay.mq5` muss das
+   gracefully handhaben (Linie weglassen, nicht crashen). Block 7
+   (MT5-Viz-Bridge) muss das in der MQL5-Indikator-Logik
+   berücksichtigen.
+2. **Feature-Engine nutzt I-3 PIT-Garantie** — alle Module
+   (`features/*.py`) MÜSSEN die `cutoff`/`current_t`-Semantik aus
+   `ReplayConnector` respektieren. Niemals direkt `bar.time`
+   vergleichen ohne Vorab-Check `bar.time <= current_t`.
+
 ## 5. Live-Bug-Journal (Producer-Bugs gefunden, gefixt, regress-getestet)
 
 Diese Bugs wurden im Block-1-Test-Coverage-Lauf ENTDECKT (vom Test-Worker,
