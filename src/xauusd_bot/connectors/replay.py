@@ -257,6 +257,12 @@ class ReplayConnector:
             leverage=s.leverage,
             server_time=self._current_t,
             trade_allowed=True,
+            # Block-3 risk fields: populated by the PaperBroker in Block 4.
+            # For Block 3 smoke runs they stay None ("unknown") which the
+            # RuleBasedFallback treats as "no block".
+            daily_pnl=None,
+            weekly_pnl=None,
+            current_spread=None,
         )
 
     def get_symbol_spec(self, symbol: str) -> SymbolSpec:

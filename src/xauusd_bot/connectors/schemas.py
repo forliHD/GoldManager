@@ -125,7 +125,16 @@ class SymbolSpec(BaseModel):
 
 
 class AccountInfo(BaseModel):
-    """Account snapshot (balance, equity, margin, free margin)."""
+    """Account snapshot (balance, equity, margin, free margin).
+
+    The decision layer (Block 3) reads ``daily_pnl`` / ``weekly_pnl``
+    to enforce the ``Settings.RISK_MAX_DAILY`` / ``RISK_MAX_WEEKLY``
+    limits. ``current_spread`` (in points) is read by the
+    :class:`RuleBasedFallback` to enforce
+    ``Settings.SPREAD_MAX_PIPS``. All three fields are optional
+    because legacy / pre-Block-3 fixtures may not have populated them
+    yet — the decision layer treats ``None`` as "unknown → no block".
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -140,6 +149,29 @@ class AccountInfo(BaseModel):
     server_time: datetime
     trade_allowed: bool = True
     raw: dict[str, Any] = Field(default_factory=dict, description="Raw broker payload for diagnostics.")
+    # --- Block-3 risk fields (optional, defaults = unknown → no block)
+    daily_pnl: Decimal | None = Field(
+        default=None,
+        description=(
+            "Realized + unrealized PnL for the current trading day, in account currency. "
+            "Negative value = loss. None = unknown → decision layer treats as no block."
+        ),
+    )
+    weekly_pnl: Decimal | None = Field(
+        default=None,
+        description=(
+            "Realized + unrealized PnL for the current trading week, in account currency. "
+            "Negative value = loss. None = unknown → decision layer treats as no block."
+        ),
+    )
+    current_spread: Decimal | None = Field(
+        default=None,
+        description=(
+            "Current bid/ask spread in **points** (not pips). The decision layer compares "
+            "this to ``Settings.SPREAD_MAX_PIPS`` (× 10 for XAUUSD's 0.1 point = 1 pip "
+            "convention) to enforce the spread-to-block rule. None = unknown → no block."
+        ),
+    )
 
 
 class OrderRequest(BaseModel):

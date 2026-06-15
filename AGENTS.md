@@ -21,7 +21,7 @@
 |-------|--------|--------|
 | 1 | Repo-Skeleton, Docker-Stack, Connector-Abstraktion, Replay/Paper, Data Layer | ✅ ship-ready, dev-branch |
 | 2 | Feature-Engine (Session, Triple-VWAP, FixedVolumeRange, FVG, MarketStructure, CandleMomentum, Liquidity, News) + Overlay-Writer | ✅ ship-ready, dev-branch |
-| 3 | Aggregator + Scoring + RuleBasedFallback + TradeQualification | offen |
+| 3 | Aggregator + Scoring + RuleBasedFallback + TradeQualification | ✅ ship-ready, dev-branch |
 | 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | offen |
 | 5 | Journal (TimescaleDB) + BacktestEngine + WalkForward + Review | offen |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | offen |

@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     # --- Risk (fractions, e.g. 0.04 = 4%)
     risk_max_daily: float = Field(default=0.04, ge=0, le=1)
     risk_max_weekly: float = Field(default=0.08, ge=0, le=1)
+    # --- Spread block threshold (pips). RuleBasedFallback blocks entries
+    # when AccountInfo.current_spread > spread_max_pips * 10 (XAUUSD pip = 10 points).
+    spread_max_pips: float = Field(default=3.0, ge=0, description="Max spread in pips before blocking new entries.")
 
     # --- Service selection
     service_role: ServiceRole = Field(default=ServiceRole.DATA_COLLECTOR)
