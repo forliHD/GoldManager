@@ -31,6 +31,12 @@
 
 Producer-Commits landen auf `dev`. Kein Remote konfiguriert (per Auftrag).
 
+**E2E-Integration (Stand 2026-06-15):** Replay-Connector → Feature-Engine →
+Decision-Layer Pipeline-Smoke grün (`decision_smoke --n-bars 200 --start-bar
+2000` → 9/200 qualified trades, exit 0). Alle Architektur-Invarianten I-1..I-5
+re-verifiziert. Gesamte Test-Suite: **463 passed** (Block 1: 217, Block 2: 70
+neu, Block 3: 85).
+
 ## 3. Architektur-Invarianten (HART — nicht verletzen)
 
 Diese Invarianten werden im Code UND in der Verifikation durchgesetzt. Jeder
