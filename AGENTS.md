@@ -22,7 +22,7 @@
 | 1 | Repo-Skeleton, Docker-Stack, Connector-Abstraktion, Replay/Paper, Data Layer | ✅ ship-ready, dev-branch |
 | 2 | Feature-Engine (Session, Triple-VWAP, FixedVolumeRange, FVG, MarketStructure, CandleMomentum, Liquidity, News) + Overlay-Writer | ✅ ship-ready, dev-branch |
 | 3 | Aggregator + Scoring + RuleBasedFallback + TradeQualification | ✅ ship-ready, dev-branch |
-| 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | offen |
+| 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | ✅ ship-ready, dev-branch |
 | 5 | Journal (TimescaleDB) + BacktestEngine + WalkForward + Review | offen |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | offen |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` | offen |
@@ -34,8 +34,14 @@ Producer-Commits landen auf `dev`. Kein Remote konfiguriert (per Auftrag).
 **E2E-Integration (Stand 2026-06-15):** Replay-Connector → Feature-Engine →
 Decision-Layer Pipeline-Smoke grün (`decision_smoke --n-bars 200 --start-bar
 2000` → 9/200 qualified trades, exit 0). Alle Architektur-Invarianten I-1..I-5
-re-verifiziert. Gesamte Test-Suite: **463 passed** (Block 1: 217, Block 2: 70
-neu, Block 3: 85).
+re-verifiziert. Gesamte Test-Suite: **580 passed** (Block 1: 217, Block 2: 70
+neu, Block 3: 85, Block 4: 117 neu).
+
+**Block-4 Lifecycle-Smoke (Stand 2026-06-15):** `execution_smoke --force-trade`
+läuft komplette Lifecycle (risk → size → stops → order → sweep → trail) mit
+Exit 0, plausibler `logs/execution_lifecycle.json`. `--simulate-losses 5`
+triggert nachweisbar die Tages-Pause (EmergencyStop). Coverage execution/ = 92%
+(Ziel ≥75%).
 
 ## 3. Architektur-Invarianten (HART — nicht verletzen)
 
@@ -104,6 +110,29 @@ ersten Backtest) zu fixen:
    `OPENROUTER_API_KEY=""` (leerer String) **ungleich** "unset" ist und zu
    `SecretStr('')` führt. Pydantic-Settings-Test toleranter machen oder
    `SecretStr` in der Test-Fixture explizit setzen.
+
+## 4c. Caveats aus Block 4
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 5+:
+
+1. **RiskManager PnL ist in-memory only.** Der `record_pnl()`-State
+   wird NICHT in TimescaleDB persistiert. Nach einem Prozess-Restart
+   beginnt der Tag/Woche-Counter bei Null. Block 5 (Journal) muss
+   die PnL-Historie aus dem Journal-Tag-Stream rekonstruieren oder
+   den State in Redis ablegen.
+2. **HTF-Profile nutzen `developing`-Werte** für den Runner-TP3. Wenn
+   die aktuelle Woche noch nicht abgeschlossen ist, kann der VAH/VAL
+   sich noch verschieben. Der Runner-Lock akzeptiert das bewusst —
+   der Executor prüft den Level alle N Bars neu.
+3. **Notional / Margin-Berechnung** ist derzeit nur eine grobe
+   Schätzung im PaperBroker (nicht im OrderManager). Für Live-Mode
+   muss Block 5 (oder 8) die echte MT5-Margin-API anbinden.
+4. **PreTradeSafetyChecker** nutzt einen Stub `get_spread_points`
+   wenn kein `SpreadMonitor` angeschlossen ist. In Production
+   `xauusd_bot.data.spread_monitor.SpreadMonitor` einklinken.
+5. **EmergencyStop `state_file`** wird per Default relativ zum
+   Report-Pfad des Smoke-CLI geschrieben. In Production sollte das
+   ein absoluter Pfad sein (z.B. `/var/lib/xauusd/emergency_state.json`).
 
 ## 4b. Caveats aus Block 2
 
