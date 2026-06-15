@@ -23,7 +23,9 @@
 | 2 | Feature-Engine (Session, Triple-VWAP, FixedVolumeRange, FVG, MarketStructure, CandleMomentum, Liquidity, News) + Overlay-Writer | ✅ ship-ready, dev-branch |
 | 3 | Aggregator + Scoring + RuleBasedFallback + TradeQualification | ✅ ship-ready, dev-branch |
 | 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | ✅ ship-ready, dev-branch |
-| 5 | Journal (TimescaleDB) + BacktestEngine + WalkForward + Review | offen |
+| 5a | TradeJournalDB (TimescaleDB) + FeatureSnapshotStore + Read-API (queries) | ✅ ship-ready, dev-branch |
+| 5b | BacktestEngine (Event-Replay über ReplayConnector) | offen |
+| 5c | WalkForward + Daily/WeeklyReview + FittingProposal | offen |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | offen |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` | offen |
 | 8 | LiveMT5Connector (RPyC) + mt5-terminal-Container (Wine) | offen |
@@ -34,14 +36,21 @@ Producer-Commits landen auf `dev`. Kein Remote konfiguriert (per Auftrag).
 **E2E-Integration (Stand 2026-06-15):** Replay-Connector → Feature-Engine →
 Decision-Layer Pipeline-Smoke grün (`decision_smoke --n-bars 200 --start-bar
 2000` → 9/200 qualified trades, exit 0). Alle Architektur-Invarianten I-1..I-5
-re-verifiziert. Gesamte Test-Suite: **580 passed** (Block 1: 217, Block 2: 70
-neu, Block 3: 85, Block 4: 117 neu).
+re-verifiziert. Gesamte Test-Suite: **694 passed** (Block 1: 217, Block 2: 70
+neu, Block 3: 85, Block 4: 117 neu, Block 5a: 114 neu).
 
 **Block-4 Lifecycle-Smoke (Stand 2026-06-15):** `execution_smoke --force-trade`
 läuft komplette Lifecycle (risk → size → stops → order → sweep → trail) mit
 Exit 0, plausibler `logs/execution_lifecycle.json`. `--simulate-losses 5`
 triggert nachweisbar die Tages-Pause (EmergencyStop). Coverage execution/ = 92%
 (Ziel ≥75%).
+
+**Block-5a Journal-Smoke (Stand 2026-06-15):** `journal_smoke --n-bars 200
+--start-bar 2000` läuft Replay → Features → Decision → TradeQualification →
+Risk → Size → Stops → Order → PaperBroker → JournalStore → KPI-Aggregation.
+Exit 0, 5 Trades + 200 Snapshots + 5 Orders in `logs/journal_snapshot.json`.
+Coverage journal/ = 98% (Ziel ≥75%), common.schemas.journal = 100%.
+TimescaleJournalStore ist Stub (Block 5b liefert asyncpg-Integration).
 
 ## 3. Architektur-Invarianten (HART — nicht verletzen)
 
@@ -133,6 +142,41 @@ Diese Caveats sind KEINE Blocker, aber zu beachten für Block 5+:
 5. **EmergencyStop `state_file`** wird per Default relativ zum
    Report-Pfad des Smoke-CLI geschrieben. In Production sollte das
    ein absoluter Pfad sein (z.B. `/var/lib/xauusd/emergency_state.json`).
+
+## 4d. Caveats aus Block 5a
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 5b+:
+
+1. **TimescaleJournalStore ist Stub.** Die asyncpg-Integration
+   kommt in Block 5b (BacktestEngine). Bis dahin liefert
+   `get_journal_store()` in `production`-Umgebung eine
+   `TimescaleJournalStore`-Instanz zurück, aber
+   `get_journal_store_with_fallback()` (mit Connectivity-Probe)
+   fällt sofort auf `InMemoryJournalStore` zurück. In Production
+   muss Block 5b die Probe implementieren, sonst riskiert man
+   dass jeder Schreibvorgang in den Stub läuft und `NotImplementedError`
+   wirft.
+2. **PnlRealized ist in der Smoke synthetisch.** Der
+   `journal_smoke`-CLI synthetisiert Close-Daten via
+   `future_bars[0..close_window]`. Das ist KEIN echter
+   Backtest — Block 5b nutzt denselben Engine-Stack mit echtem
+   Bar-Walk und einem echten PendingOrderManager.
+3. **`feature_snapshot_id` ist ein Soft-FK.** Der Store
+   validiert nicht, dass die referenzierte Snapshot existiert
+   (Block 5b: das wird die TimescaleDB mit echter FK-Constraint
+   lösen). Der ReviewAgent (Block 5c) MUSS beim Lesen prüfen,
+   dass `feature_snapshot.bar_time <= trade.timestamp_open`.
+4. **Coverage bezieht sich nur auf `journal/` + Schemas.**
+   Das `cli/journal_smoke.py` ist im Test-Prozess via
+   `subprocess` gestartet — Coverage-Trace zeigt "never imported".
+   Das ist OK weil die Smoke-Tests die volle Lifecycle
+   End-to-End abdecken; eine Coverage-Zahl für die CLI ist
+   ohne Mehraufwand ermittelbar (`runpy` import-Patch).
+5. **`update_trade` erlaubt nur die dokumentierten Felder.**
+   Jeder Versuch, ein anderes Feld (z.B. `entry_price`,
+   `score`) zu mutieren, wirft `PITViolationError`. Wer einen
+   neuen Close-Field hinzufügen will, muss `_ALLOWED_TRADE_UPDATES`
+   in `src/xauusd_bot/journal/store.py` erweitern.
 
 ## 4b. Caveats aus Block 2
 

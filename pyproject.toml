@@ -73,3 +73,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra --strict-markers"
+markers = [
+    "slow: long-running tests (>=30s) — opt out with -m 'not slow'",
+]
