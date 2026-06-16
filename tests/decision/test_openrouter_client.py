@@ -233,8 +233,12 @@ class TestClientHeaders:
         )
         await client.complete(system_prompt="sys", user_payload={"x": 1})
         body = _FakeAsyncClient.calls[0]["json"]
+        headers = _FakeAsyncClient.calls[0]["headers"]
+        # Body field (per OpenRouter's official docs).
         assert body.get("provider", {}).get("zdr") is True
         assert body.get("provider", {}).get("data_collection") == "deny"
+        # Header (per task spec — defense-in-depth, future-proof).
+        assert headers.get("X-Privacy-Mode") == "zero-data-retention"
 
     @pytest.mark.asyncio
     async def test_zdr_omitted_when_disabled(self, fake_http, tmp_path):
@@ -244,7 +248,11 @@ class TestClientHeaders:
         )
         await client.complete(system_prompt="sys", user_payload={"x": 1})
         body = _FakeAsyncClient.calls[0]["json"]
+        headers = _FakeAsyncClient.calls[0]["headers"]
+        # Body field absent.
         assert "provider" not in body
+        # Header absent.
+        assert "X-Privacy-Mode" not in headers
 
 
 class TestClientParsesValid:
@@ -327,6 +335,35 @@ class TestPromptLoading:
     def test_missing_prompt_file_returns_empty(self, tmp_path):
         client = OpenRouterClient(settings=_make_settings(), prompt_path=tmp_path / "nope.md")
         assert client._system_prompt == ""
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_loaded_once_not_per_call(self, fake_http, tmp_path, monkeypatch):
+        """Init reads the file once; later calls reuse the cached value.
+
+        We use a counter on the file-read method to prove the
+        prompt is read at init time and NOT on every ``complete``
+        call. This is the "cached system prompt" guarantee the
+        spec asks for.
+        """
+        from xauusd_bot.decision import openrouter_client as orc_module
+        original_loader = orc_module.OpenRouterClient._load_system_prompt
+        call_count = {"n": 0}
+
+        def counting_loader(self, path):
+            call_count["n"] += 1
+            # The original is a staticmethod, so we call it as
+            # ``original_loader(path)`` (no self).
+            return original_loader(path)
+
+        monkeypatch.setattr(orc_module.OpenRouterClient, "_load_system_prompt", counting_loader)
+        fake_http()
+        client = OpenRouterClient(settings=_make_settings(), prompt_path=_prompt_path(tmp_path))
+        # Init: one call.
+        assert call_count["n"] == 1
+        # Many complete() calls: no further reads.
+        for _ in range(5):
+            await client.complete(system_prompt=None, user_payload={"x": 1})
+        assert call_count["n"] == 1  # still just the init call
 
     @pytest.mark.asyncio
     async def test_per_call_system_prompt_override(self, fake_http, tmp_path):

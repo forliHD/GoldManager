@@ -19,6 +19,7 @@ from xauusd_bot.common.schemas.journal import (
     ExitReasonTag,
     FeatureSnapshotRecord,
     LLMFallbackDiscrepancy,
+    LLMFallbackDiscrepancyV2,
     OrderRecord,
     OrderStatusTag,
     TradeRecord,
@@ -392,6 +393,7 @@ async def test_count_returns_per_table_totals() -> None:
         "snapshots": 0,
         "orders": 0,
         "discrepancies": 0,
+        "discrepancies_v2": 0,
     }
     t = make_trade()
     await store.write_trade(t)
@@ -403,6 +405,7 @@ async def test_count_returns_per_table_totals() -> None:
         "snapshots": 1,
         "orders": 1,
         "discrepancies": 1,
+        "discrepancies_v2": 0,
     }
 
 
@@ -418,6 +421,7 @@ async def test_clear_wipes_everything() -> None:
         "snapshots": 0,
         "orders": 0,
         "discrepancies": 0,
+        "discrepancies_v2": 0,
     }
 
 
@@ -515,3 +519,64 @@ async def test_concurrent_writes_dont_lose_records() -> None:
     trades = await store.list_trades()
     assert len(trades) == n
     assert len({t.id for t in trades}) == n
+
+
+# ----------------------------------------------------------------- V2 discrepancy (Block 6)
+
+
+def make_discrepancy_v2(**overrides) -> LLMFallbackDiscrepancyV2:
+    base = dict(
+        timestamp=_ts(),
+        decision_id=uuid4(),
+        score=70.0,
+        llm_raw_response='{"decision": "scout"}',
+        fallback_reason="validation_error",
+        rule_decision="enter_long",
+        llm_decision="scout",
+    )
+    base.update(overrides)
+    return LLMFallbackDiscrepancyV2(**base)
+
+
+@pytest.mark.asyncio
+async def test_v2_write_and_list_round_trip() -> None:
+    store = InMemoryJournalStore()
+    rec = make_discrepancy_v2()
+    returned_id = await store.write_discrepancy_v2(rec)
+    assert returned_id == rec.decision_id
+    recs = await store.list_discrepancies_v2()
+    assert len(recs) == 1
+    assert recs[0].decision_id == rec.decision_id
+    assert recs[0].fallback_reason == "validation_error"
+    assert recs[0].llm_decision == "scout"
+    assert recs[0].rule_decision == "enter_long"
+    assert recs[0].score == 70.0
+
+
+@pytest.mark.asyncio
+async def test_v2_rejects_invalid_fallback_reason() -> None:
+    """The Literal type on fallback_reason rejects unknown values."""
+
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        LLMFallbackDiscrepancyV2(
+            timestamp=_ts(),
+            decision_id=uuid4(),
+            score=70.0,
+            fallback_reason="not_a_valid_reason",  # type: ignore[arg-type]
+            rule_decision="no_trade",
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_optional_llm_fields_default_to_none() -> None:
+    rec = LLMFallbackDiscrepancyV2(
+        timestamp=_ts(),
+        decision_id=uuid4(),
+        score=50.0,
+        fallback_reason="score_below_threshold",
+        rule_decision="no_trade",
+    )
+    assert rec.llm_decision is None
+    assert rec.llm_raw_response is None

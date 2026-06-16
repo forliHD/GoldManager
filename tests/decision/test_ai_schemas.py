@@ -160,6 +160,22 @@ class TestEntryZone:
         with pytest.raises(ValidationError):
             EntryZone.model_validate({"price_min": 2370.0, "extra": "x"})
 
+    def test_rejects_inf_out_of_float_range(self):
+        """``float('inf')`` is out of the representable price range.
+
+        Pydantic v2 with ``allow_inf_nan=False`` (set on the field)
+        rejects ``NaN`` / ``inf`` for float fields. This test pins
+        that behaviour so a future config flip doesn't silently
+        allow non-finite prices into the entry_zone (which would
+        bypass the AIDecisionLayer's zone check downstream).
+        """
+        with pytest.raises(ValidationError):
+            EntryZone(price_min=float("inf"), price_max=2375.0)
+        with pytest.raises(ValidationError):
+            EntryZone(price_min=2370.0, price_max=float("inf"))
+        with pytest.raises(ValidationError):
+            EntryZone(price_min=float("nan"), price_max=2375.0)
+
 
 class TestManagementBlock:
     def test_defaults(self):

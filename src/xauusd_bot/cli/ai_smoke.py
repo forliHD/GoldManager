@@ -1,15 +1,18 @@
 """AI-Decision-Layer smoke CLI — Block 6 end-to-end proof-of-life.
 
-If ``OPENROUTER_API_KEY`` is set, this CLI:
+Per the Block-6 task spec, this CLI:
 
   1. Loads the committed XAUUSD M1 sample dataset.
-  2. Walks ``n_bars`` M1 bars (starting at ``start_bar``).
+  2. Walks ``--n-bars`` M1 bars (starting at ``--start-bar``).
   3. Builds the full feature snapshot per bar (mirrors
      :mod:`xauusd_bot.cli.decision_smoke`).
-  4. For bars where ``score >= ai_layer_score_threshold``, calls
-     the live :class:`AIDecisionLayer` (OpenRouter).
-  5. Writes ``logs/ai_snapshot.json`` with the LLM decisions +
-     discrepancy counters.
+  4. For each bar at or above the AI score threshold, calls the
+     :class:`AIDecisionOrchestrator` (which calls the LLM if
+     permitted by the score/API-key/news gates).
+  5. Writes ``logs/ai_snapshot.json`` with the **spec-required**
+     fields per bar: ``llm_decision`` (or null), ``fallback_used``
+     (bool), ``fallback_reason`` (string or null), ``score``
+     (float), ``prompt_hash`` (SHA-256 of the system prompt).
 
 If ``OPENROUTER_API_KEY`` is unset, the CLI prints a "skipped"
 message and exits 0. This keeps the smoke runnable on CI without
@@ -28,6 +31,7 @@ explicit prices to override.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -46,7 +50,6 @@ import structlog  # noqa: E402
 
 from xauusd_bot.common.config import Settings  # noqa: E402
 from xauusd_bot.common.logging import setup_logging  # noqa: E402
-from xauusd_bot.common.schemas.ai_decision import LLMDecision  # noqa: E402
 from xauusd_bot.common.schemas.features import FeatureSnapshotBundle  # noqa: E402
 from xauusd_bot.decision import (  # noqa: E402
     AIDecisionLayer,
@@ -56,6 +59,7 @@ from xauusd_bot.decision import (  # noqa: E402
     RuleBasedFallback,
     ScoringEngine,
 )
+from xauusd_bot.decision.ai_layer import default_zones_provider  # noqa: E402
 from xauusd_bot.features.fvg import FVGEngine  # noqa: E402
 from xauusd_bot.features.liquidity import LiquidityEngine  # noqa: E402
 from xauusd_bot.features.momentum import CandleMomentumEngine  # noqa: E402
@@ -99,6 +103,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _prompt_hash(prompt_path: Path) -> str:
+    """SHA-256 hex digest of the system-prompt file's content (or 'no_prompt_file' if missing)."""
+
+    try:
+        content = prompt_path.read_text(encoding="utf-8")
+    except OSError:
+        return "no_prompt_file"
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _build_skipped_report(args: argparse.Namespace, reason: str) -> dict[str, object]:
+    """Build a no-API-key / no-data report dict. Exit 0 path."""
+
+    return {
+        "generated_at": datetime.now(tz=UTC).isoformat(),
+        "skipped": True,
+        "reason": reason,
+        "report_path": str(args.report),
+        "prompt_hash": _prompt_hash(args.prompt),
+        "n_bars_consumed": 0,
+        "bars": [],
+    }
+
+
 async def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     setup_logging(level="INFO")
@@ -109,20 +137,12 @@ async def main(argv: list[str] | None = None) -> int:
         print("Run: python -m tools.generate_sample_data", file=sys.stderr)
         return 2
 
-    # ---- Pre-flight: API key gate
+    # ---- Pre-flight: API key gate.
     if not os.getenv("OPENROUTER_API_KEY"):
         log.info("ai_smoke_skipped_no_api_key")
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(
-            json.dumps(
-                {
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "skipped": True,
-                    "reason": "OPENROUTER_API_KEY not set",
-                    "report_path": str(args.report),
-                },
-                indent=2,
-            )
+            json.dumps(_build_skipped_report(args, "OPENROUTER_API_KEY not set"), indent=2)
         )
         print(json.dumps({"skipped": True, "reason": "OPENROUTER_API_KEY not set"}, indent=2))
         return 0
@@ -150,7 +170,11 @@ async def main(argv: list[str] | None = None) -> int:
     scoring = ScoringEngine()
     fallback = RuleBasedFallback(settings=settings)
     openrouter = OpenRouterClient(settings=settings, prompt_path=args.prompt)
-    ai_layer = AIDecisionLayer(openrouter_client=openrouter, settings=settings)
+    ai_layer = AIDecisionLayer(
+        openrouter_client=openrouter,
+        snapshot_zones_provider=default_zones_provider,
+        settings=settings,
+    )
     journal_store = InMemoryJournalStore()
     orchestrator = AIDecisionOrchestrator(
         ai_layer=ai_layer,
@@ -159,41 +183,26 @@ async def main(argv: list[str] | None = None) -> int:
         journal_store=journal_store,
     )
 
-    # ---- Cost tracking.
+    prompt_hash = _prompt_hash(args.prompt)
+
     accumulated_cost = 0.0
     budget_exhausted = False
-    decisions: list[dict[str, object]] = []
-    aggregates = {
-        "n_bars_evaluated": 0,
-        "n_above_threshold": 0,
-        "n_llm_calls": 0,
-        "n_llm_skipped_budget": 0,
-        "n_llm_fallback": 0,
-        "n_llm_enter": 0,
-        "n_llm_no_trade": 0,
-        "n_rule_enter": 0,
-        "n_rule_no_trade": 0,
-    }
+    bars_out: list[dict[str, object]] = []
+    n_evaluated = 0
+    n_above_threshold = 0
+    n_llm_calls = 0
+    n_llm_skipped_budget = 0
+    n_fallback_used = 0
 
     start_bar = max(0, args.start_bar)
     n_target = min(args.n_bars, len(connector.bars) - start_bar)
     if n_target <= 0:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(
-            json.dumps(
-                {
-                    "generated_at": datetime.now(tz=UTC).isoformat(),
-                    "n_bars_consumed": 0,
-                    "aggregates": aggregates,
-                    "skipped": True,
-                    "reason": "no bars in range",
-                },
-                indent=2,
-            )
+            json.dumps(_build_skipped_report(args, "no bars in range"), indent=2)
         )
         return 0
 
-    # ---- Pre-build the full bar list (O(N) memory, O(N²) decision loop).
     all_bars: list = []
     for j in range(start_bar + n_target):
         all_bars.append(connector._row_to_bar(connector.bars.iloc[j], "M1"))  # noqa: SLF001
@@ -203,7 +212,6 @@ async def main(argv: list[str] | None = None) -> int:
         bar = all_bars[i]
         current_t = bar.time
         bars_so_far = all_bars[: i + 1]
-        # Build the feature bundle (same as decision_smoke).
         session_out = session_eng.compute(bars_so_far, current_t)
         vwap_out = vwap_eng.compute(bars_so_far, current_t)
         vr_out = vr_eng.compute(bars_so_far, current_t)
@@ -228,19 +236,40 @@ async def main(argv: list[str] | None = None) -> int:
         )
         agg = aggregator.aggregate(bundle)
         score = scoring.score(agg)
-        aggregates["n_bars_evaluated"] += 1
+        n_evaluated += 1
+
         if score.total_score < settings.ai_layer_score_threshold:
+            bars_out.append(
+                {
+                    "i": i,
+                    "ts": current_t.isoformat(),
+                    "score": score.total_score,
+                    "llm_decision": None,
+                    "fallback_used": True,
+                    "fallback_reason": "score_below_threshold",
+                    "prompt_hash": prompt_hash,
+                }
+            )
             continue
-        aggregates["n_above_threshold"] += 1
+        n_above_threshold += 1
 
         if budget_exhausted:
-            aggregates["n_llm_skipped_budget"] += 1
+            n_llm_skipped_budget += 1
+            bars_out.append(
+                {
+                    "i": i,
+                    "ts": current_t.isoformat(),
+                    "score": score.total_score,
+                    "llm_decision": None,
+                    "fallback_used": True,
+                    "fallback_reason": "budget_exhausted",
+                    "prompt_hash": prompt_hash,
+                }
+            )
             continue
 
-        # ---- Cost estimate: rough tokens via JSON payload size.
-        # (Real OpenRouter reports this in the response; we estimate.)
         estimated_input_tokens = max(1, len(json.dumps(bundle.model_dump(mode="json"), default=str)) // 4)
-        estimated_output_tokens = 200  # conservative average
+        estimated_output_tokens = 200
         est_cost = (
             estimated_input_tokens / 1000.0 * args.input_price_per_1k
             + estimated_output_tokens / 1000.0 * args.output_price_per_1k
@@ -248,38 +277,72 @@ async def main(argv: list[str] | None = None) -> int:
         if accumulated_cost + est_cost > args.max_budget_usd:
             log.warning("ai_smoke_budget_exhausted", accumulated_usd=accumulated_cost)
             budget_exhausted = True
-            aggregates["n_llm_skipped_budget"] += 1
+            n_llm_skipped_budget += 1
+            bars_out.append(
+                {
+                    "i": i,
+                    "ts": current_t.isoformat(),
+                    "score": score.total_score,
+                    "llm_decision": None,
+                    "fallback_used": True,
+                    "fallback_reason": "budget_exhausted",
+                    "prompt_hash": prompt_hash,
+                }
+            )
             continue
 
         accumulated_cost += est_cost
-        aggregates["n_llm_calls"] += 1
+        n_llm_calls += 1
         try:
             decision = await orchestrator.decide(
                 feature_snapshot=bundle, score=score, agg=agg
             )
         except Exception as exc:  # noqa: BLE001 — last-resort guard
             log.warning("ai_smoke_decide_failed", error=str(exc))
-            aggregates["n_llm_fallback"] += 1
+            bars_out.append(
+                {
+                    "i": i,
+                    "ts": current_t.isoformat(),
+                    "score": score.total_score,
+                    "llm_decision": None,
+                    "fallback_used": True,
+                    "fallback_reason": "openrouter_error",
+                    "prompt_hash": prompt_hash,
+                }
+            )
+            n_fallback_used += 1
             continue
 
-        if decision.action.value == "no_trade":
-            aggregates["n_llm_no_trade"] += 1
+        if decision.block_reason in (
+            "score_below_threshold", "openrouter_api_key_missing",
+            "openrouter_disabled", "ai_layer_disabled",
+            "news_blackout", "hard_rule_violation", "zone_violation",
+            "validation_error", "timeout",
+        ):
+            bars_out.append(
+                {
+                    "i": i,
+                    "ts": current_t.isoformat(),
+                    "score": score.total_score,
+                    "llm_decision": None,
+                    "fallback_used": True,
+                    "fallback_reason": decision.block_reason,
+                    "prompt_hash": prompt_hash,
+                }
+            )
+            n_fallback_used += 1
         else:
-            aggregates["n_llm_enter"] += 1
-
-        decisions.append(
-            {
-                "i": i,
-                "ts": current_t.isoformat(),
-                "score": score.total_score,
-                "band": score.band.value,
-                "direction": score.direction,
-                "decision_action": decision.action.value,
-                "entry_type": decision.entry_type.value if decision.entry_type else None,
-                "block_reason": decision.block_reason,
-                "estimated_cost_usd": round(est_cost, 6),
-            }
-        )
+            bars_out.append(
+                {
+                    "i": i,
+                    "ts": current_t.isoformat(),
+                    "score": score.total_score,
+                    "llm_decision": decision.action.value,
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "prompt_hash": prompt_hash,
+                }
+            )
 
     elapsed = time.perf_counter() - started
     report = {
@@ -289,11 +352,16 @@ async def main(argv: list[str] | None = None) -> int:
         "start_bar": start_bar,
         "elapsed_seconds": round(elapsed, 3),
         "report_path": str(args.report),
-        "aggregates": aggregates,
+        "prompt_hash": prompt_hash,
         "estimated_cost_usd": round(accumulated_cost, 6),
         "max_budget_usd": args.max_budget_usd,
         "budget_exhausted": budget_exhausted,
-        "decisions": decisions,
+        "n_evaluated": n_evaluated,
+        "n_above_threshold": n_above_threshold,
+        "n_llm_calls": n_llm_calls,
+        "n_llm_skipped_budget": n_llm_skipped_budget,
+        "n_fallback_used": n_fallback_used,
+        "bars": bars_out,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, default=str))
@@ -301,7 +369,7 @@ async def main(argv: list[str] | None = None) -> int:
         "ai_smoke_complete",
         elapsed=elapsed,
         bars=n_target,
-        llm_calls=aggregates["n_llm_calls"],
+        llm_calls=n_llm_calls,
         estimated_cost_usd=accumulated_cost,
     )
     print(
@@ -309,7 +377,8 @@ async def main(argv: list[str] | None = None) -> int:
             {
                 "n_bars_consumed": n_target,
                 "elapsed_seconds": round(elapsed, 3),
-                "aggregates": aggregates,
+                "n_llm_calls": n_llm_calls,
+                "n_fallback_used": n_fallback_used,
                 "estimated_cost_usd": round(accumulated_cost, 6),
                 "budget_exhausted": budget_exhausted,
                 "report_path": str(args.report),

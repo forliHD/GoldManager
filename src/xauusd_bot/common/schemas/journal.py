@@ -387,6 +387,51 @@ class LLMFallbackDiscrepancy(BaseModel):
         return _ensure_utc(v)
 
 
+# ----------------------------------------------------------------- LLMFallbackDiscrepancyV2
+
+
+class LLMFallbackDiscrepancyV2(BaseModel):
+    """Block-6-spec-exact discrepancy record.
+
+    A simpler, narrower schema than :class:`LLMFallbackDiscrepancy`
+    (which is the Block-5a schema written by the BacktestEngine and
+    InMemoryJournalStore). This variant is what
+    :class:`xauusd_bot.decision.ai_orchestrator.AIDecisionOrchestrator`
+    writes — it has the exact field list the Block-6 task spec asks
+    for (``timestamp``, ``decision_id``, ``score``,
+    ``llm_raw_response``, ``fallback_reason``, ``rule_decision``,
+    ``llm_decision``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    timestamp: datetime = Field(description="Wall-clock time the discrepancy was logged (UTC).")
+    decision_id: UUID = Field(description="Identifier for the decision attempt this record is tied to.")
+    score: float = Field(ge=0, le=100, description="Total score at decision time (0..100).")
+    llm_raw_response: str | None = Field(
+        default=None,
+        description="LLM's raw JSON response (None if the LLM was bypassed or did not respond).",
+    )
+    fallback_reason: Literal[
+        "timeout",
+        "validation_error",
+        "zone_violation",
+        "hard_rule_violation",
+        "score_below_threshold",
+        "openrouter_disabled",
+    ] = Field(description="Stable tag of why the fallback was used.")
+    rule_decision: str = Field(description="Action the RuleBasedFallback emitted (enter_long/enter_short/no_trade).")
+    llm_decision: str | None = Field(
+        default=None,
+        description="Action the LLM emitted (None if the LLM was bypassed or did not respond).",
+    )
+
+    @field_validator("timestamp")
+    @classmethod
+    def _validate_utc(cls, v: datetime) -> datetime:
+        return _ensure_utc(v)
+
+
 # ----------------------------------------------------------------- OrderRecord
 
 
@@ -436,6 +481,7 @@ __all__ = [
     "ExitReasonTag",
     "FeatureSnapshotRecord",
     "LLMFallbackDiscrepancy",
+    "LLMFallbackDiscrepancyV2",
     "OrderRecord",
     "OrderStatusTag",
     "SessionLiteral",

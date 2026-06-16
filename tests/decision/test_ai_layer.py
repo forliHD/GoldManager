@@ -44,6 +44,7 @@ from xauusd_bot.decision.ai_layer import (
     AIDecisionLayer,
     LLMHardRuleViolation,
     LLMZoneViolation,
+    default_zones_provider,
 )
 from xauusd_bot.decision.openrouter_client import LLMValidationError
 
@@ -110,7 +111,7 @@ class TestPayloadConstruction:
     @pytest.mark.asyncio
     async def test_builds_user_payload_from_bundle(self):
         client = _mock_client()
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         bundle = make_bundle()
         score = _score()
         await layer.decide(feature_snapshot=bundle, score=score, account=None)
@@ -137,7 +138,7 @@ class TestPayloadConstruction:
     @pytest.mark.asyncio
     async def test_strips_account_pii(self):
         client = _mock_client()
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         account = AccountInfo(
             login=1234567,
             broker="IC_Markets",
@@ -175,7 +176,7 @@ class TestPayloadConstruction:
         # the client to do it. We pass a system_prompt override
         # explicitly here so the test is independent of the file.
         client = _mock_client()
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         await layer.decide(feature_snapshot=make_bundle(), score=_score())
         kwargs = client.complete.await_args.kwargs
         # system_prompt=None → "use the prompt loaded at init".
@@ -188,7 +189,7 @@ class TestZoneValidation:
         # Bundle has zones at 2373-2375 and 2374-2375; LLM proposes 3000.
         bad = _valid_llm_decision(entry_zone={"price_min": 3000.0, "price_max": 3005.0})
         client = _mock_client(return_value=bad)
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         with pytest.raises(LLMZoneViolation):
             await layer.decide(feature_snapshot=make_bundle(), score=_score())
 
@@ -199,7 +200,7 @@ class TestZoneValidation:
         # allowed (the executor clamps the fill).
         bad = _valid_llm_decision(entry_zone={"price_min": 1000.0, "price_max": 1010.0})
         client = _mock_client(return_value=bad)
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         with pytest.raises(LLMZoneViolation):
             await layer.decide(feature_snapshot=make_bundle(), score=_score())
 
@@ -208,7 +209,7 @@ class TestZoneValidation:
         # Min 2373.0 is inside the 2373-2375 H1 zone.
         good = _valid_llm_decision(entry_zone={"price_min": 2373.0, "price_max": 2375.0})
         client = _mock_client(return_value=good)
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         d = await layer.decide(feature_snapshot=make_bundle(), score=_score())
         assert d.decision == "scout"
 
@@ -220,7 +221,7 @@ class TestZoneValidation:
             entry_zone={"price_min": None, "price_max": None},
         )
         client = _mock_client(return_value=good)
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         d = await layer.decide(feature_snapshot=make_bundle(), score=_score())
         assert d.decision == "watch"
 
@@ -241,7 +242,7 @@ class TestNewsBlackoutHardRule:
         # LLM says "scout" — should be rejected.
         bad = _valid_llm_decision(decision="scout")
         client = _mock_client(return_value=bad)
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         with pytest.raises(LLMHardRuleViolation):
             await layer.decide(feature_snapshot=bundle, score=_score())
 
@@ -258,7 +259,7 @@ class TestNewsBlackoutHardRule:
         )
         good = _valid_llm_decision(decision="no_trade", entry_type=None, entry_side=None)
         client = _mock_client(return_value=good)
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         d = await layer.decide(feature_snapshot=bundle, score=_score())
         assert d.decision == "no_trade"
 
@@ -267,13 +268,13 @@ class TestErrorPropagation:
     @pytest.mark.asyncio
     async def test_propagates_llm_validation_error(self):
         client = _mock_client(side_effect=LLMValidationError("bad json"))
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         with pytest.raises(LLMValidationError):
             await layer.decide(feature_snapshot=make_bundle(), score=_score())
 
     @pytest.mark.asyncio
     async def test_propagates_generic_llm_call_error(self):
         client = _mock_client(side_effect=RuntimeError("network blip"))
-        layer = AIDecisionLayer(openrouter_client=client, settings=_settings())
+        layer = AIDecisionLayer(openrouter_client=client, snapshot_zones_provider=default_zones_provider, settings=_settings())
         with pytest.raises(RuntimeError):
             await layer.decide(feature_snapshot=make_bundle(), score=_score())

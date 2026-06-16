@@ -356,16 +356,17 @@ class TestRetryAndFallback:
         assert decision.action == DecisionAction.ENTER_LONG
 
     @pytest.mark.asyncio
-    async def test_timeout_does_not_retry_falls_back(self):
-        # Timeout is a transport error → do NOT retry. Falls back
-        # immediately.
+    async def test_timeout_triggers_retry_then_falls_back(self):
+        # Per the Block-6 spec: "LLM-Call 1. Versuch Timeout → 1 Retry".
+        # The orchestrator retries once on TimeoutError, then falls
+        # back to RuleBasedFallback.
         layer = AsyncMock(spec=AIDecisionLayer)
         layer.decide.side_effect = LLMTimeoutError("timeout")
         orch = _orchestrator(ai_layer=layer, journal_store=InMemoryJournalStore())
         decision = await orch.decide(
             feature_snapshot=make_bundle(), score=_score(total=70.0), agg=make_aggregated()
         )
-        assert layer.decide.await_count == 1
+        assert layer.decide.await_count == 2  # 1 retry
         assert decision.action == DecisionAction.NO_TRADE
         assert decision.block_reason == REASON_TIMEOUT
         assert orch.last_discrepancy is not None
@@ -431,11 +432,18 @@ class TestJournalDiscrepancy:
         await orch.decide(
             feature_snapshot=make_bundle(), score=_score(total=70.0), agg=make_aggregated()
         )
-        # Verify the discrepancy was written to the journal.
+        # Verify the discrepancy was written to the journal (both V1 and V2).
         recs = await store.list_discrepancies()
         assert len(recs) == 1
         assert recs[0].llm_action is None
         assert recs[0].final_action == DecisionAction.NO_TRADE
+        # V2 record also written.
+        v2_recs = await store.list_discrepancies_v2()
+        assert len(v2_recs) == 1
+        assert v2_recs[0].fallback_reason == "timeout"
+        assert v2_recs[0].llm_decision is None
+        assert v2_recs[0].rule_decision == "no_trade"
+        assert v2_recs[0].score == 70.0
 
     @pytest.mark.asyncio
     async def test_discrepancy_written_to_journal_on_hard_rule_violation(self):
@@ -450,6 +458,10 @@ class TestJournalDiscrepancy:
         assert len(recs) == 1
         assert recs[0].llm_action is None
         assert recs[0].final_action == DecisionAction.NO_TRADE
+        # V2 record has hard_rule_violation.
+        v2_recs = await store.list_discrepancies_v2()
+        assert len(v2_recs) == 1
+        assert v2_recs[0].fallback_reason == "hard_rule_violation"
 
     @pytest.mark.asyncio
     async def test_no_journal_no_crash(self):
@@ -462,6 +474,23 @@ class TestJournalDiscrepancy:
         )
         assert decision.action == DecisionAction.NO_TRADE
         assert orch.last_discrepancy is not None  # in-memory cache still populated
+        assert orch.last_discrepancy_v2 is not None  # V2 cache also populated
+
+    @pytest.mark.asyncio
+    async def test_v2_record_written_on_score_gate(self):
+        # Score-gate short-circuits to fallback without LLM call —
+        # V2 record should still be written with score_below_threshold.
+        store = InMemoryJournalStore()
+        orch = _orchestrator(ai_layer=AsyncMock(spec=AIDecisionLayer), journal_store=store)
+        await orch.decide(
+            feature_snapshot=make_bundle(),
+            score=_score(total=50.0, band=ScoreBand.OBSERVE_55_64),
+            agg=make_aggregated(),
+        )
+        v2_recs = await store.list_discrepancies_v2()
+        assert len(v2_recs) == 1
+        assert v2_recs[0].fallback_reason == "score_below_threshold"
+        assert v2_recs[0].score == 50.0
 
 
 # ---------------------------------------------------------------- score-band LLM respect

@@ -81,6 +81,7 @@ from xauusd_bot.common.schemas.features import FeatureSnapshotBundle
 from xauusd_bot.common.schemas.journal import (
     DiscrepancyResolutionTag,
     LLMFallbackDiscrepancy,
+    LLMFallbackDiscrepancyV2,
 )
 from xauusd_bot.connectors.schemas import AccountInfo
 from xauusd_bot.decision.ai_layer import (
@@ -146,6 +147,8 @@ class AIDecisionOrchestrator:
         self._journal_store = journal_store
         # In-memory cache of the most recent discrepancy (test helper).
         self.last_discrepancy: LLMFallbackDiscrepancy | None = None
+        # Block-6 spec-exact variant of the same record.
+        self.last_discrepancy_v2: LLMFallbackDiscrepancyV2 | None = None
 
     # ============================================================ public
 
@@ -171,7 +174,12 @@ class AIDecisionOrchestrator:
         # ---- 1. Score gate: skip the LLM below the threshold.
         if not self._settings.ai_layer_enabled:
             log.debug("orchestrator_ai_layer_disabled", score=score.total_score)
-            return self._rule_decision(score, agg, account, reason=REASON_LLM_DISABLED)
+            decision = self._rule_decision(score, agg, account, reason=REASON_LLM_DISABLED)
+            await self._log_discrepancy(
+                ts=ts, score=score, rule_decision=None, llm_decision=None,
+                reason=REASON_LLM_DISABLED, final_decision=decision, llm_raw=None,
+            )
+            return decision
 
         if score.total_score < self._settings.ai_layer_score_threshold:
             log.debug(
@@ -179,14 +187,24 @@ class AIDecisionOrchestrator:
                 score=score.total_score,
                 threshold=self._settings.ai_layer_score_threshold,
             )
-            return self._rule_decision(
+            decision = self._rule_decision(
                 score, agg, account, reason=REASON_SCORE_BELOW_THRESHOLD
             )
+            await self._log_discrepancy(
+                ts=ts, score=score, rule_decision=None, llm_decision=None,
+                reason=REASON_SCORE_BELOW_THRESHOLD, final_decision=decision, llm_raw=None,
+            )
+            return decision
 
         # ---- 2. API-key gate.
         if self._settings.openrouter_api_key is None:
             log.debug("orchestrator_no_api_key")
-            return self._rule_decision(score, agg, account, reason=REASON_NO_API_KEY)
+            decision = self._rule_decision(score, agg, account, reason=REASON_NO_API_KEY)
+            await self._log_discrepancy(
+                ts=ts, score=score, rule_decision=None, llm_decision=None,
+                reason=REASON_NO_API_KEY, final_decision=decision, llm_raw=None,
+            )
+            return decision
 
         # ---- 3. News-blackout gate: hard rule, LLM has no chance.
         if (
@@ -194,7 +212,12 @@ class AIDecisionOrchestrator:
             and feature_snapshot.news.in_blackout_flag
         ):
             log.debug("orchestrator_news_blackout", score=score.total_score)
-            return self._rule_decision(score, agg, account, reason=REASON_NEWS_BLACKOUT)
+            decision = self._rule_decision(score, agg, account, reason=REASON_NEWS_BLACKOUT)
+            await self._log_discrepancy(
+                ts=ts, score=score, rule_decision=None, llm_decision=None,
+                reason=REASON_NEWS_BLACKOUT, final_decision=decision, llm_raw=None,
+            )
+            return decision
 
         # ---- 4. LLM call (with one retry).
         rule_decision = self._rule_fallback.decide(score=score, agg=agg, account=account) if agg else None
@@ -375,7 +398,7 @@ class AIDecisionOrchestrator:
                     account=account,
                 )
                 return llm_decision, attempt
-            except (LLMValidationError, LLMZoneViolation) as exc:
+            except (LLMValidationError, LLMZoneViolation, LLMTimeoutError) as exc:
                 last_exc = exc
                 log.warning(
                     "orchestrator_llm_retry",
@@ -385,7 +408,7 @@ class AIDecisionOrchestrator:
                 )
                 continue
             except LLMCallError as exc:
-                # Timeout / server / auth — do NOT retry; bubble up.
+                # Server / auth — do NOT retry; bubble up.
                 raise
         # Two failed attempts → bubble the last exception.
         assert last_exc is not None
@@ -416,6 +439,7 @@ class AIDecisionOrchestrator:
         decision_id = uuid4()
         rule_action = rule_decision.action if rule_decision else DecisionAction.NO_TRADE
         llm_action = _llm_decision_to_action(llm_decision) if llm_decision else None
+        # --- Block-5a superset record.
         rec = LLMFallbackDiscrepancy(
             timestamp=ts,
             decision_id=decision_id,
@@ -432,15 +456,60 @@ class AIDecisionOrchestrator:
             final_source=("llm" if llm_action is not None and llm_action == final_decision.action else "rule"),
             resolution=resolution,
         )
+        # --- Block-6 spec-exact record (V2).
+        v2_reason = _map_reason_to_v2(reason)
+        v2_rec = LLMFallbackDiscrepancyV2(
+            timestamp=ts,
+            decision_id=decision_id,
+            score=score.total_score,
+            llm_raw_response=llm_raw,
+            fallback_reason=v2_reason,
+            rule_decision=rule_action.value,
+            llm_decision=llm_action.value if llm_action is not None else None,
+        )
         self.last_discrepancy = rec
+        self.last_discrepancy_v2 = v2_rec
         if self._journal_store is not None:
             try:
                 await self._journal_store.write_discrepancy(rec)
             except Exception as exc:  # noqa: BLE001 — best-effort
-                log.warning("orchestrator_journal_write_failed", error=str(exc))
+                log.warning("orchestrator_journal_write_v1_failed", error=str(exc))
+            try:
+                await self._journal_store.write_discrepancy_v2(v2_rec)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                log.warning("orchestrator_journal_write_v2_failed", error=str(exc))
 
 
 # ---------------------------------------------------------------- helpers
+
+
+# Stable mapping from the orchestrator's REASON_* string to the
+# V2 discrepancy schema's `fallback_reason` literal. Both vocabularies
+# happen to match, but this explicit map keeps the boundary clear.
+_V2_FALLBACK_REASON_MAP: dict[str, str] = {
+    REASON_TIMEOUT: "timeout",
+    REASON_VALIDATION_ERROR: "validation_error",
+    REASON_ZONE_VIOLATION: "zone_violation",
+    REASON_HARD_RULE_VIOLATION: "hard_rule_violation",
+    REASON_SCORE_BELOW_THRESHOLD: "score_below_threshold",
+    REASON_LLM_DISABLED: "openrouter_disabled",
+    REASON_NO_API_KEY: "openrouter_disabled",
+    REASON_NEWS_BLACKOUT: "hard_rule_violation",
+}
+
+
+def _map_reason_to_v2(reason: str | None) -> str:
+    """Map the orchestrator's REASON_* to the V2 ``fallback_reason`` literal.
+
+    Unknown reasons (e.g. ``None`` when no fallback reason was
+    specified, or a new REASON_* that hasn't been mapped) default
+    to ``"validation_error"`` — the catch-all bucket in the V2
+    schema's literal.
+    """
+
+    if reason is None:
+        return "validation_error"
+    return _V2_FALLBACK_REASON_MAP.get(reason, "validation_error")
 
 
 def _llm_decision_to_action(llm: LLMDecision) -> DecisionAction:

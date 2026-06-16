@@ -316,25 +316,27 @@ class AIDecisionLayer:
         A :class:`OpenRouterClient` instance. The layer is purely
         a wrapper around it — no direct HTTP, no business logic.
     snapshot_zones_provider:
-        Optional callable that returns the list of valid zones
-        for a given bundle. Defaults to ``bundle.fvg.zones``. The
-        parameter exists so future code (Block 7 MT5-Viz-Bridge)
-        can extend the zone set without changing this class.
+        A callable that returns the list of valid zones for a
+        given :class:`FeatureSnapshotBundle`. Per the Block-6
+        spec, this is a *required* dependency. The default
+        implementation is :func:`default_zones_provider`, which
+        returns ``bundle.fvg.zones``. Tests can substitute their
+        own provider to inject custom zone sets.
     settings:
         The :class:`Settings` instance. Currently only used to
         read ``ai_layer_zdr`` (already handled by the client);
-        kept for forward-compat (e.g. adding per-model
-        temperature, max_tokens, etc.).
+        kept for forward-compat. Per the Block-6 spec, this is a
+        *required* dependency.
     """
 
     def __init__(
         self,
         openrouter_client: OpenRouterClient,
-        snapshot_zones_provider: Callable[[FeatureSnapshotBundle], list[Any]] | None = None,
-        settings: Settings | None = None,
+        snapshot_zones_provider: Callable[[FeatureSnapshotBundle], list[Any]],
+        settings: Settings,
     ) -> None:
         self._client = openrouter_client
-        self._zones_provider = snapshot_zones_provider or _default_zones_provider
+        self._zones_provider = snapshot_zones_provider
         self._settings = settings
 
     # ============================================================ public
@@ -429,10 +431,20 @@ class AIDecisionLayer:
         return llm_decision
 
 
-def _default_zones_provider(bundle: FeatureSnapshotBundle) -> list[Any]:
+def default_zones_provider(bundle: FeatureSnapshotBundle) -> list[Any]:
+    """The default zone provider — returns ``bundle.fvg.zones`` (or [] if absent).
+
+    Public so tests and the orchestrator can pass it explicitly
+    when they don't have a custom provider.
+    """
+
     if bundle.fvg is None:
         return []
     return list(bundle.fvg.zones)
+
+
+# Backwards-compat alias (private name kept for any in-repo callers).
+_default_zones_provider = default_zones_provider
 
 
 def _decision_is_entry(_band: Any, _decision: str) -> bool:
@@ -448,4 +460,5 @@ __all__ = [
     "AIDecisionLayer",
     "LLMHardRuleViolation",
     "LLMZoneViolation",
+    "default_zones_provider",
 ]

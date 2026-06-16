@@ -219,6 +219,19 @@ class OpenRouterClient:
         Includes ``Authorization``, ``HTTP-Referer``, ``X-Title``, and
         ``Content-Type``. The API key is never logged; we record only
         a short prefix hash.
+
+        ZDR (Zero Data Retention) header
+        --------------------------------
+        When ``settings.ai_layer_zdr`` is True, we also set the
+        ``X-Privacy-Mode: zero-data-retention`` header as the spec
+        asks. NOTE: as of 2026-01 this header is not part of
+        OpenRouter's official public API (ZDR is officially a body
+        field — see :meth:`_build_request_body`). We set BOTH the
+        header (spec-compliance, future-proof) AND the body field
+        (current-correct) for defense-in-depth. If OpenRouter later
+        formalises this header, the body field can be removed; if
+        they reject unknown headers, the header can be removed and
+        the body field keeps working.
         """
 
         api_key_value = (
@@ -226,13 +239,20 @@ class OpenRouterClient:
         )
         key_prefix = hashlib.sha256(api_key_value.encode("utf-8")).hexdigest()[:8]
         log.debug("openrouter_request_prepared", api_key_hash_prefix=key_prefix)
-        return {
+        headers: dict[str, str] = {
             "Authorization": f"Bearer {api_key_value}",
             "Content-Type": "application/json",
             # OpenRouter recommends these for app-attribution + rate-limiting visibility.
             "HTTP-Referer": "https://github.com/lucasreiser/GoldManager",
             "X-Title": "GoldManager XAUUSD Trading Bot",
         }
+        # ZDR header (per spec). Only set when the operator enabled
+        # ZDR routing — leave it absent otherwise so providers that
+        # honour the header don't accidentally route us to a
+        # privacy-preserving tier we didn't opt into.
+        if self._settings.ai_layer_zdr:
+            headers["X-Privacy-Mode"] = "zero-data-retention"
+        return headers
 
     def _build_request_body(
         self,

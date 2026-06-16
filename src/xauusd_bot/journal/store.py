@@ -52,6 +52,7 @@ from xauusd_bot.common.config import Settings
 from xauusd_bot.common.schemas.journal import (
     FeatureSnapshotRecord,
     LLMFallbackDiscrepancy,
+    LLMFallbackDiscrepancyV2,
     OrderRecord,
     TradeRecord,
 )
@@ -102,6 +103,11 @@ class JournalStore(Protocol):
 
     async def write_discrepancy(self, d: LLMFallbackDiscrepancy) -> UUID:
         """Persist an :class:`LLMFallbackDiscrepancy`. Returns the assigned id."""
+
+        ...
+
+    async def write_discrepancy_v2(self, d: LLMFallbackDiscrepancyV2) -> UUID:
+        """Persist an :class:`LLMFallbackDiscrepancyV2` (Block-6 spec-exact)."""
 
         ...
 
@@ -199,6 +205,8 @@ class InMemoryJournalStore:
         self._snapshots: dict[UUID, FeatureSnapshotRecord] = {}
         self._orders: dict[UUID, OrderRecord] = {}
         self._discrepancies: dict[UUID, LLMFallbackDiscrepancy] = {}
+        # Block-6 spec-exact discrepancy records (LLMFallbackDiscrepancyV2).
+        self._discrepancies_v2: dict[UUID, LLMFallbackDiscrepancyV2] = {}
         # Index by FK for fast "orders for a trade" lookups (read-side
         # helper, not part of the Protocol). Tests can use it.
         self._orders_by_trade: dict[UUID, list[UUID]] = defaultdict(list)
@@ -268,6 +276,14 @@ class InMemoryJournalStore:
                 raise JournalStoreError(f"discrepancy {d.id} already exists")
             self._discrepancies[d.id] = d
             return d.id
+
+    async def write_discrepancy_v2(self, d: LLMFallbackDiscrepancyV2) -> UUID:
+        async with self._lock:
+            new_id = d.decision_id
+            if new_id in self._discrepancies_v2:
+                raise JournalStoreError(f"discrepancy_v2 {new_id} already exists")
+            self._discrepancies_v2[new_id] = d
+            return new_id
 
     # ============================================================ reads
 
@@ -339,6 +355,20 @@ class InMemoryJournalStore:
             out.sort(key=lambda d: d.timestamp)
             return out[:limit]
 
+    async def list_discrepancies_v2(
+        self, start: datetime | None = None, end: datetime | None = None, limit: int = 1000
+    ) -> list[LLMFallbackDiscrepancyV2]:
+        async with self._lock:
+            out: list[LLMFallbackDiscrepancyV2] = []
+            for d in self._discrepancies_v2.values():
+                if start is not None and d.timestamp < start:
+                    continue
+                if end is not None and d.timestamp >= end:
+                    continue
+                out.append(d)
+            out.sort(key=lambda d: d.timestamp)
+            return out[:limit]
+
     async def count(self) -> dict[str, int]:
         """Diagnostic — return counts of all stored records."""
 
@@ -348,6 +378,7 @@ class InMemoryJournalStore:
                 "snapshots": len(self._snapshots),
                 "orders": len(self._orders),
                 "discrepancies": len(self._discrepancies),
+                "discrepancies_v2": len(self._discrepancies_v2),
             }
 
     async def clear(self) -> None:
@@ -358,6 +389,7 @@ class InMemoryJournalStore:
             self._snapshots.clear()
             self._orders.clear()
             self._discrepancies.clear()
+            self._discrepancies_v2.clear()
             self._orders_by_trade.clear()
             self._trades_by_symbol.clear()
 
@@ -432,6 +464,11 @@ class TimescaleJournalStore:
 
     async def write_discrepancy(self, d: LLMFallbackDiscrepancy) -> UUID:  # pragma: no cover - stub
         raise NotImplementedError("TimescaleJournalStore.write_discrepancy is a Block-5b deliverable.")
+
+    async def write_discrepancy_v2(self, d: LLMFallbackDiscrepancyV2) -> UUID:  # pragma: no cover - stub
+        raise NotImplementedError(
+            "TimescaleJournalStore.write_discrepancy_v2 is a Block-5b deliverable."
+        )
 
     async def list_trades(  # pragma: no cover - stub
         self,

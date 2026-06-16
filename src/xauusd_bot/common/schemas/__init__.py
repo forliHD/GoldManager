@@ -61,6 +61,10 @@ from xauusd_bot.common.schemas.features import (
     VWAPLevel,
     VWAPLevelOutput,
 )
+from xauusd_bot.common.schemas.journal import (
+    LLMFallbackDiscrepancy,
+    LLMFallbackDiscrepancyV2,
+)
 
 __all__ = [
     "BarEvent",
@@ -77,6 +81,8 @@ __all__ = [
     "FeatureSnapshotBundle",
     "JournalEntry",
     "LLMDecision",
+    "LLMFallbackDiscrepancy",
+    "LLMFallbackDiscrepancyV2",
     "LiquidityEngineOutput",
     "LiquidityPool",
     "LiquidityZone",

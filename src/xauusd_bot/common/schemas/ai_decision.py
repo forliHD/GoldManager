@@ -50,16 +50,23 @@ class EntryZone(BaseModel):
     Both fields are ``None`` is allowed: the LLM is signaling
     "I have a direction but no specific zone" (e.g. momentum
     continuation). The orchestrator treats that as ``decision=watch``.
+
+    NaN / Inf are rejected via ``allow_inf_nan=False`` — a price
+    of ``float('inf')`` would silently bypass the AIDecisionLayer's
+    zone-range check downstream, so we block it at the schema
+    boundary.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     price_min: float | None = Field(
         default=None,
+        allow_inf_nan=False,
         description="Lower bound of the entry zone (USD). None = no lower bound.",
     )
     price_max: float | None = Field(
         default=None,
+        allow_inf_nan=False,
         description="Upper bound of the entry zone (USD). None = no upper bound.",
     )
 

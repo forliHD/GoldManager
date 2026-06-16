@@ -69,6 +69,7 @@ from xauusd_bot.decision import (  # noqa: E402
     ScoringEngine,
     TradeQualificationEngine,
 )
+from xauusd_bot.decision.ai_layer import default_zones_provider  # noqa: E402
 from xauusd_bot.features.fvg import FVGEngine  # noqa: E402
 from xauusd_bot.features.liquidity import LiquidityEngine  # noqa: E402
 from xauusd_bot.features.momentum import CandleMomentumEngine  # noqa: E402
@@ -361,7 +362,11 @@ async def main(argv: list[str] | None = None) -> int:
                 settings=settings,
                 prompt_path=Path(__file__).resolve().parents[3] / "decision_agent.md",
             )
-            ai_layer = AIDecisionLayer(openrouter_client=openrouter, settings=settings)
+            ai_layer = AIDecisionLayer(
+                openrouter_client=openrouter,
+                snapshot_zones_provider=default_zones_provider,
+                settings=settings,
+            )
             from xauusd_bot.journal.store import InMemoryJournalStore  # local to keep imports tidy
             journal_store = InMemoryJournalStore()
             orchestrator = AIDecisionOrchestrator(
