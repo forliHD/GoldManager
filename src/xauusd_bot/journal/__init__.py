@@ -21,6 +21,7 @@ from xauusd_bot.journal.queries import (
     compute_session_stats,
     compute_setup_breakdown,
     compute_sharpe,
+    compute_sortino,
 )
 from xauusd_bot.journal.store import (
     InMemoryJournalStore,
@@ -47,6 +48,7 @@ __all__ = [
     "compute_session_stats",
     "compute_setup_breakdown",
     "compute_sharpe",
+    "compute_sortino",
     "get_journal_store",
     "get_journal_store_with_fallback",
 ]

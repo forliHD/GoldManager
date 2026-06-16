@@ -385,6 +385,61 @@ def compute_score_band_stats(trades: Iterable[TradeRecord]) -> dict[str, dict[st
 
 # ----------------------------------------------------------------- re-exports
 
+# ----------------------------------------------------------------- sortino
+
+
+def compute_sortino(
+    equity_curve: list[tuple[datetime, Decimal]],
+    *,
+    risk_free: float = 0.0,
+    periods_per_year: int = 252 * 8,
+) -> float:
+    """Annualized Sortino ratio of an equity curve.
+
+    Method
+    ------
+    1. Take the per-step returns ``r_i = (equity_i - equity_{i-1})
+       / |equity_{i-1}|``.
+    2. ``mean_return = mean(r)``.
+    3. ``downside_deviation = sqrt(mean(min(r, 0)^2))`` — only
+       negative returns contribute.
+    4. ``sortino = (mean - risk_free) / downside * sqrt(periods_per_year)``.
+
+    Edge cases
+    ----------
+    * Fewer than 2 points → 0.0.
+    * No negative returns → 0.0 (downside is zero, ratio undefined).
+    * Zero variance → 0.0.
+    """
+
+    if len(equity_curve) < 2:
+        return 0.0
+    equities = [float(abs(eq)) for _, eq in equity_curve]
+    returns: list[float] = []
+    for i in range(1, len(equities)):
+        prev = equities[i - 1]
+        if prev <= 0:
+            continue
+        ret = (equities[i] - prev) / prev
+        returns.append(ret)
+    if len(returns) < 2:
+        return 0.0
+    mean = sum(returns) / len(returns)
+    downside = [r for r in returns if r < 0]
+    if not downside:
+        return 0.0
+    downside_var = sum(r * r for r in downside) / len(downside)
+    if downside_var <= 0 or not math.isfinite(downside_var):
+        return 0.0
+    std_down = math.sqrt(downside_var)
+    if std_down == 0:
+        return 0.0
+    return float((mean - risk_free) / std_down * math.sqrt(periods_per_year))
+
+
+# ----------------------------------------------------------------- re-exports
+
+
 __all__ = [
     "compute_equity_curve",
     "compute_max_drawdown",
@@ -393,4 +448,5 @@ __all__ = [
     "compute_session_stats",
     "compute_setup_breakdown",
     "compute_sharpe",
+    "compute_sortino",
 ]

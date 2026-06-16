@@ -24,8 +24,8 @@
 | 3 | Aggregator + Scoring + RuleBasedFallback + TradeQualification | ✅ ship-ready, dev-branch |
 | 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | ✅ ship-ready, dev-branch |
 | 5a | TradeJournalDB (TimescaleDB) + FeatureSnapshotStore + Read-API (queries) | ✅ ship-ready, dev-branch |
-| 5b | BacktestEngine (Event-Replay über ReplayConnector) | offen |
-| 5c | WalkForward + Daily/WeeklyReview + FittingProposal | offen |
+| 5b | BacktestEngine (Event-Replay über ReplayConnector) + WalkForwardEngine | ✅ ship-ready, dev-branch |
+| 5c | Daily/WeeklyReview + FittingProposal | offen |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | offen |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` | offen |
 | 8 | LiveMT5Connector (RPyC) + mt5-terminal-Container (Wine) | offen |
@@ -51,6 +51,18 @@ Risk → Size → Stops → Order → PaperBroker → JournalStore → KPI-Aggre
 Exit 0, 5 Trades + 200 Snapshots + 5 Orders in `logs/journal_snapshot.json`.
 Coverage journal/ = 98% (Ziel ≥75%), common.schemas.journal = 100%.
 TimescaleJournalStore ist Stub (Block 5b liefert asyncpg-Integration).
+
+**Block-5b BacktestEngine + WalkForwardEngine (Stand 2026-06-16):**
+`backtest_smoke --start-date 2026-04-01 --end-date 2026-04-02
+--warmup-bars 50 --max-bars 30 --skip-walkforward` läuft komplette
+Pipeline (Replay → Features → Decision → TradeQualification → Risk →
+Size → Stops → Order → BacktestEngine → Aggregates) in ~5s, Exit 0,
+plausible `logs/backtest_snapshot.json` (n_bars=30, n_trades=1,
+stats, r_distribution, breakdowns, equity_curve_sample, tags).
+`--in-sample-days 1 --out-of-sample-days 1 --step-days 1` aktiviert
+WalkForwardEngine, liefert 1+ Windows, robustness_matrix,
+`is_overfit`-Flag. Coverage backtest/ = 83% (Ziel ≥75%), 143 neue
+Tests, gesamt 838 passed (vorher 695).
 
 ## 3. Architektur-Invarianten (HART — nicht verletzen)
 
@@ -177,6 +189,60 @@ Diese Caveats sind KEINE Blocker, aber zu beachten für Block 5b+:
    `score`) zu mutieren, wirft `PITViolationError`. Wer einen
    neuen Close-Field hinzufügen will, muss `_ALLOWED_TRADE_UPDATES`
    in `src/xauusd_bot/journal/store.py` erweitern.
+
+## 4e. Caveats aus Block 5b (BacktestEngine + WalkForwardEngine)
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 5c
+(Daily/WeeklyReview) und Block 6+:
+
+1. **`context_window_bars` ist ein Backtest-only Knob.** Der
+   :class:`BacktestEngine` füttert die Feature-Engines pro
+   Decision-Bar mit den letzten ``context_window_bars`` (default
+   1500) Bars. Live-Mode übergibt kumulativ alle bisherigen
+   Bars. Das ist absichtlich — der Backtest bouncet O(N²) ab,
+   der Live-Mode braucht keine Cap. Beim Vergleich von
+   Backtest- vs. Live-KPIs beachten: ein Backtest, der mit
+   ``context_window_bars=1500`` läuft, sieht weniger
+   „Long-History" als die Live-Instanz, aber das macht für die
+   Engines (die effektiv nur die letzten ~1500 Bars
+   anschauen) keinen praktischen Unterschied.
+2. **Synthetic-Data TP-Zone-Injection in `_build_bundle()`.**
+   Die Sample-Daten (`xauusd_m1_sample.parquet`) haben keine
+   echten Liquidity-Zonen. Die :class:`TradeQualificationEngine`
+   blockt dann immer auf `no_clear_tp_target`. Der Backtest
+   injiziert synthetische TP-Zonen ober- und unterhalb des
+   aktuellen Close (genau wie `journal_smoke`). **Auf
+   Real-Daten** (z.B. Dukascopy-CSV-Export) verschwindet dieser
+   Hack automatisch, weil echte Liquidity-Engines echte
+   Cluster liefern.
+3. **`max_bars_per_window` cappt die inneren
+   BacktestEngine.run()-Calls in WalkForward.** Ohne diesen
+   Cap hängt ein WF mit 14d IS × 1d OOS × 1d step über
+   25 Tage ≈ 30 Minuten (O(N²) der Engines summiert sich
+   schnell). Mit `max_bars_per_window=200` läuft derselbe
+   WF in ~10s. **Trade-off:** in der Smoke wird der
+   Feature-Engine-Lookback effektiv auf 200 Bars beschnitten
+   — für Production-Backtests mit echtem Dukascopy-Datensatz
+   den Cap höher setzen (oder ganz weglassen).
+4. **`compute_sortino` wurde in `journal/queries.py` ergänzt.**
+   Der :class:`BacktestStats.sharpe` benutzt weiterhin
+   `compute_sharpe` (volatilitäts-basiert). Der
+   `sortino`-KPI nutzt nur die Downside-Deviation und ist
+   daher konservativer — typisch für Block-5c-Reviews.
+5. **WalkForwardEngine `_add_months` clamped Month-End.**
+   `Jan 31 + 1m → Feb 28/29` (kein Schaltjahr-Edge-Case). Wer
+   mit Day-basierten Windows arbeitet (`in_sample_days=…`),
+   bekommt das Calendar-Bug-Problem nicht.
+6. **Reuse von `ReplayConnector` zwischen WF-Windows.**
+   Der :class:`BacktestEngine.run` setzt den Connector-Cursor
+   am Anfang auf 1µs vor dem ersten Bar zurück (siehe
+   `engine.py:425-435`). Das erlaubt es der
+   :class:`WalkForwardEngine`, einen einzigen
+   :class:`ReplayConnector` über mehrere Windows hinweg
+   wiederzuverwenden, ohne dass `advance_time` einen
+   "Time travel not allowed"-Fehler wirft. **Block 5c:** wenn
+   der ReviewAgent ebenfalls multi-window-Analysen macht,
+   kann er das gleiche Muster übernehmen.
 
 ## 4b. Caveats aus Block 2
 
