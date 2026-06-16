@@ -62,6 +62,33 @@ class Settings(BaseSettings):
     # --- AI / Decision layer
     openrouter_api_key: SecretStr | None = Field(default=None, description="OpenRouter BYOK key.")
     openrouter_model: str = Field(default="minimax/minimax-m2", description="Model string on OpenRouter.")
+    # Block 6 — AIDecisionLayer settings. The AI layer is enabled by
+    # default but the orchestrator will short-circuit to RuleBasedFallback
+    # when ``ai_layer_enabled`` is False OR when ``openrouter_api_key`` is
+    # unset OR when ``score.total < ai_layer_score_threshold``.
+    ai_layer_enabled: bool = Field(
+        default=True,
+        description="Master switch for the AI decision layer. When False, the orchestrator always uses RuleBasedFallback.",
+    )
+    ai_layer_score_threshold: int = Field(
+        default=65,
+        ge=0,
+        le=100,
+        description="Only call the LLM when score.total >= this threshold. Default 65 = 'prepare' band and above.",
+    )
+    ai_layer_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Hard timeout per OpenRouter HTTP call (seconds).",
+    )
+    ai_layer_zdr: bool = Field(
+        default=True,
+        description=(
+            "Zero-Data-Retention routing on OpenRouter. Per the official OpenRouter docs, ZDR is a body-level "
+            "flag (provider.zdr=True) and we also set provider.data_collection='deny'. There is no "
+            "X-Privacy-Mode header in the OpenRouter API as of 2026-01."
+        ),
+    )
 
     # --- Messaging / storage
     redis_url: str = Field(..., description="Redis connection URL.")

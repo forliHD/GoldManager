@@ -17,6 +17,13 @@ PIT-correctness: each row's ``current_t`` is the bar's close time.
 The engine stacks filter ``bars <= current_t`` before scoring, so
 no row can ever score on a future bar.
 
+When ``--use-ai-layer`` is set, the CLI also calls the
+:class:`AIDecisionOrchestrator` on a small subset of high-score
+bars (default 5, capped by ``--ai-budget-usd``) and logs the
+LLM-vs-rule comparison in the snapshot under
+``ai_comparison``. When ``OPENROUTER_API_KEY`` is unset, the
+AI path is skipped and ``ai_comparison.skipped`` is set to True.
+
 Run from the repo root::
 
     python -m xauusd_bot.cli.decision_smoke
@@ -26,6 +33,10 @@ Or with custom parameters::
     python -m xauusd_bot.cli.decision_smoke --n-bars 10000 \\
         --sample data/sample/xauusd_m1_sample.parquet \\
         --report logs/decision_snapshot.json
+
+    # Compare rule-based vs AI:
+    OPENROUTER_API_KEY=sk-or-... python -m xauusd_bot.cli.decision_smoke \\
+        --n-bars 500 --start-bar 5000 --use-ai-layer --ai-max-calls 10
 """
 
 from __future__ import annotations
@@ -50,7 +61,10 @@ from xauusd_bot.common.config import Settings  # noqa: E402
 from xauusd_bot.common.logging import setup_logging  # noqa: E402
 from xauusd_bot.common.schemas.features import FeatureSnapshotBundle  # noqa: E402
 from xauusd_bot.decision import (  # noqa: E402
+    AIDecisionLayer,
+    AIDecisionOrchestrator,
     FeatureAggregator,
+    OpenRouterClient,
     RuleBasedFallback,
     ScoringEngine,
     TradeQualificationEngine,
@@ -98,10 +112,32 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sample", type=Path, default=DEFAULT_SAMPLE, help="Source parquet/csv.")
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT, help="Output decision-snapshot JSON.")
     parser.add_argument("--symbol", type=str, default="XAUUSD", help="Symbol to simulate.")
+    parser.add_argument(
+        "--use-ai-layer",
+        action="store_true",
+        help=(
+            "Compare the AIDecisionOrchestrator against RuleBasedFallback. "
+            "When set, the CLI also calls the orchestrator on a small subset of "
+            "high-score bars (up to --ai-max-calls, with a hard --ai-budget-usd). "
+            "When OPENROUTER_API_KEY is unset, the AI path is skipped (rule-only)."
+        ),
+    )
+    parser.add_argument(
+        "--ai-max-calls",
+        type=int,
+        default=5,
+        help="Max number of LLM calls in --use-ai-layer mode (default 5).",
+    )
+    parser.add_argument(
+        "--ai-budget-usd",
+        type=float,
+        default=0.01,
+        help="Max USD spend on LLM calls in --use-ai-layer mode (default 0.01).",
+    )
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+async def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     setup_logging(level="INFO")
 
@@ -165,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
                     "rows": [],
                     "aggregates": _empty_aggregates(),
                     "qualified_count": 0,
+                    "ai_comparison": {"enabled": False, "calls": []},
                 },
                 indent=2,
                 default=str,
@@ -185,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
         "n_total": 0,
         "n_qualified": 0,
     }
+    # For the AI comparison: keep the (i, ts, score, agg, bundle, rule_decision)
+    # for the top-N highest-score bars (qualified, not blocked).
+    high_score_records: list[dict[str, object]] = []
     block_reason_counts: dict[str, int] = {}
 
     # Pre-build the full bar list (one Bar object per M1 row). The
@@ -249,6 +289,26 @@ def main(argv: list[str] | None = None) -> int:
             for r in qualification.block_reasons:
                 block_reason_counts[r] = block_reason_counts.get(r, 0) + 1
 
+        # Track top-N highest-score bars for the AI comparison. We
+        # only keep at most --ai-max-calls entries (heap-ordered by
+        # score descending) to bound the AI cost.
+        if score.total_score >= settings.ai_layer_score_threshold:
+            high_score_records.append(
+                {
+                    "i": i,
+                    "ts": current_t,
+                    "score": score,
+                    "agg": agg,
+                    "bundle": bundle,
+                    "rule_decision": decision,
+                    "score_value": score.total_score,
+                }
+            )
+            # Keep only the top-N. Sort by score desc, trim.
+            high_score_records.sort(key=lambda r: r["score_value"], reverse=True)
+            if len(high_score_records) > args.ai_max_calls:
+                high_score_records = high_score_records[: args.ai_max_calls]
+
         # Keep rows bounded: at most 200 representative rows in the
         # JSON (every 50th bar by default for n=10k) to keep the
         # file under 1 MB. Full per-bar data is the verifier's job
@@ -287,6 +347,91 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     elapsed = time.perf_counter() - started
+
+    # ---- Optional AI comparison (--use-ai-layer).
+    ai_comparison: dict[str, object] = {"enabled": bool(args.use_ai_layer), "calls": []}
+    if args.use_ai_layer and high_score_records:
+        if not settings.openrouter_api_key:
+            ai_comparison["skipped"] = True
+            ai_comparison["reason"] = "OPENROUTER_API_KEY not set"
+            log.info("decision_smoke_ai_skipped_no_api_key")
+        else:
+            ai_comparison["skipped"] = False
+            openrouter = OpenRouterClient(
+                settings=settings,
+                prompt_path=Path(__file__).resolve().parents[3] / "decision_agent.md",
+            )
+            ai_layer = AIDecisionLayer(openrouter_client=openrouter, settings=settings)
+            from xauusd_bot.journal.store import InMemoryJournalStore  # local to keep imports tidy
+            journal_store = InMemoryJournalStore()
+            orchestrator = AIDecisionOrchestrator(
+                ai_layer=ai_layer,
+                rule_fallback=fallback,
+                settings=settings,
+                journal_store=journal_store,
+            )
+            budget_remaining = args.ai_budget_usd
+            n_agreed = n_rule_vetoed = n_llm_vetoed = n_error = 0
+            for rec in high_score_records:
+                # Cost gate: stop calling if budget exhausted.
+                est_cost = 0.002  # rough estimate per call
+                if budget_remaining <= 0:
+                    ai_comparison["calls"].append(
+                        {
+                            "i": rec["i"],
+                            "ts": rec["ts"].isoformat(),
+                            "skipped": "budget_exhausted",
+                        }
+                    )
+                    continue
+                budget_remaining -= est_cost
+                try:
+                    ai_decision = await orchestrator.decide(
+                        feature_snapshot=rec["bundle"],
+                        score=rec["score"],
+                        agg=rec["agg"],
+                        account=connector.get_account(),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    n_error += 1
+                    ai_comparison["calls"].append(
+                        {
+                            "i": rec["i"],
+                            "ts": rec["ts"].isoformat(),
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+                rule_action = rec["rule_decision"].action.value
+                ai_action = ai_decision.action.value
+                if rule_action == ai_action:
+                    n_agreed += 1
+                elif rule_action != "no_trade" and ai_action == "no_trade":
+                    n_llm_vetoed += 1
+                elif rule_action == "no_trade" and ai_action != "no_trade":
+                    n_rule_vetoed += 1
+                ai_comparison["calls"].append(
+                    {
+                        "i": rec["i"],
+                        "ts": rec["ts"].isoformat(),
+                        "score": rec["score"].total_score,
+                        "rule_action": rule_action,
+                        "rule_block_reason": rec["rule_decision"].block_reason,
+                        "ai_action": ai_action,
+                        "ai_block_reason": ai_decision.block_reason,
+                        "agreed": rule_action == ai_action,
+                    }
+                )
+            ai_comparison["summary"] = {
+                "n_calls": len(ai_comparison["calls"]),
+                "n_agreed": n_agreed,
+                "n_rule_vetoed": n_rule_vetoed,
+                "n_llm_vetoed": n_llm_vetoed,
+                "n_error": n_error,
+                "estimated_cost_usd": round(args.ai_budget_usd - budget_remaining, 6),
+                "max_budget_usd": args.ai_budget_usd,
+            }
+
     report = {
         "generated_at": datetime.now(tz=UTC).isoformat(),
         "sample": str(args.sample),
@@ -301,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         "aggregates": aggregates,
         "block_reason_counts": block_reason_counts,
         "qualified_count": aggregates["n_qualified"],
+        "ai_comparison": ai_comparison,
         "rows": rows,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
                 "block_reason_counts": block_reason_counts,
                 "qualified_count": aggregates["n_qualified"],
                 "report_path": str(args.report),
+                "ai_comparison": ai_comparison,
             },
             indent=2,
         )
@@ -344,4 +491,6 @@ def _empty_aggregates() -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import asyncio
+
+    raise SystemExit(asyncio.run(main()))

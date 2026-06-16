@@ -26,10 +26,17 @@
 | 5a | TradeJournalDB (TimescaleDB) + FeatureSnapshotStore + Read-API (queries) | ✅ ship-ready, dev-branch |
 | 5b | BacktestEngine (Event-Replay über ReplayConnector) + WalkForwardEngine | ✅ ship-ready, dev-branch |
 | 5c | Daily/WeeklyReview + FittingProposal | offen |
-| 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | offen |
+| 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready, dev-branch |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` | offen |
 | 8 | LiveMT5Connector (RPyC) + mt5-terminal-Container (Wine) | offen |
-| 9 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live | offen |
+| 9 | Custom Web-Dashboard (eigenes Chart + Indikatoren-UI, webbasiert) | offen |
+| 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live | offen |
+
+**Roadmap-Anpassung 2026-06-16 (Lucas):** Custom-Dashboard wurde von
+"optional nach Block 9" zu **eigenem Block 9** hochgestuft. Demo-Forward
++ Live verschiebt sich auf Block 10. Begründung: Du willst die Indikatoren
+zusätzlich zum MT5-Overlay auch in einem webbasierten Dashboard sehen
+(Backtests, Replay, Live-Monitoring aus einer UI).
 
 Producer-Commits landen auf `dev`. Kein Remote konfiguriert (per Auftrag).
 
@@ -63,6 +70,29 @@ stats, r_distribution, breakdowns, equity_curve_sample, tags).
 WalkForwardEngine, liefert 1+ Windows, robustness_matrix,
 `is_overfit`-Flag. Coverage backtest/ = 83% (Ziel ≥75%), 143 neue
 Tests, gesamt 838 passed (vorher 695).
+
+**Block-6 AIDecisionLayer + AIDecisionOrchestrator (Stand 2026-06-16):**
+`python -m xauusd_bot.cli.ai_smoke` läuft End-to-End mit
+OpenRouter, wenn `OPENROUTER_API_KEY` gesetzt ist (sonst
+skipped, Exit 0). `decision_smoke --use-ai-layer --ai-max-calls 5
+--ai-budget-usd 0.01` ruft die AI-Schicht zusätzlich auf
+High-Score-Bars und loggt `ai_comparison` in
+`logs/decision_snapshot.json`. 72 neue Tests
+(test_ai_schemas 18 + test_openrouter_client 18 +
+test_ai_layer 11 + test_ai_orchestrator 24 + 1 ai-smoke fix),
+gesamt 911 passed (vorher 839). Coverage decision/ = 86%
+(ai_layer 94%, ai_orchestrator 94%, openrouter_client 86%).
+
+I-1 + I-4 re-verifiziert: keine `MetaTrader5`-Imports in
+`decision/` oder `cli/ai_smoke.py`; keine
+`position_size/lot_size/stop_loss/take_profit/sl_price/tp_price/VolumeInLots`
+in den AI-Code-Statements (nur in Docstrings). LLM niemals mit
+Account-PII gefüttert (`_account_redacted()`-Whitelist in
+`ai_layer.py`); LLM-OUTPUT wird gegen die Snapshot-Zonen
+plausibilisiert (LLMZoneViolation) und gegen News-Blackout
+geprüft (LLMHardRuleViolation). RuleBasedFallback bleibt
+sicherheitsautoritativ — LLM-Veto erlaubt, LLM kann keine harten
+Regeln aushebeln.
 
 ## 3. Architektur-Invarianten (HART — nicht verletzen)
 
@@ -244,6 +274,86 @@ Diese Caveats sind KEINE Blocker, aber zu beachten für Block 5c
    der ReviewAgent ebenfalls multi-window-Analysen macht,
    kann er das gleiche Muster übernehmen.
 
+## 4f. Caveats aus Block 6 (AIDecisionLayer + AIDecisionOrchestrator)
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 5c
+(Daily/WeeklyReview) und Block 7+ (Production):
+
+1. **OpenRouter ZDR ist ein Body-Feld, kein HTTP-Header.** Die
+   offizielle OpenRouter-API (siehe
+   `https://openrouter.ai/docs/guides/routing/provider-selection`)
+   steuert Zero-Data-Retention über `provider.zdr: true` im
+   Request-Body, **nicht** über einen `X-Privacy-Mode`-Header. Der
+   Task-Brief erwähnte einen Header — diese Annahme war falsch.
+   :class:`xauusd_bot.decision.openrouter_client.OpenRouterClient`
+   setzt `provider.zdr=true` UND `provider.data_collection="deny"`
+   wenn `settings.ai_layer_zdr=True` (default). Falls OpenRouter
+   später einen echten Header hinzufügt, muss der Client
+   nachgezogen werden — bis dahin ist Body-Routing die einzige
+   offiziell unterstützte Methode.
+
+2. **Score-Threshold-Gate ist im Orchestrator, nicht im Layer.**
+   :class:`AIDecisionOrchestrator` short-circuited bei
+   `score.total < settings.ai_layer_score_threshold` (default 65)
+   auf den RuleBasedFallback, **ohne** den LLM zu rufen. Das
+   spart Kosten + Latenz auf der Mehrheit der Bars. Wer den
+   Layer direkt aufruft (z.B. ein Ad-hoc-Skript), MUSS den
+   Score-Check selbst machen — der Layer nimmt jeden Aufruf
+   entgegen und ruft OpenRouter an.
+
+3. **LLM darf "nein" sagen (Veto erlaubt).** Per I-4 ist der
+   RuleBasedFallback sicherheitsautoritativ (kann LLM vetieren),
+   aber die LLM darf auch ein "no_trade" auf ein "enter" des
+   Fallbacks setzen. Konkrete Aufzeichnung: der
+   :class:`xauusd_bot.common.schemas.journal.LLMFallbackDiscrepancy`
+   wird mit `resolution=LlmVetoed` ins Journal geschrieben. Bei
+   `score.total >= 65` und "no_trade" von beiden → AGREEMENT.
+
+4. **Cost-Budget ist ein Smoke-Guard, kein Production-Limit.**
+   `ai_smoke.py` hat `--max-budget-usd` (default 0.01) als
+   Hard-Cap; `--use-ai-layer` im `decision_smoke` hat
+   `--ai-budget-usd` (default 0.01) und `--ai-max-calls`
+   (default 5). Im Live-Betrieb (Block 8) muss ein Production-
+   Budget eingeführt werden — z.B. via Redis-Counter, der den
+   Tagesverbrauch trackt und ab einem Limit auf RuleOnly
+   umschaltet.
+
+5. **1 Retry nur bei Validation/Zone-Errors, NICHT bei
+   Timeout.** Der Orchestrator's `_call_with_retry` retryt
+   EINMAL bei `LLMValidationError` und `LLMZoneViolation`.
+   `LLMTimeoutError` / `LLMServerError` werden **nicht** retryt
+   (verhindert Latenz-Stürme wenn der Provider down ist). Bei
+   `LLMAuthError` sowieso kein Retry (Bug in der Config).
+
+6. **Hard-Rule-Violation (LLMHardRuleViolation) wird nicht retryt.**
+   Wenn das LLM z.B. einen Entry trotz `news_in_blackout`
+   vorschlägt, ist das ein Domain-Fehler — Retry würde nur
+   denselben Fehler produzieren. Orchestrator → Fallback +
+   Discrepancy.
+
+7. **System-Prompt wird beim Init geladen und gecached.** Der
+   :class:`OpenRouterClient` liest `decision_agent.md` einmal
+   beim `__init__` und cached das Ergebnis. Änderungen am
+   Prompt erfordern einen Prozess-Neustart. Im Production
+   (Block 8) muss das entweder via SIGHUP-Reload oder via
+   periodischem Re-Read (z.B. alle 5 Min) gelöst werden.
+
+8. **Account-PII wird vor dem LLM gestrippt.** Der
+   :class:`AIDecisionLayer` schickt nur `current_spread_points`,
+   `trade_allowed`, `server_time` an das LLM — niemals
+   `balance`, `equity`, `login`, `daily_pnl`, `weekly_pnl`,
+   `leverage`, `broker`, oder `raw`. Dies ist eine harte
+   Privacy-Garantie; jede zukünftige Erweiterung des Payloads
+   muss gegen die `_account_redacted()`-Whitelist in
+   `ai_layer.py` geprüft werden.
+
+9. **I-4-Audit deckt die neuen Module ab.** `tests/decision/test_i4_audit.py`
+   parametrisiert über alle `.py`-Dateien in `decision/`
+   inkl. der drei neuen — die AST-Heuristik fängt jeden
+   Code-Use von `position_size`, `lot_size`, `stop_loss`,
+   `take_profit`, `sl_price`, `tp_price`, `VolumeInLots`. Doc-
+   string-Mentions sind erlaubt.
+
 ## 4b. Caveats aus Block 2
 
 Diese Caveats sind KEINE Blocker, aber zu beachten:
@@ -322,20 +432,18 @@ Ein Block gilt als DONE, wenn:
 7. deliverable.md geschrieben, Verifier-Report referenziert
 8. KEINE neuen Live-Bugs, oder vorhandene dokumentiert in §5 dieses Files
 
-## 8. Bekannte offene Punkte aus `00_FINAL_PLAN.md §11`
+## 8. Bestätigte Defaults aus `00_FINAL_PLAN.md §11`
 
-Für Block 2 + folgende brauche ich vom User Entscheidungen (oder Defaults
-sind akzeptiert):
+Stand 2026-06-16 — alle Defaults vom User abgesegnet:
 
-1. **Wochen-Definition Volume Profile:** ISO (Mo 00:00 UTC) oder
-   Broker-Woche (So 22:00–Fr)? **Default: ISO.**
-2. **Kalender-API für News:** TradingEconomics / FXStreet / Broker-Kalender?
-   **Default: TradingEconomics mit Stub-Fallback für Backtest.**
-3. **Dashboard im Block-2-Wurf:** ja/nein? **Default: ja, minimaler
-   FastAPI + Status-Endpoint.**
-4. **Historische Datenquelle für Replay/Backtest:** Vantage-Tick-Export
-   oder externer XAUUSD-M1-Datensatz? **Default: externer Datensatz
-   (z.B. Dukascopy) + synthetischer Generator-Fallback für CI.**
+1. **Wochen-Definition Volume Profile:** **ISO** (Mo 00:00 UTC).
+2. **Kalender-API für News:** **TradingEconomics** + Stub-Fallback für
+   Backtest/CI.
+3. **Dashboard:** **ja** — als eigener **Block 9** (Custom Web-Dashboard
+   mit eigenem Chart + Indikatoren-UI, webbasiert, zusätzlich zum
+   MT5-`BotOverlay.mq5`).
+4. **Historische Datenquelle:** **Dukascopy-Tick-Export** (externer
+   XAUUSD-M1-Datensatz) + synthetischer Generator-Fallback für CI.
 
 ## 9. Kommunikations-Konventionen fürs Team
 
