@@ -116,7 +116,9 @@
     hide('#login');
     show('#app');
     renderUser();
-    initChart();
+    // Never let a chart-library failure (e.g. CDN serving an incompatible
+    // version) block the WebSocket and the rest of the app.
+    try { initChart(); } catch (e) { console.error('initChart failed:', e); }
     connectWebSocket();
     activateTab('indicators');
     loadIndicators();
