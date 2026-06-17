@@ -62,7 +62,9 @@ def _make_settings(**overrides: Any) -> Settings:
         "environment": "development",
     }
     base.update(overrides)
-    return Settings(**base)
+    # _env_file=None so a developer .env (REDIS_URL, OPENROUTER_API_KEY, …)
+    # can't leak into hermetic dashboard tests.
+    return Settings(_env_file=None, **base)  # type: ignore[call-arg]
 
 
 @pytest.fixture
@@ -285,7 +287,10 @@ def app_and_state(journal_with_trades, fake_redis, proposal_engine):
     from xauusd_bot.dashboard import app as app_module
 
     orig = app_module.make_dashboard_redis
+    orig_streams = app_module.make_streams_redis
     app_module.make_dashboard_redis = lambda s: _async_return(fake_redis)
+    # Trading Redis (runtime toggles) — same fake instance, distinct keyspace.
+    app_module.make_streams_redis = lambda s: _async_return(fake_redis)
     try:
         # We need to ensure the lifespan doesn't try to make a real
         # redis connection. Since fake_redis is already constructed,
@@ -300,6 +305,7 @@ def app_and_state(journal_with_trades, fake_redis, proposal_engine):
         yield app, settings
     finally:
         app_module.make_dashboard_redis = orig
+        app_module.make_streams_redis = orig_streams
 
 
 async def _async_return(value):
@@ -717,3 +723,45 @@ class TestModeToggle:
                 cookies={SESSION_COOKIE: sid},
             )
             assert r.status_code == 403
+
+
+# ----------------------------------------------------------------- /api/ai/toggle
+
+
+class TestAIToggle:
+    def test_state_default_reflects_settings(self, client, login) -> None:
+        r = client.get("/api/ai/state", cookies=login)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # No OPENROUTER_API_KEY in test settings → not available; default on.
+        assert body["available"] is False
+        assert body["default"] is True
+        assert body["enabled"] is True
+
+    def test_viewer_can_read_but_not_toggle(self, client) -> None:
+        lr = client.post(
+            "/api/auth/login",
+            data={"username": "viewer", "password": "viewer-pw"},
+        )
+        sid = lr.cookies.get(SESSION_COOKIE)
+        assert client.get("/api/ai/state", cookies={SESSION_COOKIE: sid}).status_code == 200
+        r = client.post(
+            "/api/ai/toggle",
+            json={"enabled": False},
+            cookies={SESSION_COOKIE: sid},
+        )
+        assert r.status_code == 403
+
+    def test_operator_can_toggle_and_state_persists(self, client, login) -> None:
+        # Turn off.
+        r = client.post("/api/ai/toggle", json={"enabled": False}, cookies=login)
+        assert r.status_code == 200, r.text
+        assert r.json()["enabled"] is False
+        # State now reflects the runtime override, not the default.
+        s = client.get("/api/ai/state", cookies=login).json()
+        assert s["enabled"] is False
+        assert s["default"] is True
+        # Turn back on.
+        r2 = client.post("/api/ai/toggle", json={"enabled": True}, cookies=login)
+        assert r2.json()["enabled"] is True
+        assert client.get("/api/ai/state", cookies=login).json()["enabled"] is True

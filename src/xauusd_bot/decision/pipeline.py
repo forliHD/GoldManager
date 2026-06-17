@@ -52,17 +52,24 @@ class DecisionPipeline:
         self._orchestrator = self._maybe_build_orchestrator(journal_store, prompt_path)
 
     @property
-    def ai_enabled(self) -> bool:
-        """True when the AI orchestrator was wired in (vs rule-only)."""
+    def ai_available(self) -> bool:
+        """True when the AI orchestrator was successfully wired in.
+
+        Independent of whether it is *currently* used — usage is gated
+        per-decision by ``use_ai`` so an operator can flip the AI layer
+        on/off at runtime (dashboard toggle) without a restart.
+        """
 
         return self._orchestrator is not None
 
     def _maybe_build_orchestrator(
         self, journal_store: object | None, prompt_path: Path
     ) -> AIDecisionOrchestrator | None:
-        if not self.settings.ai_layer_enabled:
-            log.info("decision_pipeline_ai_disabled")
-            return None
+        # Build whenever the LLM *could* run (key + prompt present),
+        # regardless of the static ``ai_layer_enabled`` default — that
+        # flag only sets the initial runtime state, and the dashboard can
+        # toggle usage on later. Building eagerly means a toggle-on takes
+        # effect immediately without rebuilding the orchestrator.
         if self.settings.openrouter_api_key is None:
             log.info("decision_pipeline_ai_no_api_key")
             return None
@@ -93,17 +100,25 @@ class DecisionPipeline:
         bundle: FeatureSnapshotBundle,
         *,
         account: object | None = None,
+        use_ai: bool | None = None,
     ) -> tuple[Decision, Score, TradeQualification]:
         """Run the full decision stack for one feature bundle.
 
-        Returns ``(decision, score, qualification)``. The orchestrator
-        path is async; the rule-only path is sync but wrapped so the
-        caller always awaits a single coroutine.
+        ``use_ai`` selects the path at call time:
+
+        * ``None`` → use the static default (``settings.ai_layer_enabled``).
+        * ``True`` → use the AI orchestrator if it was wired in, else rule.
+        * ``False`` → force :class:`RuleBasedFallback`.
+
+        This lets the decision-engine honour a runtime dashboard toggle
+        without rebuilding the pipeline. Returns
+        ``(decision, score, qualification)``.
         """
 
+        effective_ai = self.settings.ai_layer_enabled if use_ai is None else use_ai
         agg = self.aggregator.aggregate(bundle)
         score = self.scoring.score(agg)
-        if self._orchestrator is not None:
+        if effective_ai and self._orchestrator is not None:
             decision = await self._orchestrator.decide(
                 feature_snapshot=bundle, score=score, account=account, agg=agg
             )

@@ -47,6 +47,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from xauusd_bot.common.config import ConnectorMode, Settings
+from xauusd_bot.common.runtime_config import get_ai_enabled, set_ai_enabled
 from xauusd_bot.common.schemas.review import (
     FittingProposal,
     FittingProposalFilter,
@@ -827,6 +828,77 @@ async def mode_toggle(
         operator=session.username,
         timestamp=datetime.now(tz=UTC),
         redis_key=_CONNECTOR_MODE_KEY,
+    )
+
+
+# ---------------------------------------------------------------- AI layer toggle
+
+
+class AIToggleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(description="Turn the AI decision layer on (True) or off (False).")
+
+
+class AIStateResult(BaseModel):
+    enabled: bool = Field(description="Current effective runtime state.")
+    available: bool = Field(description="Whether the AI layer can run at all (OPENROUTER_API_KEY set).")
+    model: str = Field(description="Configured OpenRouter model string.")
+    default: bool = Field(description="The static settings default the services start from.")
+
+
+def _streams_redis(request: Request):
+    client = getattr(request.app.state, "streams_redis", None)
+    if client is None:
+        raise HTTPException(status_code=503, detail="trading redis not initialized")
+    return client
+
+
+@router.get("/ai/state")
+async def ai_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> AIStateResult:
+    """Report the live AI-layer toggle state (any authenticated user)."""
+
+    settings: Settings = request.app.state.settings
+    enabled = await get_ai_enabled(_streams_redis(request), default=settings.ai_layer_enabled)
+    return AIStateResult(
+        enabled=enabled,
+        available=settings.openrouter_api_key is not None,
+        model=settings.openrouter_model,
+        default=settings.ai_layer_enabled,
+    )
+
+
+@router.post("/ai/toggle")
+async def ai_toggle(
+    request: Request,
+    body: AIToggleRequest,
+    session: UserSession = Depends(require_role("operator")),
+) -> AIStateResult:
+    """Flip the AI decision layer on/off at runtime (operator or admin).
+
+    Writes ``runtime:ai_layer_enabled`` on the trading Redis; the
+    decision-engine picks it up within a couple of seconds — no restart.
+    Turning it *on* only has effect if ``OPENROUTER_API_KEY`` is set on
+    the services (otherwise they stay on the rule fallback).
+    """
+
+    settings: Settings = request.app.state.settings
+    redis_client = _streams_redis(request)
+    await set_ai_enabled(redis_client, body.enabled)
+    log.warning(
+        "ai_layer_toggled",
+        enabled=body.enabled,
+        operator=session.username,
+        role=session.role,
+    )
+    return AIStateResult(
+        enabled=body.enabled,
+        available=settings.openrouter_api_key is not None,
+        model=settings.openrouter_model,
+        default=settings.ai_layer_enabled,
     )
 
 

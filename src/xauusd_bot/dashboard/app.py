@@ -63,6 +63,23 @@ _ = logging
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+async def make_streams_redis(settings):
+    """Build the trading-Redis (DB 0) client used for runtime toggles.
+
+    Separate from ``make_dashboard_redis`` (session Redis, DB 1). Kept a
+    module-level function so tests can patch it with a fake, mirroring
+    the ``make_dashboard_redis`` seam.
+    """
+
+    import redis.asyncio as aioredis
+
+    return aioredis.from_url(
+        settings.dashboard_redis_streams_url or settings.redis_url,
+        encoding="utf-8",
+        decode_responses=True,
+    )
+
+
 # ----------------------------------------------------------------- middleware
 
 
@@ -132,6 +149,10 @@ def create_app(
         app.state.dashboard_redis = await make_dashboard_redis(settings)
         app.state.dashboard_auth = DashboardAuth(settings, app.state.dashboard_redis)
 
+        # Trading Redis (DB 0) — where runtime toggles the services read
+        # live (e.g. the AI-layer flag). Distinct from the session Redis.
+        app.state.streams_redis = await make_streams_redis(settings)
+
         # WebSocket broker.
         app.state.ws_broker = WebSocketBroker()
 
@@ -158,12 +179,13 @@ def create_app(
             sub = getattr(app.state, "redis_subscriber", None)
             if sub is not None:
                 await sub.stop()
-            redis_client = getattr(app.state, "dashboard_redis", None)
-            if redis_client is not None:
-                try:
-                    await redis_client.aclose()
-                except Exception:  # noqa: BLE001
-                    pass
+            for attr in ("dashboard_redis", "streams_redis"):
+                redis_client = getattr(app.state, attr, None)
+                if redis_client is not None:
+                    try:
+                        await redis_client.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
             log.info("dashboard_app_stopped")
 
     app = FastAPI(

@@ -133,6 +133,13 @@
     // Mode toggle visible only for admin
     if (state.user.role === 'admin') show('#mode-toggle-wrap');
     else hide('#mode-toggle-wrap');
+    // AI toggle visible for operator + admin
+    if (state.user.role === 'admin' || state.user.role === 'operator') {
+      show('#ai-toggle-wrap');
+      loadAIState();
+    } else {
+      hide('#ai-toggle-wrap');
+    }
   }
 
   $('#logout-btn').addEventListener('click', async () => {
@@ -446,6 +453,31 @@
       const r = await api('/api/health');
       if (r.connector_mode) state.currentMode = r.connector_mode;
       renderModePill();
+    } catch (e) {}
+  }
+
+  // ----- AI layer toggle -----
+  $('#ai-toggle-btn').addEventListener('click', () => doAIToggle(!state.aiEnabled));
+  async function doAIToggle(enabled) {
+    try {
+      const r = await api('/api/ai/toggle', { method: 'POST', body: JSON.stringify({ enabled }), headers: { 'Content-Type': 'application/json' } });
+      state.aiEnabled = r.enabled;
+      state.aiAvailable = r.available;
+      renderAIPill();
+    } catch (e) { alert('AI toggle failed: ' + e.message); }
+  }
+  function renderAIPill() {
+    const pill = $('#ai-pill');
+    if (!pill) return;
+    pill.textContent = state.aiEnabled ? (state.aiAvailable ? 'on' : 'on (no key)') : 'off';
+    pill.className = 'pill ' + (state.aiEnabled ? 'on' : 'off');
+  }
+  async function loadAIState() {
+    try {
+      const r = await api('/api/ai/state');
+      state.aiEnabled = r.enabled;
+      state.aiAvailable = r.available;
+      renderAIPill();
     } catch (e) {}
   }
 

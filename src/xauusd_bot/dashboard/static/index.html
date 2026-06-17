@@ -45,6 +45,8 @@
     .topbar .mode-toggle .pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
     .topbar .mode-toggle .pill.replay { background: var(--warn); color: #0e1116; }
     .topbar .mode-toggle .pill.live { background: var(--ok); color: #0e1116; }
+    .topbar .mode-toggle .pill.on { background: var(--ok); color: #0e1116; }
+    .topbar .mode-toggle .pill.off { background: var(--border); color: var(--text); }
 
     .main { display: grid; grid-template-columns: 1.4fr 1fr; flex: 1; overflow: hidden; }
     .chart-pane { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
@@ -138,6 +140,11 @@
         <span class="muted">Mode:</span>
         <span class="pill replay" id="mode-pill">replay</span>
         <button id="mode-toggle-btn">Toggle</button>
+      </div>
+      <div class="mode-toggle hidden" id="ai-toggle-wrap">
+        <span class="muted">AI:</span>
+        <span class="pill off" id="ai-pill">—</span>
+        <button id="ai-toggle-btn">Toggle</button>
       </div>
       <button id="logout-btn">Logout</button>
     </header>
