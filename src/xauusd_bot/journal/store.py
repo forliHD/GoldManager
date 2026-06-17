@@ -56,6 +56,7 @@ from xauusd_bot.common.schemas.journal import (
     OrderRecord,
     TradeRecord,
 )
+from xauusd_bot.common.schemas.review import FittingProposal, FittingProposalFilter
 
 log = structlog.get_logger(__name__)
 
@@ -143,6 +144,48 @@ class JournalStore(Protocol):
 
         ...
 
+    # ---- Block 5c — FittingProposal CRUD ----
+
+    async def add_fitting_proposal(self, proposal: FittingProposal) -> UUID:
+        """Persist a new :class:`FittingProposal`. Returns the assigned id."""
+
+        ...
+
+    async def get_fitting_proposal(self, proposal_id: UUID) -> FittingProposal | None:
+        """Fetch a single :class:`FittingProposal` by id, or None if missing."""
+
+        ...
+
+    async def update_fitting_proposal(self, proposal: FittingProposal) -> None:
+        """Replace an existing :class:`FittingProposal` in-place.
+
+        Implementations MUST reject status transitions that are not in
+        the documented state machine:
+
+        * ``proposed → backtested``
+        * ``proposed → approved``
+        * ``proposed → rejected``
+        * ``backtested → approved``
+        * ``backtested → rejected``
+
+        ``approved`` / ``rejected`` are terminal. A no-op (status
+        unchanged) is allowed.
+        """
+
+        ...
+
+    async def list_fitting_proposals(
+        self,
+        filter: FittingProposalFilter | None = None,
+    ) -> list[FittingProposal]:
+        """Return :class:`FittingProposal` records matching ``filter``.
+
+        Sorted by ``created_at`` descending (newest first) so the
+        dashboard / CLI see the most recent proposals at the top.
+        """
+
+        ...
+
 
 # ----------------------------------------------------------------- errors
 
@@ -155,8 +198,29 @@ class TradeNotFoundError(JournalStoreError):
     """Raised when an update_trade references a missing id."""
 
 
+class FittingProposalNotFoundError(JournalStoreError):
+    """Raised when an update_fitting_proposal references a missing id."""
+
+
+class InvalidStatusTransitionError(JournalStoreError):
+    """Raised when a fitting-proposal status transition is not in the
+    documented state machine.
+    """
+
+
 class PITViolationError(JournalStoreError):
     """Raised when an update would break PIT (e.g. back-dating close)."""
+
+
+# Documented FittingProposal status transitions. The engine
+# rejects everything else (defense-in-depth: the CLI also enforces
+# the same rules).
+_FITTING_PROPOSAL_VALID_TRANSITIONS: dict[str, frozenset[str]] = {
+    "proposed": frozenset({"proposed", "backtested", "approved", "rejected"}),
+    "backtested": frozenset({"backtested", "approved", "rejected"}),
+    "approved": frozenset({"approved"}),
+    "rejected": frozenset({"rejected"}),
+}
 
 
 # ----------------------------------------------------------------- InMemoryJournalStore
@@ -207,6 +271,8 @@ class InMemoryJournalStore:
         self._discrepancies: dict[UUID, LLMFallbackDiscrepancy] = {}
         # Block-6 spec-exact discrepancy records (LLMFallbackDiscrepancyV2).
         self._discrepancies_v2: dict[UUID, LLMFallbackDiscrepancyV2] = {}
+        # Block-5c fitting proposals.
+        self._fitting_proposals: dict[UUID, FittingProposal] = {}
         # Index by FK for fast "orders for a trade" lookups (read-side
         # helper, not part of the Protocol). Tests can use it.
         self._orders_by_trade: dict[UUID, list[UUID]] = defaultdict(list)
@@ -285,6 +351,35 @@ class InMemoryJournalStore:
             self._discrepancies_v2[new_id] = d
             return new_id
 
+    # ============================================================ FittingProposal CRUD
+
+    async def add_fitting_proposal(self, proposal: FittingProposal) -> UUID:
+        async with self._lock:
+            if proposal.id in self._fitting_proposals:
+                raise JournalStoreError(f"fitting_proposal {proposal.id} already exists")
+            self._fitting_proposals[proposal.id] = proposal
+            return proposal.id
+
+    async def get_fitting_proposal(self, proposal_id: UUID) -> FittingProposal | None:
+        async with self._lock:
+            return self._fitting_proposals.get(proposal_id)
+
+    async def update_fitting_proposal(self, proposal: FittingProposal) -> None:
+        async with self._lock:
+            existing = self._fitting_proposals.get(proposal.id)
+            if existing is None:
+                raise FittingProposalNotFoundError(
+                    f"fitting_proposal {proposal.id} not found"
+                )
+            allowed = _FITTING_PROPOSAL_VALID_TRANSITIONS[existing.status]
+            if proposal.status not in allowed:
+                raise InvalidStatusTransitionError(
+                    f"illegal fitting_proposal status transition: "
+                    f"{existing.status!r} → {proposal.status!r}; "
+                    f"allowed from {existing.status!r}: {sorted(allowed)}"
+                )
+            self._fitting_proposals[proposal.id] = proposal
+
     # ============================================================ reads
 
     async def list_trades(
@@ -333,6 +428,37 @@ class InMemoryJournalStore:
             candidates.sort(key=lambda s: s.bar_time)
             return candidates[:limit]
 
+    async def list_fitting_proposals(
+        self,
+        filter: FittingProposalFilter | None = None,
+    ) -> list[FittingProposal]:
+        async with self._lock:
+            items = list(self._fitting_proposals.values())
+            if filter is not None:
+                if filter.status:
+                    items = [p for p in items if p.status in filter.status]
+                if filter.category:
+                    items = [p for p in items if p.category in filter.category]
+                if filter.overfitting_risk:
+                    items = [
+                        p for p in items if p.overfitting_risk in filter.overfitting_risk
+                    ]
+                if filter.min_period is not None:
+                    items = [
+                        p
+                        for p in items
+                        if p.period_start.date() >= filter.min_period
+                    ]
+                if filter.max_period is not None:
+                    items = [
+                        p
+                        for p in items
+                        if p.period_start.date() <= filter.max_period
+                    ]
+            # Newest first.
+            items.sort(key=lambda p: p.created_at, reverse=True)
+            return items
+
     # ============================================================ helpers (non-Protocol)
 
     async def orders_for_trade(self, trade_id: UUID) -> list[OrderRecord]:
@@ -379,6 +505,7 @@ class InMemoryJournalStore:
                 "orders": len(self._orders),
                 "discrepancies": len(self._discrepancies),
                 "discrepancies_v2": len(self._discrepancies_v2),
+                "fitting_proposals": len(self._fitting_proposals),
             }
 
     async def clear(self) -> None:
@@ -390,6 +517,7 @@ class InMemoryJournalStore:
             self._orders.clear()
             self._discrepancies.clear()
             self._discrepancies_v2.clear()
+            self._fitting_proposals.clear()
             self._orders_by_trade.clear()
             self._trades_by_symbol.clear()
 
@@ -494,6 +622,38 @@ class TimescaleJournalStore:
     ) -> list[FeatureSnapshotRecord]:
         raise NotImplementedError("TimescaleJournalStore.list_snapshots is a Block-5b deliverable.")
 
+    # ---- Block 5c — FittingProposal CRUD stubs ----
+
+    async def add_fitting_proposal(  # pragma: no cover - stub
+        self, proposal: FittingProposal
+    ) -> UUID:
+        raise NotImplementedError(
+            "TimescaleJournalStore.add_fitting_proposal is a Block-5c follow-up deliverable "
+            "(asyncpg integration comes with Block 8 / 10)."
+        )
+
+    async def get_fitting_proposal(  # pragma: no cover - stub
+        self, proposal_id: UUID
+    ) -> FittingProposal | None:
+        raise NotImplementedError(
+            "TimescaleJournalStore.get_fitting_proposal is a Block-5c follow-up deliverable."
+        )
+
+    async def update_fitting_proposal(  # pragma: no cover - stub
+        self, proposal: FittingProposal
+    ) -> None:
+        raise NotImplementedError(
+            "TimescaleJournalStore.update_fitting_proposal is a Block-5c follow-up deliverable."
+        )
+
+    async def list_fitting_proposals(  # pragma: no cover - stub
+        self,
+        filter: FittingProposalFilter | None = None,
+    ) -> list[FittingProposal]:
+        raise NotImplementedError(
+            "TimescaleJournalStore.list_fitting_proposals is a Block-5c follow-up deliverable."
+        )
+
 
 # ----------------------------------------------------------------- factory
 
@@ -570,7 +730,9 @@ async def get_journal_store_with_fallback(settings: Settings) -> JournalStore:
 # ----------------------------------------------------------------- re-exports
 
 __all__ = [
+    "FittingProposalNotFoundError",
     "InMemoryJournalStore",
+    "InvalidStatusTransitionError",
     "JournalStore",
     "JournalStoreError",
     "PITViolationError",

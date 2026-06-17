@@ -35,7 +35,7 @@ on Pydantic data and the store backend (in-memory or asyncpg).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Literal

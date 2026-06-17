@@ -342,6 +342,99 @@ class OpenRouterClient:
 
     # ============================================================ prompt loading
 
+    async def complete_raw(
+        self,
+        *,
+        system_prompt: str | None,
+        user_payload: dict[str, Any],
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Like :meth:`complete`, but returns the **raw** JSON content
+        object without enforcing the :class:`LLMDecision` schema.
+
+        Block-5c's :class:`ReviewerOpenRouterClient` uses this to
+        exchange the reviewer's :class:`ReviewOutput` schema without
+        having to re-implement the HTTP transport, headers, ZDR
+        routing, timeout policy, or auth-key handling — all of which
+        live in :meth:`complete`.
+
+        The output is whatever the LLM emitted as the ``content`` of
+        ``choices[0].message``. The caller is responsible for
+        validating it against its own Pydantic schema.
+
+        Transport / auth / 5xx errors propagate the same way as in
+        :meth:`complete` (subclasses of :class:`LLMCallError`). JSON
+        decode failures become :class:`LLMValidationError` — the
+        reviewer decides whether to retry.
+        """
+
+        api_key = self._settings.openrouter_api_key
+        if api_key is None:
+            raise LLMAuthError(
+                "OPENROUTER_API_KEY is not set. Set it in the environment "
+                "or pass openrouter_api_key in Settings before calling the LLM."
+            )
+
+        body = self._build_request_body(
+            system_prompt=system_prompt or self._system_prompt,
+            user_payload=user_payload,
+        )
+        headers = self._build_headers(api_key=api_key)
+        effective_timeout = float(timeout) if timeout is not None else self._default_timeout
+
+        try:
+            async with httpx.AsyncClient(timeout=effective_timeout) as client:
+                response = await client.post(self._base_url, headers=headers, json=body)
+        except httpx.TimeoutException as exc:
+            log.warning("openrouter_timeout", timeout_s=effective_timeout, error=str(exc))
+            raise LLMTimeoutError(
+                f"OpenRouter request timed out after {effective_timeout:.1f}s"
+            ) from exc
+        except httpx.HTTPError as exc:
+            log.warning("openrouter_http_error", error_type=type(exc).__name__, error=str(exc))
+            raise LLMCallError(
+                f"OpenRouter HTTP error: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        # Status-code dispatch reuses the same logic but returns
+        # the parsed content object instead of LLMDecision.
+        if response.status_code in (401, 403):
+            raise LLMAuthError(
+                f"OpenRouter auth failed ({response.status_code}): "
+                f"{response.text[:200]}"
+            )
+        if response.status_code >= 500:
+            raise LLMServerError(
+                f"OpenRouter server error {response.status_code}: "
+                f"{response.text[:200]}"
+            )
+        if response.status_code >= 400:
+            raise LLMCallError(
+                f"OpenRouter client error {response.status_code}: "
+                f"{response.text[:200]}"
+            )
+
+        try:
+            data = response.json()
+        except json.JSONDecodeError as exc:
+            raise LLMValidationError(
+                f"OpenRouter returned non-JSON body: {response.text[:200]}"
+            ) from exc
+
+        try:
+            content_str = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMValidationError(
+                f"OpenRouter response missing choices[0].message.content: {data}"
+            ) from exc
+
+        try:
+            return json.loads(content_str)
+        except json.JSONDecodeError as exc:
+            raise LLMValidationError(
+                f"OpenRouter message content is not valid JSON: {content_str[:200]}"
+            ) from exc
+
     @staticmethod
     def _load_system_prompt(path: Path) -> str:
         """Read the system prompt from a Markdown file.
