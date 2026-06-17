@@ -122,6 +122,56 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     environment: Literal["development", "test", "production"] = "development"
 
+    # --- Dashboard (Block 9 — Custom Web-Dashboard, FastAPI backend).
+    # Default OFF: operators must explicitly enable. See AGENTS.md §4j.
+    dashboard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the FastAPI dashboard. When False, all endpoints "
+            "except /api/health return 404. Default off — must be explicitly enabled."
+        ),
+    )
+    dashboard_host: str = Field(
+        default="127.0.0.1",
+        description="Bind host for the dashboard uvicorn server. Loopback-only by default.",
+    )
+    dashboard_port: int = Field(
+        default=8080, ge=1, le=65535, description="Bind port for the dashboard."
+    )
+    dashboard_users: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Map of dashboard username -> {password_hash (bcrypt), role}. "
+            "Roles: viewer | operator | admin. Default empty (no users). "
+            "See AGENTS.md §4j.4 for role semantics."
+        ),
+    )
+    dashboard_session_ttl_seconds: int = Field(
+        default=8 * 3600, ge=60, description="Session TTL in seconds (default 8h)."
+    )
+    dashboard_redis_url: str = Field(
+        default="redis://localhost:6379/1",
+        description=(
+            "Redis URL for dashboard sessions. Uses DB 1 by default so dashboard "
+            "session writes do NOT collide with trading Redis Streams on DB 0 "
+            "(see AGENTS.md §4j.3)."
+        ),
+    )
+    dashboard_redis_streams_url: str | None = Field(
+        default=None,
+        description=(
+            "Redis URL for dashboard WebSocket streams (subscribed market_ticks, "
+            "features, decisions, orders, journal). Default: same as settings.redis_url."
+        ),
+    )
+    dashboard_live_mode_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch to ALLOW /api/mode/toggle → live. When False, the toggle "
+            "refuses even admin requests. Default off — see AGENTS.md §4j.5."
+        ),
+    )
+
     @field_validator("risk_max_weekly")
     @classmethod
     def _weekly_geq_daily(cls, v: float, info) -> float:
