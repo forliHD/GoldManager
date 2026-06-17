@@ -60,7 +60,9 @@ def test_missing_redis_url_raises_validation_error(monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.delenv("TIMESCALEDB_URL", raising=False)
     with pytest.raises(ValidationError) as ei:
-        Settings()
+        # _env_file=None neutralizes any repo-root .env so the
+        # missing-required-var assertion holds regardless of local files.
+        Settings(_env_file=None)  # type: ignore[call-arg]
     # The error must mention the missing field.
     errors = ei.value.errors()
     fields = {tuple(e["loc"]) for e in errors}
@@ -75,7 +77,7 @@ def test_missing_timescaledb_url_raises_validation_error(monkeypatch: pytest.Mon
     monkeypatch.setenv("REDIS_URL", "redis://x:6379/0")
     monkeypatch.delenv("TIMESCALEDB_URL", raising=False)
     with pytest.raises(ValidationError) as ei:
-        Settings()
+        Settings(_env_file=None)  # type: ignore[call-arg]
     errors = ei.value.errors()
     assert any("timescaledb_url" in str(tuple(e["loc"])) for e in errors)
 
@@ -86,7 +88,7 @@ def test_both_required_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.delenv("TIMESCALEDB_URL", raising=False)
     with pytest.raises(ValidationError):
-        Settings()
+        Settings(_env_file=None)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------- connector mode validation
@@ -198,7 +200,8 @@ def test_require_openrouter_raises_when_missing(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("REDIS_URL", "redis://r:6379/0")
     monkeypatch.setenv("TIMESCALEDB_URL", "postgresql+asyncpg://u:p@h:5432/d")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    s = Settings()
+    # _env_file=None so a local .env with OPENROUTER_API_KEY can't satisfy it.
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
         s.require_openrouter()
 

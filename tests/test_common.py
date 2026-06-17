@@ -59,7 +59,8 @@ def test_settings_parses_connector_mode_live(monkeypatch: pytest.MonkeyPatch) ->
 def test_settings_openrouter_optional(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://r:6379/0")
     monkeypatch.setenv("TIMESCALEDB_URL", "postgresql+asyncpg://u:p@h:5432/d")
-    s = Settings()
+    # _env_file=None so a local .env with OPENROUTER_API_KEY can't satisfy it.
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.openrouter_api_key is None
     with pytest.raises(RuntimeError):
         s.require_openrouter()
