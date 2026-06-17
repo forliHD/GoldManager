@@ -46,10 +46,12 @@ User-Freigabe (nicht automatisch).
 
 **E2E-Integration (Stand 2026-06-17):** Replay-Connector → Feature-Engine →
 Decision-Layer (Rule + AI) → TradeQualification → Risk → Execution →
-Journal → KPI Pipeline-Smoke grün. Gesamte Test-Suite: **991 passed**
+Journal → KPI Pipeline-Smoke grün. PLUS: Web-Dashboard (Login + Chart +
+5 Tabs + WebSocket) End-to-End grün. Gesamte Test-Suite: **1159 passed**
 (Block 1: 217, Block 2: 70, Block 3: 85, Block 4: 117, Block 5a: 114,
-Block 5b: 143, Block 6: 72, Block 7: 41, Block 8: 132) — Stand nach
-Block 8 (LiveMT5Connector + RPyC-Bridge + Vantage-SymbolSpec).
+Block 5b: 143, Block 6: 72, Block 7: 41, Block 8: 132, Block 5c: 106,
+Block 9: 102) — Stand nach Block 9 (Custom Web-Dashboard, FastAPI +
+WebSocket + Multi-User + Lightweight-Charts Frontend).
 Alle Architektur-Invarianten I-1..I-5 re-verifiziert; **I-1 wurde
 in Block 8 verschärft**: `import MetaTrader5` darf NUR noch in
 `docker/mt5-terminal/mt5_bridge_server.py` stehen, NICHT mehr in
@@ -82,6 +84,21 @@ nun hinfällig ist — der Linux-Connector spricht rein RPyC).
   (`NotImplementedError`); 3 CLIs (daily_review_smoke /
   weekly_review_smoke / fitting_proposal_smoke); AGENTS.md §4i ergänzt
   (10 Caveats). I-1 + I-4 audits clean.
+- 2026-06-17: **Block 9 (Custom Web-Dashboard) ship-ready.** 1159
+  Tests (vorher 1097, +62: 70 backend + 3 i_audit + 29 frontend).
+  `src/xauusd_bot/dashboard/` neu (auth, api, websocket,
+  redis_subscriber, app, static/) — FastAPI + WebSocket + Multi-User
+  (Cookie-Session, bcrypt, 3 Rollen viewer/operator/admin) +
+  Lightweight-Charts-Frontend (Login, Chart mit VWAPs/VolProfile/
+  FVG, 5 Tabs, Mode-Toggle mit Confirmation-Modal);
+  AGENTS.md §4j ergänzt (17 Caveats: Dashboard-Default off,
+  Loopback-only, separate Redis-DB, Mode-Toggle-Logging, WS-
+  Permissions, Backtest-Background-Task, kein JWT, kein
+  MetaTrader5-Direct-Import, Lightweight-Charts-CDN, read-only-
+  by-Default, WS-Backoff, Mode-Confirmation, M5-Default, PII,
+  Single-Page, bcrypt-only). docker-compose.prod.yml: dashboard-
+  Service mit 127.0.0.1:8080, DASHBOARD_ENABLED default false.
+  I-1 + I-4 + PII audits clean.
 
 **Block-4 Lifecycle-Smoke (Stand 2026-06-15):** `execution_smoke --force-trade`
 läuft komplette Lifecycle (risk → size → stops → order → sweep → trail) mit
