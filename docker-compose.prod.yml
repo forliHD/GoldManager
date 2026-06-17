@@ -1,66 +1,137 @@
 # Prod overrides — Ubuntu VM, +mt5-terminal (Wine), live connector.
 # Usage:
 #   docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up
+#
+# Block 8 changes: the mt5-terminal service is now production-shaped:
+#   * RPyC bridge (18812) bound to loopback only
+#   * VNC (5900) bound to loopback only — one-time Vantage login only
+#   * noVNC web (6080) bound to loopback only — same purpose
+#   * Healthcheck on the bridge port (start_period 120s — Wine boot
+#     is slow, this is not optional)
+#   * Persistent volume for the Wine prefix + MT5 settings
+#   * ENV-only credentials (no hardcoded passwords in compose)
 
 services:
   data-collector:
     environment:
       CONNECTOR_MODE: live
       ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
 
   feature-engine:
     environment:
       CONNECTOR_MODE: live
       ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
 
   decision-engine:
     environment:
       CONNECTOR_MODE: live
       ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
 
   execution-engine:
     environment:
       CONNECTOR_MODE: live
       ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
 
   review:
     environment:
       CONNECTOR_MODE: live
       ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
 
-  # Wine + MT5 + Windows-Python-RPyC bridge. The Python client on the
-  # host (LiveMT5Connector) connects to this over the internal network.
+  # ------------------------------------------------------------ mt5-terminal
+  #
+  # Wine + MetaTrader 5 + Windows-Python RPyC bridge.
+  #
+  # SECURITY: every exposed port is bound to 127.0.0.1. VNC is for
+  # the one-time Vantage account login only; in production, prefer
+  # turning it off (and exposing only the RPyC bridge on 18812).
+  # If remote access is needed, put Cloudflare Zero Trust in front.
+  # See AGENTS.md §4h-5.
+  #
+  # PERSISTENCE: the `mt5-data` named volume holds the Wine prefix
+  # and the MT5 account login. Restarting the container keeps the
+  # logged-in session, but trade state (open positions, pending
+  # orders) must be re-queried on first call after restart.
+  # See AGENTS.md §4h-2.
+  #
+  # NETWORK: this service uses the default `xauusd-net` network, so
+  # the other services can reach it as `mt5-terminal:18812`. The
+  # host's loopback is the only way to reach the RPyC / VNC / noVNC
+  # ports from outside Docker — there is no 0.0.0.0 binding.
   mt5-terminal:
     build:
       context: .
       dockerfile: docker/mt5-terminal/Dockerfile
-    image: xauusd-bot/mt5-terminal:0.1.0
+    image: xauusd-bot/mt5-terminal:0.8.0
     container_name: xauusd-mt5-terminal
     environment:
-      MT5_LOGIN: ${MT5_LOGIN}
-      MT5_PASSWORD: ${MT5_PASSWORD}
-      MT5_SERVER: ${MT5_SERVER}
-      VNC_PASSWORD: ${VNC_PASSWORD:-changeme}
-    volumes:
-      - mt5_data:/root/.mt5
-    # VNC is for initial manual login only; never expose publicly.
-    # The RPyC bridge port is exposed only to the internal network.
+      # --- MT5 account (override in .env or via secrets)
+      MT5_LOGIN: ${MT5_LOGIN:?MT5_LOGIN must be set in .env}
+      MT5_PASSWORD: ${MT5_PASSWORD:?MT5_PASSWORD must be set in .env}
+      MT5_SERVER: ${MT5_SERVER:-VantageInternational-Demo}
+      MT5_SYMBOL: ${MT5_SYMBOL:-XAUUSD}
+      # --- RPyC bridge
+      MT5_BRIDGE_HOST: 0.0.0.0
+      MT5_BRIDGE_PORT: "18812"
+      # Optional auth: when set, the LiveMT5Connector must pass the
+      # same key in its RPyC config. Recommended in production.
+      MT5_BRIDGE_AUTH_KEY: ${MT5_BRIDGE_AUTH_KEY:-}
+      MT5_BRIDGE_LOG_LEVEL: ${MT5_BRIDGE_LOG_LEVEL:-INFO}
+      # --- Installer URLs (override if you mirror the binaries)
+      MT5_INSTALLER_URL: ${MT5_INSTALLER_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}
+      PYTHON_WIN_INSTALLER_URL: ${PYTHON_WIN_INSTALLER_URL:-https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe}
+      # --- VNC
+      DISPLAY: ":99"
+    # All ports bound to 127.0.0.1 (host loopback). Compose does NOT
+    # expose them publicly. The 6080 (noVNC) and 5900 (VNC) ports
+    # are for the one-time Vantage login; the 18812 (RPyC) port is
+    # the production data path used by the Python services.
     ports:
-      - "127.0.0.1:5900:5900"   # VNC, bound to loopback
+      - "127.0.0.1:18812:18812"   # RPyC bridge
+      - "127.0.0.1:5900:5900"     # VNC (one-time login)
+      - "127.0.0.1:6080:6080"     # noVNC web
+    volumes:
+      # Wine prefix + MT5 account state persists across restarts.
+      - mt5-data:/root/.wine
+      # Bridge logs (so docker logs doesn't need a journal)
+      - mt5-bridge-logs:/var/log/supervisor
     networks:
       - default
     restart: unless-stopped
+    # Healthcheck: TCP-connect to the bridge port. start_period 120s
+    # covers the Wine + MT5 boot (first time especially). The
+    # production-side ``is_connected()`` does a deeper RPyC ping,
+    # but the docker healthcheck just proves the port is listening.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; s=socket.socket(); s.connect(('127.0.0.1', 18812)); s.close()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
-    # healthcheck defined in Dockerfile once the bridge is wired.
 
 volumes:
-  mt5_data:
+  mt5-data:
+  mt5-bridge-logs:
