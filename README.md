@@ -2,7 +2,7 @@
 
 Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMax BYOK) → Risk/Execution → Journal/Review → MT5-Overlay-Visualisierung.
 
-**Aktueller Stand (2026-06-17):** Blöcke 1–8 ship-ready auf `dev`. 991 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
+**Aktueller Stand (2026-06-17):** Blöcke 1–8 + 5c ship-ready auf `dev`. 1094 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
 
 ---
 
@@ -16,7 +16,7 @@ Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMa
 | 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | ✅ ship-ready |
 | 5a | TradeJournalDB (TimescaleDB) + FeatureSnapshotStore + Read-API | ✅ ship-ready |
 | 5b | BacktestEngine + WalkForwardEngine (Event-Replay, Slippage/Spread-Modelle, IS/OOS-Windows) | ✅ ship-ready |
-| 5c | Daily/WeeklyReview + FittingProposal | offen |
+| 5c | Daily/WeeklyReview + FittingProposal + ReviewerOpenRouterClient + BacktestSpec-Parser | ✅ ship-ready |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready |
 | 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready |
@@ -75,7 +75,7 @@ GoldManager/
 │   ├── execution/                    # RiskManager, PositionSizer, OrderManager, SL/TP, EmergencyStop
 │   ├── journal/                      # InMemory + TimescaleDB Stores, Queries, Schemas
 │   ├── backtest/                     # BacktestEngine, WalkForwardEngine, Models (Block 5b)
-│   ├── review/                       # ReviewAgent (Block 5c, placeholder)
+│   ├── review/                       # ReviewEngine, FittingProposalEngine (Block 5c)
 │   ├── viz/                          # Overlay-Writer (Block 2) + Bot-Overlay-Simulator (Block 7)
 │   ├── cli/                          # replay_smoke, feature_smoke, decision_smoke, execution_smoke,
 │   │                                 #   journal_smoke, backtest_smoke, ai_smoke
@@ -197,6 +197,52 @@ PYTHONPATH=src REDIS_URL=redis://localhost:6379/0 \
 - Slippage/Spread-Modelle: `FixedSlippage`, `VolatilitySlippage`, `FixedSpread`, `VolatilitySpread`, `NewsAwareSpread` — siehe `src/xauusd_bot/backtest/models.py`. Realistic Execution-Modeling ist Block-5c/Demo-Forward-Backlog.
 - WalkForward flagged `is_overfit=true` wenn OOS-Sharpe > 30% degradiert vs IS-Sharpe. Heuristik, kein Verdict — review `wf_windows` und per-window stats.
 - `--max-bars` cappt inner per-bar cost (default 200 für Smoke, höher für Production-Backtests).
+
+---
+
+## Quickstart (Daily/WeeklyReview + FittingProposal, Block 5c)
+
+Block 5c sammelt Trade-Daten aus dem Journal, ruft den Review-Agent (LLM via OpenRouter) auf und produziert nummerierte, backtest-testbare Vorschläge. FittingProposal-Engine sammelt die Vorschläge mit State-Machine `proposed → backtested → approved/rejected` — **Statuswechsel nur durch Human, niemals automatisch**.
+
+```bash
+# 1. Daily Review (gestern oder spezifischer Tag)
+PYTHONPATH=src OPENROUTER_API_KEY=<sk-or-v1-...> \
+  REDIS_URL=redis://localhost:6379/0 \
+  TIMESCALEDB_URL=postgresql+asyncpg://xauusd:xauusd@localhost:5432/xauusd \
+  ENVIRONMENT=test \
+  .venv/bin/python -m xauusd_bot.cli.daily_review_smoke --day 2026-04-15
+# → exit 0, logs/daily_review.json mit proposals + data_sufficiency
+# → ohne OPENROUTER_API_KEY: proposals=[] (gracefully degraded)
+
+# 2. Weekly Review (mit Cross-Day-Patterns)
+PYTHONPATH=src OPENROUTER_API_KEY=<sk-or-v1-...> \
+  REDIS_URL=redis://localhost:6379/0 TIMESCALEDB_URL=... ENVIRONMENT=test \
+  .venv/bin/python -m xauusd_bot.cli.weekly_review_smoke --week-start 2026-04-13
+
+# 3. FittingProposal-Liste
+.venv/bin/python -m xauusd_bot.cli.fitting_proposal_smoke --list
+.venv/bin/python -m xauusd_bot.cli.fitting_proposal_smoke --list --status proposed
+.venv/bin/python -m xauusd_bot.cli.fitting_proposal_smoke --list --overfitting-risk high
+
+# 4. Approve/Reject (manuell, mit Operator-Name)
+.venv/bin/python -m xauusd_bot.cli.fitting_proposal_smoke --approve <UUID> --operator lucas --note "tested in backtest, +5% Sharpe"
+.venv/bin/python -m xauusd_bot.cli.fitting_proposal_smoke --reject <UUID> --operator lucas --note "already covered by Feature X"
+
+# 5. Auto-Validation gegen BacktestEngine (semi-strukturiert)
+#    Parser erkennt Patterns wie "score_threshold=70, IS=4w, OOS=1w".
+.venv/bin/python -m xauusd_bot.cli.fitting_proposal_smoke --validate <UUID>
+```
+
+**Caveats (volle Liste in `AGENTS.md` §4i):**
+- LLM-Vorschläge sind Hypothesen, KEINE Live-Regel-Änderungen. Status `approved` ist manuell getriggert, Auto-Apply auf `settings.*` ist explizit verboten (Caveat 4i.1 + 4i.8, regress-getestet).
+- OpenRouter-Config wird mit Block 6 geteilt (gleiche `settings.openrouter_model` / `settings.openrouter_api_key`).
+- `min_sample_size` ist konservativ (10 Daily, 30 Weekly). Unter Schwelle: `insufficient_data=True`, kein LLM-Call.
+- BacktestSpec-Parser erkennt nur einfache Patterns (`score_threshold=`, `IS=`, `OOS=`, `session=`). Komplexere Proposals bleiben `proposed` bis Operator manuell validiert.
+- Daily/Weekly-Reviews laufen per Cron / manueller Trigger, nicht pro Bar (Schedule in Block 10).
+- Timescale-Storage für FittingProposal ist Stub (NotImplementedError, asyncpg kommt mit Block 8/10).
+- LLM-Schema-Erweiterung-Konvention in `AGENTS.md §3.1` definiert — OpenRouterClient bleibt dünner Transport-Wrapper, Schema-Wissen lebt in den Layer-Clients.
+
+---
 
 ---
 
@@ -337,7 +383,7 @@ Smoke-CLIs (run real pipeline, JSON in `logs/`):
 16. ⏳ Custom Web-Dashboard
 17. ⏳ Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live
 
-(13 von ~17 Punkten ship-ready, 4 offen — Block 8 = LiveMT5, Block 9 = Web-Dashboard, Block 10 = Demo-Forward+Live, Block 5c = DailyReview ist zwischen 13 und 15 einzusortieren.)
+(14 von ~17 Punkten ship-ready, 3 offen — Block 9 = Custom Web-Dashboard, Block 10 = Demo-Forward+Live auf Ubuntu-VM.)
 
 ---
 
