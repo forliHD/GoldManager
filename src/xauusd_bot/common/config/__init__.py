@@ -96,11 +96,15 @@ class Settings(BaseSettings):
         description="Hard timeout per OpenRouter HTTP call (seconds).",
     )
     ai_layer_zdr: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "Zero-Data-Retention routing on OpenRouter. Per the official OpenRouter docs, ZDR is a body-level "
-            "flag (provider.zdr=True) and we also set provider.data_collection='deny'. There is no "
-            "X-Privacy-Mode header in the OpenRouter API as of 2026-01."
+            "Zero-Data-Retention routing on OpenRouter (body flag provider.zdr=true). "
+            "OFF by default because it is INCOMPATIBLE with the default MiniMax provider "
+            "pin: MiniMax's OpenRouter endpoint (minimax/fp8) is not ZDR-certified, so "
+            "zdr=true + the pin returns 404 'no endpoints'. provider.data_collection='deny' "
+            "is sent regardless (privacy-preserving and MiniMax-compatible). Enable ZDR only "
+            "with a ZDR-listed model and openrouter_allow_fallbacks=true (which may route away "
+            "from MiniMax / your BYOK)."
         ),
     )
 

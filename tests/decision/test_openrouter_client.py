@@ -250,9 +250,10 @@ class TestClientHeaders:
         await client.complete(system_prompt="sys", user_payload={"x": 1})
         body = _FakeAsyncClient.calls[0]["json"]
         headers = _FakeAsyncClient.calls[0]["headers"]
-        # With ZDR off AND no provider pin, the provider block is absent.
-        assert "provider" not in body
-        # Header absent.
+        # ZDR off → no zdr flag, no privacy header. data_collection=deny is
+        # always sent (privacy-preserving, provider-pin compatible).
+        assert body["provider"].get("zdr") is None
+        assert body["provider"]["data_collection"] == "deny"
         assert "X-Privacy-Mode" not in headers
 
 

@@ -149,11 +149,18 @@ Liegt als `~/GoldManager/.env` auf der VM (nicht in Git). Vorlage: `.env.example
 | `OPENROUTER_ALLOW_FALLBACKS` | `false` | Kein Ausweichen auf andere Provider |
 | `AI_LAYER_ENABLED` | `true` | Default-Zustand (Dashboard-Toggle überschreibt zur Laufzeit) |
 | `AI_LAYER_SCORE_THRESHOLD` | `65` | LLM erst ab Score ≥ Schwelle (Kosten/Latenz) |
+| `AI_LAYER_ZDR` | `false` | Zero-Data-Retention. **Inkompatibel mit dem MiniMax-Pin** (s.u.) |
 
 > **BYOK-Hinweis:** Der Provider-Pin sorgt dafür, dass jeder Call an MiniMax
 > (`minimax/fp8`) geht. Damit OpenRouter dabei *deinen* Key nutzt, muss der
 > MiniMax-Key zusätzlich in OpenRouter → **Settings → Integrations** hinterlegt
 > sein. Ohne Pin verteilt OpenRouter per Load-Balancing auf Novita/Parasail/etc.
+>
+> **ZDR-Konflikt:** `AI_LAYER_ZDR=true` schränkt auf ZDR-zertifizierte Endpoints
+> ein — MiniMax's `minimax/fp8` ist **keiner**, also `zdr=true` + Pin → `404 No
+> endpoints found`. Daher ZDR **aus** lassen, solange MiniMax-BYOK genutzt wird.
+> `provider.data_collection="deny"` wird trotzdem immer gesendet (Datenschutz,
+> MiniMax-kompatibel).
 
 **Service-Runtime**
 | Key | Default | Bedeutung |

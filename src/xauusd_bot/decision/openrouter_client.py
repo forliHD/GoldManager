@@ -299,15 +299,20 @@ class OpenRouterClient:
         #   * Provider pinning: force a specific upstream (e.g. MiniMax's
         #     own endpoint) so a Bring-Your-Own-Key reaches that provider
         #     instead of OpenRouter routing to a cheaper reseller.
-        provider: dict[str, Any] = {}
+        # data_collection=deny is privacy-preserving AND compatible with a
+        # pinned provider (incl. MiniMax) — always send it.
+        provider: dict[str, Any] = {"data_collection": "deny"}
+        # ZDR restricts routing to ZDR-certified endpoints. MiniMax's endpoint
+        # (minimax/fp8) is NOT ZDR-listed, so zdr=true + the MiniMax pin yields
+        # a 404 "no endpoints". Hence ZDR is opt-in (default off) — see
+        # Settings.ai_layer_zdr.
         if self._settings.ai_layer_zdr:
-            provider.update({"zdr": True, "data_collection": "deny"})
+            provider["zdr"] = True
         order = [p.strip() for p in self._settings.openrouter_provider_order.split(",") if p.strip()]
         if order:
             provider["order"] = order
             provider["allow_fallbacks"] = self._settings.openrouter_allow_fallbacks
-        if provider:
-            body["provider"] = provider
+        body["provider"] = provider
         return body
 
     # ============================================================ response parsing
