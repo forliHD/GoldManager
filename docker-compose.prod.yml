@@ -76,7 +76,10 @@ services:
       dockerfile: docker/service/Dockerfile
     image: xauusd-bot/dashboard:0.9.0
     container_name: xauusd-dashboard
-    command: ["python", "-m", "xauusd_bot.dashboard.app"]
+    # entrypoint (not command): override the SERVICE_ROLE stream-dispatcher
+    # in the shared image. With `command:` alone the Dockerfile ENTRYPOINT
+    # (docker_entrypoint) would run replay_smoke instead of the dashboard.
+    entrypoint: ["python", "-m", "xauusd_bot.dashboard.app"]
     environment:
       ENVIRONMENT: production
       DASHBOARD_ENABLED: ${DASHBOARD_ENABLED:-false}

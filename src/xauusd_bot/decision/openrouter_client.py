@@ -292,11 +292,22 @@ class OpenRouterClient:
                 {"role": "user", "content": json.dumps(user_payload, default=str)},
             ],
         }
-        # ZDR routing: per the official OpenRouter docs, ZDR is a
-        # body-level flag, NOT a header. When enabled, restrict the
-        # router to ZDR endpoints AND deny data-collection.
+        # Provider routing block. Combines two concerns into OpenRouter's
+        # single ``provider`` object:
+        #   * ZDR (body-level flag per the official docs): restrict to ZDR
+        #     endpoints and deny data-collection.
+        #   * Provider pinning: force a specific upstream (e.g. MiniMax's
+        #     own endpoint) so a Bring-Your-Own-Key reaches that provider
+        #     instead of OpenRouter routing to a cheaper reseller.
+        provider: dict[str, Any] = {}
         if self._settings.ai_layer_zdr:
-            body["provider"] = {"zdr": True, "data_collection": "deny"}
+            provider.update({"zdr": True, "data_collection": "deny"})
+        order = [p.strip() for p in self._settings.openrouter_provider_order.split(",") if p.strip()]
+        if order:
+            provider["order"] = order
+            provider["allow_fallbacks"] = self._settings.openrouter_allow_fallbacks
+        if provider:
+            body["provider"] = provider
         return body
 
     # ============================================================ response parsing

@@ -63,6 +63,19 @@ class Settings(BaseSettings):
     # --- AI / Decision layer
     openrouter_api_key: SecretStr | None = Field(default=None, description="OpenRouter BYOK key.")
     openrouter_model: str = Field(default="minimax/minimax-m3", description="Model string on OpenRouter.")
+    # Provider routing — pin OpenRouter to a specific upstream provider so a
+    # Bring-Your-Own-Key actually reaches that provider instead of OpenRouter
+    # picking a cheaper reseller. Comma-separated provider slugs (see the
+    # model's /endpoints list); empty string disables pinning. Default pins
+    # MiniMax's own endpoint for the default minimax model + BYOK.
+    openrouter_provider_order: str = Field(
+        default="minimax/fp8",
+        description="Comma-separated OpenRouter provider slugs to route to, in order. Empty = no pin.",
+    )
+    openrouter_allow_fallbacks: bool = Field(
+        default=False,
+        description="If False, OpenRouter must use a provider in openrouter_provider_order (no fallback to others).",
+    )
     # Block 6 — AIDecisionLayer settings. The AI layer is enabled by
     # default but the orchestrator will short-circuit to RuleBasedFallback
     # when ``ai_layer_enabled`` is False OR when ``openrouter_api_key`` is

@@ -244,15 +244,53 @@ class TestClientHeaders:
     async def test_zdr_omitted_when_disabled(self, fake_http, tmp_path):
         fake_http()
         client = OpenRouterClient(
-            settings=_make_settings(ai_layer_zdr=False), prompt_path=_prompt_path(tmp_path)
+            settings=_make_settings(ai_layer_zdr=False, openrouter_provider_order=""),
+            prompt_path=_prompt_path(tmp_path),
         )
         await client.complete(system_prompt="sys", user_payload={"x": 1})
         body = _FakeAsyncClient.calls[0]["json"]
         headers = _FakeAsyncClient.calls[0]["headers"]
-        # Body field absent.
+        # With ZDR off AND no provider pin, the provider block is absent.
         assert "provider" not in body
         # Header absent.
         assert "X-Privacy-Mode" not in headers
+
+
+class TestProviderRouting:
+    @pytest.mark.asyncio
+    async def test_default_pins_minimax_with_no_fallback(self, fake_http, tmp_path):
+        fake_http()
+        client = OpenRouterClient(settings=_make_settings(), prompt_path=_prompt_path(tmp_path))
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        provider = _FakeAsyncClient.calls[0]["json"]["provider"]
+        assert provider["order"] == ["minimax/fp8"]
+        assert provider["allow_fallbacks"] is False
+
+    @pytest.mark.asyncio
+    async def test_provider_order_parses_csv(self, fake_http, tmp_path):
+        fake_http()
+        client = OpenRouterClient(
+            settings=_make_settings(
+                openrouter_provider_order="minimax/fp8, novita",
+                openrouter_allow_fallbacks=True,
+            ),
+            prompt_path=_prompt_path(tmp_path),
+        )
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        provider = _FakeAsyncClient.calls[0]["json"]["provider"]
+        assert provider["order"] == ["minimax/fp8", "novita"]
+        assert provider["allow_fallbacks"] is True
+
+    @pytest.mark.asyncio
+    async def test_empty_order_omits_pin(self, fake_http, tmp_path):
+        fake_http()
+        client = OpenRouterClient(
+            settings=_make_settings(openrouter_provider_order=""),
+            prompt_path=_prompt_path(tmp_path),
+        )
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        provider = _FakeAsyncClient.calls[0]["json"].get("provider", {})
+        assert "order" not in provider
 
 
 class TestClientParsesValid:
