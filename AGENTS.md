@@ -27,7 +27,7 @@
 | 5b | BacktestEngine (Event-Replay über ReplayConnector) + WalkForwardEngine | ✅ ship-ready, dev-branch |
 | 5c | Daily/WeeklyReview + FittingProposal | offen |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready, dev-branch |
-| 7 | MT5-Viz-Bridge + `BotOverlay.mq5` | offen |
+| 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready, dev-branch |
 | 8 | LiveMT5Connector (RPyC) + mt5-terminal-Container (Wine) | offen |
 | 9 | Custom Web-Dashboard (eigenes Chart + Indikatoren-UI, webbasiert) | offen |
 | 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live | offen |
@@ -93,6 +93,22 @@ plausibilisiert (LLMZoneViolation) und gegen News-Blackout
 geprüft (LLMHardRuleViolation). RuleBasedFallback bleibt
 sicherheitsautoritativ — LLM-Veto erlaubt, LLM kann keine harten
 Regeln aushebeln.
+
+**Block-7 BotOverlay.mq5 + Python-Simulator (Stand 2026-06-17):**
+`mql5/BotOverlay.mq5` (178 LoC, stdlib-only, Timer 5s) liest
+`MQL5/Files/overlay_levels.json` und zeichnet VWAPs (3) +
+Volume-Profile (6 Perioden × 3 Levels + Value-Area-Rect) +
+FVG-Rechtecke (N). `tests/viz/test_bot_overlay_logic.py` (31
+neue Tests) spiegelt die File-Read-Logik in Python und prüft 20+
+Edge-Cases (Null-Felder, korruptes JSON, fehlende Datei, prev_*=null
+am ersten Tag einer neuen Periode, Style-Matrix für developing/locked
++ prev_*). `tools/check_mql5_syntax.py` (Brace-Balance + Function-
+Whitelist + Python-Import-Ban + I-4-String-Ban) läuft OK auf
+`mql5/BotOverlay.mq5`. `tools/run_simulator_against_smoke.py`
+orchestriert `feature_smoke` → Simulator, produziert 154 DrawOps
+(12 HLINE + 133 RECT + 9 LABEL) auf dem echten Sample-Datensatz.
+Gesamt-Suite: **952 passed** (vorher 911). Coverage viz/ = 100%
+(bot_overlay_simulator + overlay_writer).
 
 ## 3. Architektur-Invarianten (HART — nicht verletzen)
 
@@ -367,8 +383,70 @@ Diese Caveats sind KEINE Blocker, aber zu beachten:
    berücksichtigen.
 2. **Feature-Engine nutzt I-3 PIT-Garantie** — alle Module
    (`features/*.py`) MÜSSEN die `cutoff`/`current_t`-Semantik aus
-   `ReplayConnector` respektieren. Niemals direkt `bar.time`
-   vergleichen ohne Vorab-Check `bar.time <= current_t`.
+`ReplayConnector` respektieren. Niemals direkt `bar.time`
+    vergleichen ohne Vorab-Check `bar.time <= current_t`.
+
+## 4g. Caveats aus Block 7 (BotOverlay.mq5 + Python-Simulator)
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 8
+(LiveMT5Connector) und Block 9 (Custom Web-Dashboard):
+
+1. **MQL5-Code wird in CI NICHT compiliert/getestet** — nur der
+   Best-Effort Static-Check in `tools/check_mql5_syntax.py` (Brace-
+   Balance + Function-Whitelist + Python-Import-Ban + I-4-String-Ban).
+   Echte MT5-Chart-Validation ist manuell in MetaEditor (kompilieren,
+   auf Chart droppen, visuell prüfen). Vor jedem Block-7-Change: den
+   Static-Check laufen lassen UND das Chart manuell inspizieren.
+
+2. **Python-Simulator testet die File-Read-Logik, NICHT die
+   Chart-Visual.** Wenn der MQL5-Indikator in MetaEditor compiliert
+   aber visuell was Falsches zeichnet (z.B. Linie an falscher Y-Position,
+   OBJ_HLINE statt OBJ_TREND auf einen Indikator-Buffer), fängt das
+   der Simulator nicht. → manueller Visual-Check bei jedem MQL5-Change.
+   Regression-Test für den Simulator:
+   `tests/viz/test_bot_overlay_logic.py`.
+
+3. **`prev_*` levels am ersten Tag einer neuen Periode sind `null`**
+   (Caveat §4b-1) — MQL5-Indikator MUSS das gracefully handhaben
+   (Linie weglassen, nicht crashen). Regression-Test:
+   `tests/viz/test_bot_overlay_logic.py::test_all_prev_null_skips_all_prev_lines`
+   und `::test_all_prev_null_no_draw_ops_satisfies_caveat_4b_1`.
+
+4. **FVG-Rechteck-Farben in MQL5 sind voll opak** (`clrGreen` /
+   `clrRed`) — MQL5 hat keine echte Alpha-Transparenz für
+   `OBJ_RECTANGLE` ohne den `OBJPROP_BACK=true`-Hintergrund-Trick.
+   Im Back-Modus füllt der Indikator die Rechtecke und schiebt sie
+   hinter die Candles. Im Front-Modus würden sie Candles überdecken
+   — User kann via Chart-Properties filtern (`Chart->Properties->
+   Show->OHLC` deaktivieren hilft nicht, aber `Right-click->Properties
+   ->Common->Charts in foreground` toggelt das Verhalten). Wir
+   setzen `OBJPROP_BACK=true` als Default — wer das ändert, muss die
+   FVG-Sichtbarkeit selbst prüfen.
+
+5. **Timer alle 5 Sekunden** (Konstante `POLL_INT` in `BotOverlay.mq5`)
+   ist ein Kompromiss zwischen Latency und CPU-Last. Bei hochfrequenten
+   Feature-Updates (z.B. 1 Hz während NY-Session) kann die JSON-Datei
+   schneller aktualisiert werden als der Indikator sie liest — visuell
+   sieht man den letzten Stand, kein Real-Time-Sync. Für Real-Time-Sync
+   wäre ZeroMQ-Push nötig (Plan §5.1.3, explizit als Alternative
+   erwähnt). Block 8 / 9 können das ergänzen, wenn die Latency
+   spürbar wird.
+
+6. **Object-Prefix `bot_` muss im Cleanup gegriffen werden.** Der
+   `OnDeinit`+`ClearAll`-Loop scannt `ObjectsTotal(0)` und löscht nur
+   Objekte mit `bot_`-Prefix. Wenn ein anderer Indikator (oder eine
+   User-Template) ein gleichnamiges Objekt ohne Prefix anlegt, wird es
+   NICHT mit aufgeräumt — bewusst, damit Block-7-Objekte andere
+   Indikatoren nicht stören. Wer das ändert, MUSS die Cleanup-Logik
+   mit-tests (heute nicht testbar ohne MT5-Runtime).
+
+7. **MQL5 stdlib-only.** Keine `<MQL5/Include>`-Header (z.B. kein
+   `JsonParse`-Wrapper, kein `MqlRates`-Helper). Der Indikator
+   enthält seine eigene Mini-JSON-Extraktion (substring-basiert). Das
+   ist robust für das stabile Overlay-Schema, aber **nicht** generisch
+   — wenn das Schema wächst (z.B. `volume_profile.daily`), MUSS der
+   Indikator mit-aktualisiert werden. Eine Schema-Version-Header im
+   JSON wäre eine zukünftige Verbesserung.
 
 ## 5. Live-Bug-Journal (Producer-Bugs gefunden, gefixt, regress-getestet)
 
