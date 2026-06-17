@@ -26,7 +26,7 @@
 | 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | ✅ ship-ready, dev-branch |
 | 5a | TradeJournalDB (TimescaleDB) + FeatureSnapshotStore + Read-API (queries) | ✅ ship-ready, dev-branch |
 | 5b | BacktestEngine (Event-Replay über ReplayConnector) + WalkForwardEngine | ✅ ship-ready, dev-branch |
-| 5c | Daily/WeeklyReview + FittingProposal | offen |
+| 5c | Daily/WeeklyReview + FittingProposal + ReviewerOpenRouterClient + BacktestSpec-Parser | ✅ ship-ready, dev-branch |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready, dev-branch |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready, dev-branch |
 | 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready, dev-branch |
@@ -70,6 +70,18 @@ nun hinfällig ist — der Linux-Connector spricht rein RPyC).
   ersetzt den Stub; Wine-MT5-Container mit supervisord-Stack; SymbolSpec
   mit Live-Override; AGENTS.md §4h ergänzt (10 Caveats).
   dev-Branch 9 Commits ahead of origin/dev, Push-Workflow etabliert.
+- 2026-06-17: **Block 5c (Daily/WeeklyReview + FittingProposalEngine +
+  ReviewerOpenRouterClient + BacktestSpec-Parser) ship-ready.** 1097
+  Tests (vorher 991). `src/xauusd_bot/review/` neu (engine,
+  reviewer_client, fitting_proposal, backtest_spec_parser);
+  `src/xauusd_bot/common/schemas/review.py` neu (ReviewRequest,
+  ReviewOutput, FittingProposal, FittingProposalFilter +
+  Lightweight-Snapshots); JournalStore erweitert (add_fitting_proposal /
+  update_fitting_proposal / get_fitting_proposal /
+  list_fitting_proposals) — InMemory impl, Timescale Stub
+  (`NotImplementedError`); 3 CLIs (daily_review_smoke /
+  weekly_review_smoke / fitting_proposal_smoke); AGENTS.md §4i ergänzt
+  (10 Caveats). I-1 + I-4 audits clean.
 
 **Block-4 Lifecycle-Smoke (Stand 2026-06-15):** `execution_smoke --force-trade`
 läuft komplette Lifecycle (risk → size → stops → order → sweep → trail) mit
@@ -586,6 +598,77 @@ Diese Caveats sind KEINE Blocker, aber zu beachten für Block 10
     (sie testen den Connector isoliert gegen ein Fake). Vor jedem
     Bridge-Server-Commit: manuell die E2E-Verbindung testen (auf
     Ubuntu-VM, echtes Konto).
+
+## 4i. Caveats aus Block 5c (DailyReviewEngine + WeeklyReviewEngine + FittingProposalEngine + ReviewerOpenRouterClient)
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 9
+(Custom Web-Dashboard) und Block 10 (Demo-Forward / Live auf
+Ubuntu-VM):
+
+1. **Review-Agent LLM-Strokes sind NICHT autoritativ.** Die
+   Vorschläge sind Hypothesen, KEINE Live-Regel-Änderungen.
+   Status ``proposed → backtested → approved/rejected`` nur
+   durch Human (``fitting_proposal_smoke --approve ...`` oder
+   später via Block-9-Dashboard). NIEMALS automatisch. Per
+   ``review_agent.md`` Zeile 45 + Spec.
+2. **OpenRouter-Config wird mit Block 6 geteilt.** Review-
+   Engine nutzt ``settings.openrouter_model`` +
+   ``settings.openrouter_api_key`` (via den Block-6-
+   :class:`OpenRouterClient`, den der
+   :class:`ReviewerOpenRouterClient` REUSES — eigene
+   ``complete_raw()``-Methode auf dem Base-Client). Wenn der
+   User für Decisions ein anderes Modell will als für Reviews,
+   muss ``settings.review_openrouter_model`` ergänzt werden
+   (out of scope für Block 5c).
+3. **LLM-Output ist Free-Form Markdown in ``comment``-Feldern.**
+   :class:`ReviewerOpenRouterClient` parst strict via Pydantic
+   (``ReviewOutput``), aber die Inhalte von ``observation``,
+   ``hypothesis``, ``validation_test``, ``overfitting_rationale``
+   sind LLM-generiert und nicht redigiert. Bei seltsamen
+   Vorschlägen: manuell reviewen vor Approve. Caveat: Block-6
+   versendet keine Account-PII an die Review-LLM
+   (siehe Caveat §4f.8) — die Review-Schicht erbt diese Garantie
+   per Konstruktion (``ReviewRequest`` enthält nur
+   :class:`TradeSummary`, :class:`FeatureSnapshotLite`,
+   :class:`KPISummary`, :class:`LLMFallbackDiscrepancyLite`).
+4. **``min_sample_size`` ist konfigurierbar aber konservativ.**
+   Default 10 für Daily, 30 für Weekly. Unter dieser Schwelle:
+   ``insufficient_data=True``, KEIN LLM-Call, kein Vorschlag.
+   Operator-Override per ``--force-skipped`` Flag in CLI (derzeit
+   nur „LLM überspringen", kein „Sample-Size-Schwelle
+   überschreiben" — out of scope).
+5. **``run_validation`` ist optional und semi-strukturiert.** Der
+   :func:`parse_validation_test`-BacktestSpec-Parser erkennt nur
+   einfache Patterns (``score_threshold=``, ``IS=``, ``OOS=``,
+   ``session=``). Komplexere Validation-Tests bleiben
+   "proposed" bis Operator manuell mit eigenem Spec validiert.
+   Out of scope: NLP-Parser für freien Text.
+6. **Daily-Review und Weekly-Review sind NICHT echtzeit.** Sie
+   laufen per Cron / manueller Trigger, nicht pro Bar.
+   Schedule in Block 10 (Demo-Forward) via systemd-Timer oder
+   Kubernetes-CronJob.
+7. **Discrepancy-Sampling.** Wenn ein Tag 100+ LLM↔Fallback-
+   Diskrepanzen hat, sample der Review auf max 50
+   (``_MAX_DISCREPANCIES_PER_REVIEW = 50``). Volle
+   Historie in ``journal.list_discrepancies_in_range()`` und
+   ``journal.list_discrepancies_v2(...)``.
+8. **Kein Live-Apply-Mechanismus.** Auch ``approved`` Proposals
+   werden nicht automatisch in Settings geladen. Operator
+   muss die Vorschläge manuell in ``settings.*`` oder
+   ``decision/scoring.py`` umsetzen. Out of scope für Block 5c:
+   Auto-Apply-Workflow mit Diffs + Approval-Gate.
+9. **ReviewerOpenRouterClient retryt nur 1× bei Validation.**
+   Timeout / 5xx / Auth werden nicht retryt (gleicher Pattern
+   wie Block 6 — siehe Caveat §4f.5). Bei LLM-Down:
+   :class:`ReviewerLLMError` → CLI exit 1, KEIN partial Review.
+   Operator kann später retryen.
+10. **FittingProposal-Storage in TimescaleJournalStore ist
+    STUB.** Wie bei ``LLMFallbackDiscrepancyV2`` (Caveat §4f.2)
+    und ``write_discrepancy_v2``: In-Memory läuft,
+    TimescaleStore raise ``NotImplementedError`` für
+    ``add_fitting_proposal`` / ``update_fitting_proposal`` /
+    ``list_fitting_proposals``. Production-Storage kommt mit
+    asyncpg-Integration (siehe Block 8-Caveats).
 
 ## 5. Live-Bug-Journal (Producer-Bugs gefunden, gefixt, regress-getestet)
 

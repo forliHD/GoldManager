@@ -394,6 +394,7 @@ async def test_count_returns_per_table_totals() -> None:
         "orders": 0,
         "discrepancies": 0,
         "discrepancies_v2": 0,
+        "fitting_proposals": 0,
     }
     t = make_trade()
     await store.write_trade(t)
@@ -406,6 +407,7 @@ async def test_count_returns_per_table_totals() -> None:
         "orders": 1,
         "discrepancies": 1,
         "discrepancies_v2": 0,
+        "fitting_proposals": 0,
     }
 
 
@@ -422,6 +424,7 @@ async def test_clear_wipes_everything() -> None:
         "orders": 0,
         "discrepancies": 0,
         "discrepancies_v2": 0,
+        "fitting_proposals": 0,
     }
 
 
