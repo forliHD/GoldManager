@@ -427,4 +427,60 @@ def test_list_proposals_filter_by_period_range() -> None:
         assert len(items) == 1
         assert items[0].period_start.day == 20
 
+
+def test_approve_does_not_modify_settings() -> None:
+    """I-4 Hard Rule: approve() marks the proposal as approved in the
+    journal but does NOT mutate any runtime settings. Auto-apply on
+    live rules is explicitly forbidden (Caveat 4i.1 + 4i.8).
+
+    Regression-test for Probe B in Block-5c integration check.
+    """
+    from xauusd_bot.common.config.settings import Settings
+
+    async def scenario():
+        journal = InMemoryJournalStore()
+        engine = FittingProposalEngine(journal=journal, backtest=None)
+        fp = _proposal()
+        await journal.add_fitting_proposal(fp)
+
+        # Snapshot the live settings singleton (or build a fresh one).
+        before = Settings().model_dump()
+
+        approved = await engine.approve(
+            fp.id, operator="lucas", note="looks good"
+        )
+        assert approved.status == "approved"
+
+        after = Settings().model_dump()
+        assert before == after, (
+            "FittingProposalEngine.approve() must not mutate Settings — "
+            "Caveat 4i.1 / 4i.8 (no auto-apply on live rules). "
+            f"Diff: {set(before.items()) ^ set(after.items())}"
+        )
+
     _run(scenario())
+
+
+def test_fitting_proposal_engine_does_not_import_settings() -> None:
+    """AST-based guard: fitting_proposal.py must not import the
+    settings module. This is the static-equivalent of the runtime
+    test above. Belt + suspenders for I-4 / Caveat 4i.1.
+    """
+    import ast
+    from pathlib import Path
+
+    src_path = Path("src/xauusd_bot/review/fitting_proposal.py")
+    tree = ast.parse(src_path.read_text())
+    forbidden = {"settings", "Settings", "common.config", "common.config.settings"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not any(f in alias.name for f in forbidden), (
+                    f"fitting_proposal.py imports {alias.name} — "
+                    "violates I-4 no-auto-apply (Caveat 4i.1/4i.8)"
+                )
+        elif isinstance(node, ast.ImportFrom):
+            assert not any(f in (node.module or "") for f in forbidden), (
+                f"fitting_proposal.py imports from {node.module} — "
+                "violates I-4 no-auto-apply (Caveat 4i.1/4i.8)"
+            )

@@ -206,6 +206,65 @@ Worker, der sie bricht, macht den Block ungültig.
   Signal. Konsumenten (Feature-Engine) sind verantwortlich für
   Normalisierung.
 
+## 3.1 LLM-Schema-Erweiterung Konvention
+
+> Eingeführt Block 5c (2026-06-17). Verbindlich für alle künftigen
+> LLM-Schema-Erweiterungen (Block 6, Block 5c, künftige 7b/7c/...). Der
+> `OpenRouterClient` bleibt ein dünner Transport-Wrapper — Schema-Wissen
+> lebt in den Layer-Clients.
+
+**Wenn ein neuer LLM-Consumer dazukommt (z.B. ein 7b-AI-Expansion, ein
+Review-Agent, ein News-Analyst), ist die Konvention:**
+
+1. **Neues Pydantic-Schema in `src/xauusd_bot/common/schemas/<name>.py`.**
+   - `extra="forbid"` (Invariant).
+   - Stable REASON_* strings für kategorische Felder.
+   - Bounded numerics (z.B. `confidence: int = Field(0, ge=0, le=100)`).
+   - Eigene Datei pro Schema, keine Sammel-Files.
+
+2. **Eigener `<Name>Client` im jeweiligen Layer** (`decision/`,
+   `review/`, `news/`, ...). Der Wrapper:
+   - Lädt den System-Prompt aus `<name>_agent.md` (oder
+     konfigurierbarem Pfad) beim Init (Cache).
+   - Ruft `OpenRouterClient.complete_raw()` (Block-5c-Helper, schema-
+     agnostisches JSON).
+   - Validiert Output gegen das Layer-spezifische Pydantic-Schema.
+   - Hat eigene Timeout + Retry-Policy (z.B. `ReviewerOpenRouterClient`:
+     timeout=30s, 1 Retry bei Validation-Error; `AIDecisionLayer`:
+     timeout=10s, 1 Retry bei Validation/Zone-Error).
+   - Strukturiertes Logging via structlog.
+   - **KEIN** neuer OpenRouter-Endpoint, **KEIN** anderes Modell —
+     reuse `settings.openrouter_*` (shared config). Wenn ein anderes
+     Modell pro Layer nötig ist: neues `settings.<layer>_openrouter_model`
+     Feld ergänzen, dann aber zentral dokumentiert hier.
+
+3. **Layer-eigene Audit-Tests** in `tests/<layer>/test_i_audit.py`:
+   - I-1: kein `MetaTrader5`-Import (außer live.py ist jetzt eh
+     rpyc-only, hier eher defensiv).
+   - I-4: keine Code-Statements mit `position_size/lot_size/stop_loss/
+     take_profit/sl_price/tp_price/VolumeInLots` in `decision/` und
+     Review/News-Layer (LLM darf das nicht vorschlagen, Engine nutzt
+     es nicht).
+   - PII-Stripping: keine Account-Daten (balance, equity, login) im
+     LLM-Payload.
+
+**Warum:** Wenn jeder Layer seinen eigenen OpenRouter-Aufruf mit
+eigenem Schema macht, wird der `OpenRouterClient` zu einem Multi-
+Purpose-Wrapper der alle Schemata kennen muss. Mit dieser Konvention
+bleibt er ein 200-LoC-Transport-Modul und jede Schemata-Erweiterung
+ist lokal im Layer.
+
+**Referenz-Implementationen:**
+- Block 6: `src/xauusd_bot/decision/ai_layer.py` (AIDecisionLayer) +
+  `src/xauusd_bot/decision/openrouter_client.py` (Base).
+- Block 5c: `src/xauusd_bot/review/reviewer_client.py` +
+  `src/xauusd_bot/review/engine.py`.
+
+**Verweise in Block-Caveats:**
+- §4f.2 (Block 6 / OpenRouter-Config) → "Convention: §3.1"
+- §4i.2 (Block 5c / OpenRouter-Config geteilt) → "Convention: §3.1"
+- Künftige 7b/7c-Caveats mit LLM-Bezug → "Convention: §3.1"
+
 ## 4. Hardening-Caveats (aus Block-1-Review)
 
 Diese sind KEINE Blocker, aber VOR Block 2 (oder spätestens vor dem
@@ -611,12 +670,13 @@ Ubuntu-VM):
    durch Human (``fitting_proposal_smoke --approve ...`` oder
    später via Block-9-Dashboard). NIEMALS automatisch. Per
    ``review_agent.md`` Zeile 45 + Spec.
-2. **OpenRouter-Config wird mit Block 6 geteilt.** Review-
-   Engine nutzt ``settings.openrouter_model`` +
-   ``settings.openrouter_api_key`` (via den Block-6-
-   :class:`OpenRouterClient`, den der
-   :class:`ReviewerOpenRouterClient` REUSES — eigene
-   ``complete_raw()``-Methode auf dem Base-Client). Wenn der
+ 2. **OpenRouter-Config wird mit Block 6 geteilt.** Review-
+    Engine nutzt ``settings.openrouter_model`` +
+    ``settings.openrouter_api_key`` (via den Block-6-
+    :class:`OpenRouterClient`, den der
+    :class:`ReviewerOpenRouterClient` REUSES — eigene
+    ``complete_raw()``-Methode auf dem Base-Client). *Convention: §3.1.*
+    Wenn der
    User für Decisions ein anderes Modell will als für Reviews,
    muss ``settings.review_openrouter_model`` ergänzt werden
    (out of scope für Block 5c).
