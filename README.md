@@ -2,7 +2,7 @@
 
 Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMax BYOK) → Risk/Execution → Journal/Review → MT5-Overlay-Visualisierung.
 
-**Aktueller Stand (2026-06-17):** Blöcke 1–8 + 5c + 9 ship-ready auf `dev`. 1159 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
+**Aktueller Stand (2026-06-17):** Blöcke 1–8 + 5c + 9 ship-ready auf `dev`, plus **Service-Runtime** (die 5 Compose-Services laufen jetzt als echte Redis-Stream-Daemons). 1203 Tests grün in sauberer Umgebung (5 lokale Settings-Tests scheitern nur bei vorhandener `.env`), alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
 
 ---
 
@@ -21,7 +21,10 @@ Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMa
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready |
 | 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready |
 | 9 | Custom Web-Dashboard (FastAPI + WebSocket + Multi-User + Lightweight-Charts Frontend + Backtest-Trigger + Live-Mode-Toggle) | ✅ ship-ready |
+| SR | Service-Runtime: 5 Stream-Daemons über Redis Streams (data-collector/feature-engine/decision-engine/execution-engine/journal-writer), SERVICE_ROLE-Dispatch, Heartbeat-Healthchecks | ✅ Entry-Pfad ship-ready (Teil-Scope¹) |
 | 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live mit Mini-Volumen | offen |
+
+¹ Service-Runtime-Teil-Scope (bewusst offen, siehe `AGENTS.md`): Positions-Lifecycle-Management (Trailing/TP-Teilschließung/Emergency über Streaming-Bars) ist noch nicht getrieben — die Execution-Engine macht nur Trade-Entry; `TimescaleJournalStore` bleibt Stub, daher schreibt `journal-writer` in InMemory (nicht durable); Feature-Engine rechnet pro Bar über die Historie neu.
 
 Roadmap-Anpassung 2026-06-16: Custom-Dashboard wurde von "optional nach Block 9" zu eigenem **Block 9** hochgestuft. Demo-Forward + Live verschiebt sich auf Block 10.
 
@@ -78,14 +81,20 @@ GoldManager/
 │   ├── review/                       # ReviewEngine, FittingProposalEngine (Block 5c)
 │   ├── viz/                          # Overlay-Writer (Block 2) + Bot-Overlay-Simulator (Block 7)
 │   ├── cli/                          # replay_smoke, feature_smoke, decision_smoke, execution_smoke,
-│   │                                 #   journal_smoke, backtest_smoke, ai_smoke
+│   │                                 #   journal_smoke, backtest_smoke, ai_smoke, streams_smoke
+│   ├── data_collector.py             # Service-Runtime: 5 Stream-Daemons (dispatch via
+│   ├── feature_engine.py             #   docker_entrypoint + SERVICE_ROLE). Geteilte Engine-
+│   ├── decision_engine.py            #   Verdrahtung in features/decision/execution pipeline.py.
+│   ├── execution_engine.py           #   Connector-Auswahl in connectors/factory.py.
+│   ├── journal_writer.py             #   Liveness via healthcheck.py (Heartbeat-Datei).
 │   └── common/
 │       ├── config/                   # Pydantic-Settings
-│       ├── schemas/                  # Pydantic-Schemas (bar, tick, features, journal, AI-Decision)
-│       ├── messaging/                # Redis-Streams-Wrapper
+│       ├── schemas/                  # Pydantic-Schemas (bar, tick, features, journal, AI-Decision, events)
+│       ├── messaging/                # Redis-Streams-Wrapper (streams.py) + Stream-Envelopes (events.py)
+│       ├── service.py                # ServiceRunner: Shutdown, Heartbeat, Publisher/Consumer
 │       └── logging/                  # structlog
 │
-├── tests/                            # pytest, 952 Tests, 100% Coverage auf viz/
+├── tests/                            # pytest, 1203 Tests (clean env), 100% Coverage auf viz/
 │   ├── connectors/                   # test_replay, test_schema_parity, test_paper
 │   ├── data/
 │   ├── features/
@@ -96,6 +105,7 @@ GoldManager/
 │   ├── journal/
 │   ├── backtest/
 │   ├── viz/                          # test_overlay_writer, test_bot_overlay_logic
+│   ├── services/                     # test_stream_pipeline (E2E fakeredis), test_service_runtime
 │   └── integration/                  # test_feature_smoke, cross-block
 │
 └── logs/                             # JSON-Reports aller Smoke-CLIs
@@ -129,6 +139,44 @@ cat logs/replay_smoke.json
 > 3. Or rebuild the venv at a path that doesn't carry the hidden flag.
 >
 > `pytest` is unaffected because `pyproject.toml` sets `pythonpath = ["src"]`.
+
+---
+
+## Quickstart (Service-Runtime: full stream pipeline)
+
+Die fünf Services kommunizieren über Redis Streams und werden per
+`SERVICE_ROLE` aus **einem** Image dispatcht
+(`xauusd_bot.docker_entrypoint`). Flow:
+`data-collector → market_ticks → feature-engine → features →
+decision-engine → decisions → execution-engine → orders/journal →
+journal-writer`.
+
+```bash
+# 1. Den ganzen Dev-Stack hochfahren (Mac, Replay-Mode, kein MT5):
+cp .env.example .env            # ggf. anpassen
+docker compose -f docker-compose.base.yml -f docker-compose.dev.yml up --build
+# → redis, timescaledb + 5 Services. Healthcheck via logs/<role>.alive.
+
+# Prod (Ubuntu, + mt5-terminal/Wine, Live-Connector):
+#   docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up
+```
+
+```bash
+# 2. Pipeline ohne Docker gegen ein lokales Redis verifizieren:
+docker run --rm -p 6379:6379 redis:7-alpine &     # oder vorhandenes Redis
+PYTHONPATH=src .venv/bin/python -m xauusd_bot.cli.streams_smoke \
+  --redis-url redis://localhost:6379/0
+# → publiziert Sample-Bars, drained durch alle Handler, schreibt
+#   logs/streams_smoke.json (features == bars, trades >= 1 ⇒ exit 0)
+```
+
+Der End-to-End-Stream-Test (`tests/services/test_stream_pipeline.py`)
+deckt denselben Pfad gegen ein in-memory `fakeredis` ab — kein Redis nötig.
+
+> **Teil-Scope:** Positions-Management (Trailing/TP/Emergency über
+> Streaming-Bars) ist noch nicht getrieben, und `journal-writer`
+> persistiert in InMemory (TimescaleDB-Store ist Stub). Details in
+> `AGENTS.md` → Build-Status „SR".
 
 ---
 
