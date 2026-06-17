@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     # --- AI / Decision layer
     openrouter_api_key: SecretStr | None = Field(default=None, description="OpenRouter BYOK key.")
-    openrouter_model: str = Field(default="minimax/minimax-m2", description="Model string on OpenRouter.")
+    openrouter_model: str = Field(default="minimax/minimax-m3", description="Model string on OpenRouter.")
     # Block 6 — AIDecisionLayer settings. The AI layer is enabled by
     # default but the orchestrator will short-circuit to RuleBasedFallback
     # when ``ai_layer_enabled`` is False OR when ``openrouter_api_key`` is

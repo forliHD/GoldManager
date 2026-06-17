@@ -67,6 +67,22 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
 
+def _comment_max_length() -> int | None:
+    """Return the ``max_length`` of ``LLMDecision.comment`` (or None).
+
+    Derived from the schema so the truncation guard in
+    :meth:`OpenRouterClient.complete` never drifts from the field
+    constraint.
+    """
+
+    from annotated_types import MaxLen
+
+    for meta in LLMDecision.model_fields["comment"].metadata:
+        if isinstance(meta, MaxLen):
+            return meta.max_length
+    return None
+
+
 # ---------------------------------------------------------------- errors
 
 
@@ -328,6 +344,17 @@ class OpenRouterClient:
             raise LLMValidationError(
                 f"OpenRouter message content is not valid JSON: {content_str[:200]}"
             ) from exc
+
+        # Verbose models (e.g. MiniMax M3) routinely blow past the
+        # ``comment`` cap with multi-sentence rationale. ``comment`` is
+        # advisory only — Brain vs Hands means it never drives execution —
+        # so clamp it to the schema limit rather than rejecting an
+        # otherwise-valid decision over free-text length. Derived from the
+        # field so it never drifts from the schema.
+        if isinstance(content_obj, dict) and isinstance(content_obj.get("comment"), str):
+            max_comment = _comment_max_length()
+            if max_comment is not None and len(content_obj["comment"]) > max_comment:
+                content_obj["comment"] = content_obj["comment"][:max_comment]
 
         try:
             return LLMDecision.model_validate(content_obj)
