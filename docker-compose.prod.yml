@@ -10,6 +10,13 @@
 #     is slow, this is not optional)
 #   * Persistent volume for the Wine prefix + MT5 settings
 #   * ENV-only credentials (no hardcoded passwords in compose)
+#
+# Block 9 changes: added `dashboard` service (Custom Web-Dashboard):
+#   * 127.0.0.1:8080:8080 — loopback only (Cloudflare tunnel in front
+#     for remote access, see AGENTS.md §4j-2)
+#   * DASHBOARD_ENABLED must be true in .env to actually serve traffic
+#   * Uses Redis /0 for trading streams + /1 for sessions
+#   * Depends on redis + timescaledb; restart unless-stopped
 
 services:
   data-collector:
@@ -51,6 +58,60 @@ services:
       MT5_BRIDGE_HOST: mt5-terminal
       MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
+
+  # ------------------------------------------------------------ dashboard
+  #
+  # Custom Web-Dashboard (Block 9). FastAPI + WebSocket + Lightweight-
+  # Charts. Read-only by default; Live-Mode-Toggle is admin-only.
+  #
+  # SECURITY:
+  # - Port 8080 bound to 127.0.0.1 (loopback). Use Cloudflare tunnel
+  #   for remote access.
+  # - DASHBOARD_ENABLED default is false — must be explicitly set in
+  #   .env to actually serve traffic.
+  # - DASHBOARD_USERS is a JSON object with bcrypt-hashed passwords.
+  # - Sessions stored in Redis /1, trading streams stay on /0.
+  # See AGENTS.md §4j for the full list of dashboard caveats.
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/service/Dockerfile
+    image: xauusd-bot/dashboard:0.9.0
+    container_name: xauusd-dashboard
+    command: ["python", "-m", "xauusd_bot.dashboard.app"]
+    environment:
+      ENVIRONMENT: production
+      DASHBOARD_ENABLED: ${DASHBOARD_ENABLED:-false}
+      DASHBOARD_HOST: "127.0.0.1"
+      DASHBOARD_PORT: "8080"
+      DASHBOARD_USERS: ${DASHBOARD_USERS:-}
+      DASHBOARD_SESSION_TTL_SECONDS: ${DASHBOARD_SESSION_TTL_SECONDS:-28800}
+      DASHBOARD_REDIS_URL: redis://redis:6379/1
+      DASHBOARD_REDIS_STREAMS_URL: redis://redis:6379/0
+      DASHBOARD_LIVE_MODE_ENABLED: ${DASHBOARD_LIVE_MODE_ENABLED:-false}
+      REDIS_URL: redis://redis:6379/0
+      TIMESCALEDB_URL: postgresql+asyncpg://xauusd:xauusd@timescaledb:5432/xauusd
+    ports:
+      - "127.0.0.1:8080:8080"   # Dashboard (loopback only)
+    depends_on:
+      - redis
+      - timescaledb
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health').read()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   # ------------------------------------------------------------ mt5-terminal
   #

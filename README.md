@@ -2,7 +2,7 @@
 
 Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMax BYOK) → Risk/Execution → Journal/Review → MT5-Overlay-Visualisierung.
 
-**Aktueller Stand (2026-06-17):** Blöcke 1–8 + 5c ship-ready auf `dev`. 1094 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
+**Aktueller Stand (2026-06-17):** Blöcke 1–8 + 5c + 9 ship-ready auf `dev`. 1159 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
 
 ---
 
@@ -20,7 +20,7 @@ Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMa
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready |
 | 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready |
-| 9 | Custom Web-Dashboard (eigenes Chart + Indikatoren-UI, webbasiert) | offen |
+| 9 | Custom Web-Dashboard (FastAPI + WebSocket + Multi-User + Lightweight-Charts Frontend + Backtest-Trigger + Live-Mode-Toggle) | ✅ ship-ready |
 | 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live mit Mini-Volumen | offen |
 
 Roadmap-Anpassung 2026-06-16: Custom-Dashboard wurde von "optional nach Block 9" zu eigenem **Block 9** hochgestuft. Demo-Forward + Live verschiebt sich auf Block 10.
@@ -281,6 +281,45 @@ PYTHONPATH=src .venv/bin/python -m xauusd_bot.cli.feature_smoke
 
 ---
 
+## Quickstart (Custom Web-Dashboard, Block 9)
+
+Block 9 liefert ein FastAPI-Backend + Single-Page HTML/JS-Frontend mit Lightweight-Charts (TradingView), WebSocket für Real-Time-Updates, Multi-User-Auth (Cookie-Session, 3 Rollen), Backtest-Trigger, Review- und FittingProposal-Panels, und Live-Mode-Toggle (admin-only).
+
+```bash
+# 1. .env setup — bcrypt-Hash für dein Passwort generieren
+.venv/bin/python -c "import bcrypt; print(bcrypt.hashpw(b'mein_passwort', bcrypt.gensalt()).decode())"
+# → Ausgabe in .env als DASHBOARD_USERS={"lucas": {"password_hash": "<hash>", "role": "admin"}}
+
+# 2. .env: Dashboard aktivieren
+cat >> .env <<EOF
+DASHBOARD_ENABLED=true
+DASHBOARD_USERS={"lucas": {"password_hash": "<hash>", "role": "admin"}}
+DASHBOARD_LIVE_MODE_ENABLED=true   # nur wenn du Live-Mode-Toggle willst
+EOF
+
+# 3. Dashboard lokal starten
+.venv/bin/python -m xauusd_bot.dashboard.app
+# → serving on http://127.0.0.1:8080
+
+# 4. Browser: http://127.0.0.1:8080 → Login → Chart + Tabs sichtbar
+
+# 5. Auf Ubuntu-VM via Docker
+docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up -d dashboard
+# → http://127.0.0.1:8080 (Cloudflare-Tunnel davor für Remote)
+```
+
+**Caveats (volle Liste in `AGENTS.md` §4j, 17 Einträge):**
+- `DASHBOARD_ENABLED=false` per default — explizit aktivieren.
+- Loopback-only (`127.0.0.1:8080`), Cloudflare-Tunnel für Remote.
+- Cookie-Sessions in separater Redis-DB (`/1`), Trading-Streams bleiben auf `/0`.
+- 3 Rollen: `viewer` (read-only), `operator` (approve proposals + backtest), `admin` (Live-Mode-Toggle).
+- Bcrypt-Hashes, NIEMALS Klartext-Passwörter in .env oder Logs.
+- Mode-Toggle immer mit Confirmation-Modal, Aktion wird geloggt.
+- Single-Page, kein Routing, M5-Chart default (andere TFs verfügbar).
+- Frontend ist read-only by default — Live-Trades laufen weiter über den Trading-Prozess, nicht über das Dashboard.
+
+---
+
 ## Quickstart (Docker, dev)
 
 ```bash
@@ -383,7 +422,7 @@ Smoke-CLIs (run real pipeline, JSON in `logs/`):
 16. ⏳ Custom Web-Dashboard
 17. ⏳ Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live
 
-(14 von ~17 Punkten ship-ready, 3 offen — Block 9 = Custom Web-Dashboard, Block 10 = Demo-Forward+Live auf Ubuntu-VM.)
+(15 von ~17 Punkten ship-ready, 2 offen — Block 10 = Demo-Forward+Live auf Ubuntu-VM.)
 
 ---
 

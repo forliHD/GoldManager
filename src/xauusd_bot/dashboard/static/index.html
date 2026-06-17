@@ -1,14 +1,267 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>XAUUSD Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XAUUSD Bot — Dashboard</title>
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweightcharts.standalone.production.js"></script>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #161b22;
+      --panel-2: #1f242c;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #7d8590;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --err: #f85149;
+    }
+    * { box-sizing: border-box; }
+    body, html { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; }
+    .hidden { display: none !important; }
+
+    /* Login */
+    #login { display: flex; align-items: center; justify-content: center; height: 100vh; }
+    .login-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 32px; width: 320px; }
+    .login-box h2 { margin: 0 0 16px; font-size: 18px; }
+    .login-box input { width: 100%; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; color: var(--text); margin-bottom: 12px; }
+    .login-box input:focus { outline: 1px solid var(--accent); }
+    .login-box button { width: 100%; padding: 10px; background: var(--accent); color: #0e1116; border: 0; border-radius: 4px; cursor: pointer; font-weight: 600; }
+    .login-box button:hover { background: #79b8ff; }
+    .login-error { color: var(--err); margin-top: 8px; min-height: 18px; }
+
+    /* Layout */
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    .topbar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .topbar .logo { font-weight: 700; font-size: 15px; }
+    .topbar .spacer { flex: 1; }
+    .topbar .user { color: var(--muted); }
+    .topbar .role { padding: 2px 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
+    .topbar button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+    .topbar button:hover { background: var(--border); }
+    .topbar .mode-toggle { display: flex; align-items: center; gap: 6px; }
+    .topbar .mode-toggle .pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .topbar .mode-toggle .pill.replay { background: var(--warn); color: #0e1116; }
+    .topbar .mode-toggle .pill.live { background: var(--ok); color: #0e1116; }
+
+    .main { display: grid; grid-template-columns: 1.4fr 1fr; flex: 1; overflow: hidden; }
+    .chart-pane { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+    .chart-header { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    .chart-header .symbol { font-weight: 700; }
+    .chart-header .range button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+    .chart-header .range button.active { background: var(--accent); color: #0e1116; border-color: var(--accent); }
+    #chart { flex: 1; }
+    .legend { padding: 6px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }
+    .legend span { margin-right: 12px; }
+
+    .right-pane { display: flex; flex-direction: column; background: var(--panel-2); overflow: hidden; }
+    .tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--panel); }
+    .tabs .tab { padding: 8px 14px; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px; }
+    .tabs .tab.active { border-bottom-color: var(--accent); color: var(--accent); }
+    .tabs .tab:hover { background: var(--panel-2); }
+    .tab-content { flex: 1; overflow-y: auto; padding: 12px; }
+
+    /* Generic tables */
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 600; }
+    td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+    tr:hover td { background: var(--panel); cursor: pointer; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .pos { color: var(--ok); }
+    .neg { color: var(--err); }
+    .muted { color: var(--muted); }
+
+    /* Buttons in cells */
+    button.cell-btn { padding: 3px 8px; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 3px; cursor: pointer; }
+    button.cell-btn.ok { background: var(--ok); color: #0e1116; border-color: var(--ok); }
+    button.cell-btn.bad { background: var(--err); color: #0e1116; border-color: var(--err); }
+    button.cell-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Forms */
+    .form-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .form-row label { width: 110px; color: var(--muted); }
+    .form-row input { flex: 1; padding: 5px 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 3px; color: var(--text); }
+    .form-row input:focus { outline: 1px solid var(--accent); }
+    .form-section { background: var(--panel); padding: 12px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; }
+
+    /* KPIs */
+    .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+    .kpi { background: var(--panel); padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; }
+    .kpi .label { color: var(--muted); font-size: 11px; }
+    .kpi .value { font-size: 16px; font-weight: 600; margin-top: 2px; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 8px; font-size: 10px; font-weight: 600; }
+    .badge.ok { background: rgba(63, 185, 80, 0.2); color: var(--ok); }
+    .badge.warn { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
+    .badge.err { background: rgba(248, 81, 73, 0.2); color: var(--err); }
+    .badge.muted { background: var(--panel-2); color: var(--muted); }
+
+    /* Bottom bar */
+    .bottombar { display: flex; align-items: center; gap: 12px; padding: 4px 12px; background: var(--panel); border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+    .ws-status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+    .ws-status .dot.ok { background: var(--ok); }
+    .ws-status .dot.err { background: var(--err); }
+
+    /* Modal */
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 24px; width: 420px; }
+    .modal h3 { margin: 0 0 12px; }
+    .modal p { color: var(--muted); }
+    .modal .actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+    .modal .actions button { padding: 6px 14px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); cursor: pointer; }
+    .modal .actions button.primary { background: var(--accent); color: #0e1116; border-color: var(--accent); font-weight: 600; }
+  </style>
 </head>
 <body>
-  <main>
-    <h1>XAUUSD Dashboard</h1>
-    <p>Dashboard loading... (frontend is delivered as a Block-9+ follow-up task; this is the placeholder)</p>
-  </main>
+  <!-- Login Screen -->
+  <div id="login" class="hidden">
+    <form class="login-box" id="login-form">
+      <h2>XAUUSD Bot — Dashboard</h2>
+      <input type="text" id="login-username" name="username" placeholder="Username" autocomplete="username" required />
+      <input type="password" id="login-password" name="password" placeholder="Password" autocomplete="current-password" required />
+      <button type="submit">Sign in</button>
+      <div class="login-error" id="login-error"></div>
+    </form>
+  </div>
+
+  <!-- App (post-login) -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="logo">XAUUSD Bot</div>
+      <div class="user" id="user-info">—</div>
+      <div class="role" id="user-role">—</div>
+      <div class="spacer"></div>
+      <div class="mode-toggle hidden" id="mode-toggle-wrap">
+        <span class="muted">Mode:</span>
+        <span class="pill replay" id="mode-pill">replay</span>
+        <button id="mode-toggle-btn">Toggle</button>
+      </div>
+      <button id="logout-btn">Logout</button>
+    </header>
+
+    <main class="main">
+      <section class="chart-pane">
+        <div class="chart-header">
+          <div class="symbol">XAUUSD · M5</div>
+          <div class="range" id="timeframe-selector">
+            <button data-tf="M1">M1</button>
+            <button data-tf="M5" class="active">M5</button>
+            <button data-tf="M15">M15</button>
+            <button data-tf="H1">H1</button>
+          </div>
+          <div class="spacer" style="flex:1"></div>
+          <button id="chart-refresh">Refresh</button>
+        </div>
+        <div id="chart"></div>
+        <div class="legend">
+          <span><span style="color:#1f77b4">━</span> VWAP utc00</span>
+          <span><span style="color:#ff7f0e">━</span> VWAP utc07</span>
+          <span><span style="color:#e377c2">━</span> VWAP utc12</span>
+          <span><span style="color:#888">┄</span> VAH/VPOC/VAL developing</span>
+          <span><span style="color:#fff">━</span> VAH/VPOC/VAL locked</span>
+        </div>
+      </section>
+
+      <aside class="right-pane">
+        <nav class="tabs" id="tabs">
+          <div class="tab active" data-tab="indicators">Indicators</div>
+          <div class="tab" data-tab="trades">Trades</div>
+          <div class="tab" data-tab="backtest">Backtest</div>
+          <div class="tab" data-tab="reviews">Reviews</div>
+          <div class="tab" data-tab="proposals">Proposals</div>
+        </nav>
+        <div class="tab-content">
+          <!-- Indicators -->
+          <div id="tab-indicators">
+            <div class="kpi-grid" id="kpi-grid"></div>
+            <h4 style="margin:16px 0 6px;">Last Decision</h4>
+            <div class="form-section" id="last-decision">—</div>
+            <h4 style="margin:16px 0 6px;">Live Feature State</h4>
+            <div class="form-section" id="feature-state">—</div>
+          </div>
+          <!-- Trades -->
+          <div id="tab-trades" class="hidden">
+            <table id="trades-table">
+              <thead><tr><th>Time</th><th>Side</th><th class="num">Entry</th><th class="num">Exit</th><th class="num">R</th><th>Kind</th><th class="num">Score</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <!-- Backtest -->
+          <div id="tab-backtest" class="hidden">
+            <div class="form-section">
+              <h4 style="margin:0 0 8px;">Run New Backtest</h4>
+              <div class="form-row"><label>Start date</label><input type="date" id="bt-start" value="2026-04-01" /></div>
+              <div class="form-row"><label>End date</label><input type="date" id="bt-end" value="2026-04-30" /></div>
+              <div class="form-row"><label>Warmup bars</label><input type="number" id="bt-warmup" value="100" /></div>
+              <div class="form-row"><label>Max bars</label><input type="number" id="bt-max" value="200" /></div>
+              <div class="form-row"><label>WalkForward</label><input type="checkbox" id="bt-wf" /></div>
+              <div class="form-row" id="bt-wf-params" class="hidden"><label>IS/OOS/Step days</label><div style="display:flex;gap:4px"><input type="number" id="bt-is" value="7" /><input type="number" id="bt-oos" value="3" /><input type="number" id="bt-step" value="3" /></div></div>
+              <button id="bt-run-btn" class="cell-btn ok">Run Backtest</button>
+              <div id="bt-status" style="margin-top:8px;color:var(--muted);"></div>
+            </div>
+            <h4 style="margin:0 0 6px;">History</h4>
+            <table id="bt-history-table">
+              <thead><tr><th>Time</th><th>Period</th><th class="num">N</th><th class="num">Sharpe</th><th>Overfit</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <!-- Reviews -->
+          <div id="tab-reviews" class="hidden">
+            <div class="form-section">
+              <div class="form-row"><label>Daily date</label><input type="date" id="rv-daily" value="" /></div>
+              <button id="rv-load-daily" class="cell-btn">Load Daily</button>
+            </div>
+            <div class="form-section">
+              <div class="form-row"><label>Week start</label><input type="date" id="rv-weekly" value="" /></div>
+              <button id="rv-load-weekly" class="cell-btn">Load Weekly</button>
+            </div>
+            <div id="rv-output"></div>
+          </div>
+          <!-- Proposals -->
+          <div id="tab-proposals" class="hidden">
+            <div class="form-row">
+              <label>Status</label>
+              <select id="fp-status-filter" style="flex:1;padding:5px;background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:3px">
+                <option value="">All</option>
+                <option value="proposed">proposed</option>
+                <option value="backtested">backtested</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+              </select>
+            </div>
+            <button id="fp-refresh" class="cell-btn" style="margin-bottom:8px">Refresh</button>
+            <table id="fp-table">
+              <thead><tr><th>Date</th><th>#</th><th>Category</th><th>Risk</th><th>Status</th><th>Hypothesis</th><th>Actions</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="bottombar">
+      <div class="ws-status"><span class="dot" id="ws-dot"></span><span id="ws-text">WS: connecting…</span></div>
+      <div class="muted" id="ws-topics"></div>
+      <div class="spacer" style="flex:1"></div>
+      <div class="muted" id="ws-last">last event: —</div>
+    </footer>
+  </div>
+
+  <!-- Mode-toggle confirmation modal -->
+  <div id="modal-bg" class="modal-bg hidden">
+    <div class="modal">
+      <h3 id="modal-title">Confirm</h3>
+      <p id="modal-body"></p>
+      <div class="actions">
+        <button id="modal-cancel">Cancel</button>
+        <button id="modal-confirm" class="primary">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="dashboard.js"></script>
 </body>
 </html>

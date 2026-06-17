@@ -30,7 +30,7 @@
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready, dev-branch |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready, dev-branch |
 | 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready, dev-branch |
-| 9 | Custom Web-Dashboard (eigenes Chart + Indikatoren-UI, webbasiert) | offen |
+| 9 | Custom Web-Dashboard (FastAPI + WebSocket + Multi-User + Lightweight-Charts Frontend + Backtest-Trigger + Live-Mode-Toggle) | ✅ ship-ready, dev-branch |
 | 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live | offen |
 
 **Roadmap-Anpassung 2026-06-16 (Lucas):** Custom-Dashboard wurde von
@@ -729,6 +729,101 @@ Ubuntu-VM):
     ``add_fitting_proposal`` / ``update_fitting_proposal`` /
     ``list_fitting_proposals``. Production-Storage kommt mit
     asyncpg-Integration (siehe Block 8-Caveats).
+
+## 4j. Caveats aus Block 9 (Custom Web-Dashboard)
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 10
+(Demo-Forward / Live) und für Operator-Workflows:
+
+1. **Dashboard-Default ist `enabled=False`.** Wer das Dashboard
+   produktiv fährt, MUSS explizit `DASHBOARD_ENABLED=true` setzen
+   UND `DASHBOARD_USERS={"lucas": {"password_hash": "<bcrypt>",
+   "role": "admin"}}` in `.env` (oder ENV). Ohne diese Config ist
+   jeder API/WebSocket-Endpoint außer `/api/health` 404.
+
+2. **Dashboard-Host Default `127.0.0.1`, NIEMALS `0.0.0.0`.**
+   Cloudflare-Tunnel oder Reverse-Proxy davor, niemals direkt
+   exposed. Identisch zur MT5-Terminal-Sicherheit (§4h.5).
+
+3. **Cookie-Session in separater Redis-DB.** Dashboard nutzt
+   `redis://.../1` (default), Trading-Streams bleiben auf `/0`.
+   Verhindert versehentliches Löschen von Trade-Daten durch
+   Dashboard-Cleanup.
+
+4. **Multi-User hat 3 Rollen.** `viewer` (read-only), `operator`
+   (FittingProposal approve/reject + Backtest-Trigger),
+   `admin` (Live-Mode-Toggle). Default-User in `.env.example` ist
+   `viewer`, NICHT admin.
+
+5. **Live-Mode-Toggle ist admin-only UND loggt IMMER die
+   Aktion.** `settings.connector_mode` wird in Redis-Cache
+   `dashboard:connector_mode` gesetzt, nicht in Datei — der
+   Trading-Prozess liest das per Hot-Reload oder Restart. Out
+   of scope: automatischer Hot-Reload (kommt mit Block 10).
+
+6. **WebSocket-Topics haben keine per-Topic-Permissions.** Wer
+   eingeloggt ist, sieht alle Topics die er abonniert. Granularere
+   Permissions (z.B. "viewer darf nur `features` lesen, nicht
+   `orders`") sind Block-9+ Follow-up.
+
+7. **Backtest-Trigger läuft als Background-Task, nicht als
+   synchroner Request.** Lange Backtests blockieren sonst den
+   Worker. Task-ID Polling via `/api/backtest/status?task_id=...`.
+
+8. **JWT/Token-basierte Auth ist Out-of-Scope.** Simple Cookie-
+   Session reicht für Single-User-LAN. OAuth via Cloudflare
+   Access ist Block-9+ Follow-up.
+
+9. **Dashboard benutzt nicht `import MetaTrader5` direkt.**
+   Connector-Aufrufe gehen durch `IMarketConnector` Protocol
+   (I-1). Live-Mode-Toggle ruft nicht den MT5-Connector auf,
+   sondern setzt nur die Settings in Redis (Connector-Swap
+   passiert im Trading-Prozess). Regress-getestet via
+   `tests/dashboard/test_frontend_structure.py` (I-1 Audit
+   AST-Walk über `dashboard/`).
+
+10. **Lightweight-Charts via CDN, kein npm-Build.** Single
+    HTML-File mit inline JS. Vorteil: keine Build-Pipeline,
+    einfache Inspektion. Nachteil: kein Tree-Shaking, kein
+    TypeScript. Für Block-9-MVP ausreichend. Bundle-Size
+    ~200KB total. Pinning der CDN-Version in `index.html`
+    (z.B. auf v4.x) ist Block-9+ Follow-up.
+
+11. **Frontend ist read-only by Default.** Auch wenn der
+    Operator-Approve-Flow existiert, läuft der eigentliche
+    Live-Trade weiterhin über `order_send` im Trading-Prozess,
+    NICHT über einen "Place Order"-Button im Dashboard. Out
+    of scope: Live-Manual-Trading-Button (kommt mit Block 10).
+
+12. **WebSocket reconnect mit exponential backoff ist client-side.**
+    Der Server broadcastet nur; bei Verbindungsverlust versucht
+    der Client 1s/2s/4s/8s/16s/30s reconnect. Bei 30s-Dauer-out:
+    Bottom-Bar zeigt "WS: disconnected" + Click-to-Reconnect.
+
+13. **Mode-Toggle benötigt Bestätigung.** Confirmation-Modal
+    mit Warnung "Switching mode affects the trading process.
+    This is logged." Selbst für admin — Hard Rule, regress-
+    getestet in `tests/dashboard/test_frontend_structure.py
+    ::test_dashboard_js_handles_mode_toggle_with_confirmation`.
+
+14. **Chart-Time-Range ist M5 default.** Andere Timeframes
+    (M1, M15, H1) sind über den Timeframe-Selector verfügbar,
+    aber im MVP nur M5 hat getestete Backtest-Daten. Out of
+    scope: automatische Auto-Scale, Indicators-on-Chart Overlay.
+
+15. **PII im Frontend:** Username + Role sind sichtbar (gehört
+    dazu). KEINE Account-Nummern, Login-Credentials, Broker-IDs
+    werden angezeigt.
+
+16. **Frontend ist Single-Page, kein Routing.** Eine URL, mehrere
+    Tabs. Out of scope: Multi-Page-Routing (kommt mit Block 10).
+
+17. **Settings `dashboard_users` hat bcrypt-Hashes, keine
+    Klartext-Passwörter.** Generator: `python -c "import bcrypt;
+    print(bcrypt.hashpw(b'my_pw', bcrypt.gensalt()).decode())"`.
+    Passwörter werden NUR beim Login-Request akzeptiert und
+    NIEMALS geloggt. Regress-getestet via
+    `tests/dashboard/test_auth.py::test_password_not_logged`.
 
 ## 5. Live-Bug-Journal (Producer-Bugs gefunden, gefixt, regress-getestet)
 
