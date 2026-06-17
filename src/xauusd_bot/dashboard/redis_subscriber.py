@@ -54,6 +54,12 @@ DEFAULT_STREAMS: tuple[str, ...] = (
     "journal",
 )
 
+# Redis stream name → WebSocket topic name. They match except for the bar
+# stream, which is ``market_ticks`` on Redis but the broker/frontend call
+# the WS topic ``ticks``. Without this mapping the broker rejects every bar
+# as an unknown topic.
+_STREAM_TO_WS_TOPIC: dict[str, str] = {"market_ticks": "ticks"}
+
 # XREAD block timeout (ms). Short enough to keep shutdown latency low.
 _BLOCK_MS = 1000
 
@@ -204,7 +210,7 @@ class RedisSubscriber:
                 continue
             # response shape: [(stream_name, [(entry_id, {fields...}), ...]), ...]
             for stream_name, entries in response:
-                topic = stream_name  # stream_name == topic by convention
+                topic = _STREAM_TO_WS_TOPIC.get(stream_name, stream_name)
                 for entry_id, fields in entries:
                     last_ids[stream_name] = entry_id
                     payload = _decode_entry(topic, entry_id, fields)

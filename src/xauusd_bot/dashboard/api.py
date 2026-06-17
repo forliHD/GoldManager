@@ -34,6 +34,7 @@ Hard rules (see AGENTS.md §4j)
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -213,6 +214,7 @@ class OverlayDict(BaseModel):
 
 @router.get("/chart/candles")
 async def chart_candles(
+    request: Request,
     symbol: str = "XAUUSD",
     timeframe: str = "M1",
     count: int = Query(default=500, ge=1, le=5000),
@@ -220,12 +222,45 @@ async def chart_candles(
 ) -> list[CandleDict]:
     """Return the last ``count`` candles for ``symbol``.
 
-    In Block 9 we read from the journal's feature snapshots (which
-    carry the canonical OHLC bars via the underlying parquet). The
-    Block-9+ follow-up is to wire this to the ReplayConnector / Live
-    connector for true real-time streaming.
+    Primary source is the ``market_ticks`` Redis stream — the live bar
+    feed the data-collector publishes. Bars are de-duplicated by time
+    (the replay loop re-emits the same bars) and returned chronologically.
+    Falls back to the journal's feature snapshots when the stream is
+    empty/unavailable.
     """
 
+    # --- Primary: read closed bars straight from the market_ticks stream.
+    stream_redis = getattr(request.app.state, "streams_redis", None)
+    if stream_redis is not None:
+        try:
+            entries = await stream_redis.xrevrange("market_ticks", count=min(count * 3, 15000))
+        except Exception as exc:  # noqa: BLE001 - fall through to the journal store
+            log.warning("chart_candles_stream_read_failed", error=str(exc))
+            entries = []
+        by_time: dict[Any, CandleDict] = {}
+        for _entry_id, fields in entries:
+            raw = fields.get("payload")
+            if not raw:
+                continue
+            try:
+                bar = (json.loads(raw).get("bar")) or {}
+                if bar.get("symbol") != symbol:
+                    continue
+                candle = CandleDict(
+                    time=bar["time"],
+                    open=float(bar["open"]),
+                    high=float(bar["high"]),
+                    low=float(bar["low"]),
+                    close=float(bar["close"]),
+                    tick_volume=int(bar.get("tick_volume", 0)),
+                )
+                by_time[candle.time] = candle  # last write wins (identical OHLC per loop)
+            except (KeyError, TypeError, ValueError):
+                continue
+        if by_time:
+            return sorted(by_time.values(), key=lambda c: c.time)[-count:]
+
+    # --- Fallback: journal feature snapshots (carry OHLC when persisted).
     store = _get_journal_store()
     end = datetime.now(tz=UTC)
     start = end - timedelta(days=max(int(count) // 1440 + 2, 7))
