@@ -12,7 +12,6 @@ services:
       - ./src:/app/src:ro
       - ./data:/app/data:ro
       - ./logs:/app/logs
-    command: ["python", "-m", "xauusd_bot.cli.replay_smoke"]
 
   feature-engine:
     environment:
@@ -41,9 +40,8 @@ services:
       - ./data:/app/data:ro
       - ./logs:/app/logs
 
-  review:
+  journal-writer:
     environment:
-      CONNECTOR_MODE: replay
       ENVIRONMENT: development
     volumes:
       - ./src:/app/src:ro

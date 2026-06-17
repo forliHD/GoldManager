@@ -51,12 +51,10 @@ services:
       MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
 
-  review:
+  # journal-writer needs no connector — only Redis + TimescaleDB.
+  journal-writer:
     environment:
-      CONNECTOR_MODE: live
       ENVIRONMENT: production
-      MT5_BRIDGE_HOST: mt5-terminal
-      MT5_BRIDGE_PORT: "18812"
     restart: unless-stopped
 
   # ------------------------------------------------------------ dashboard

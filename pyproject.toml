@@ -37,6 +37,7 @@ dev = [
 
 [project.scripts]
 xauusd-replay-smoke = "xauusd_bot.cli.replay_smoke:main"
+xauusd-streams-smoke = "xauusd_bot.cli.streams_smoke:main"
 xauusd-generate-sample = "tools.generate_sample_data:main"
 
 [tool.setuptools.packages.find]

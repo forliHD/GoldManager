@@ -37,6 +37,7 @@ class ServiceRole(str, Enum):
     FEATURE_ENGINE = "feature-engine"
     DECISION_ENGINE = "decision-engine"
     EXECUTION_ENGINE = "execution-engine"
+    JOURNAL_WRITER = "journal-writer"
     REVIEW = "review"
 
 
@@ -107,6 +108,45 @@ class Settings(BaseSettings):
     mt5_login: str | None = None
     mt5_password: SecretStr | None = None
     mt5_server: str | None = None
+    mt5_bridge_host: str = Field(
+        default="mt5-terminal",
+        description="Hostname of the RPyC MT5 bridge (the mt5-terminal container in prod).",
+    )
+    mt5_bridge_port: int = Field(default=18812, ge=1, le=65535, description="RPyC bridge port.")
+    mt5_bridge_auth_key: SecretStr | None = Field(
+        default=None, description="Optional shared secret for the RPyC bridge (MT5_BRIDGE_AUTH_KEY)."
+    )
+
+    # --- Service runtime (stream-connected services, see common/service.py)
+    replay_source: str = Field(
+        default="data/sample/xauusd_m1_sample.parquet",
+        description="Path to the parquet/CSV the data-collector replays in CONNECTOR_MODE=replay.",
+    )
+    replay_speed_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description="Seconds to sleep between replayed bars. 0 = as fast as possible (default).",
+    )
+    replay_loop: bool = Field(
+        default=False,
+        description="When True the data-collector restarts the replay from the top after exhausting the source; when False it idles until shutdown.",
+    )
+    warmup_bars: int = Field(
+        default=500,
+        ge=0,
+        description="Bars the feature-engine fetches from the connector at startup to seed its buffer (live mode only; replay fills from the stream).",
+    )
+    max_history_bars: int = Field(
+        default=200_000,
+        ge=1,
+        description="Upper bound on the feature-engine's in-memory bar buffer. Note: yearly volume-range needs long history — see AGENTS.md.",
+    )
+    stream_block_ms: int = Field(
+        default=1000, ge=1, description="XREADGROUP block timeout (ms) for service consumers."
+    )
+    stream_batch_size: int = Field(
+        default=64, ge=1, description="Max messages a service consumer fetches per iteration."
+    )
 
     # --- Risk (fractions, e.g. 0.04 = 4%)
     risk_max_daily: float = Field(default=0.04, ge=0, le=1)

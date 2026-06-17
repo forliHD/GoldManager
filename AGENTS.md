@@ -31,6 +31,7 @@
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready, dev-branch |
 | 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready, dev-branch |
 | 9 | Custom Web-Dashboard (FastAPI + WebSocket + Multi-User + Lightweight-Charts Frontend + Backtest-Trigger + Live-Mode-Toggle) | ✅ ship-ready, dev-branch |
+| SR | Service-Runtime: 5 Stream-Daemons (data-collector/feature-engine/decision-engine/execution-engine/journal-writer) über Redis Streams, docker_entrypoint-Dispatch, Compose-Cleanup | ✅ Entry-Pfad ship-ready, dev-branch (Teil-Scope, s.u.) |
 | 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live | offen |
 
 **Roadmap-Anpassung 2026-06-16 (Lucas):** Custom-Dashboard wurde von
@@ -99,6 +100,41 @@ nun hinfällig ist — der Linux-Connector spricht rein RPyC).
   Single-Page, bcrypt-only). docker-compose.prod.yml: dashboard-
   Service mit 127.0.0.1:8080, DASHBOARD_ENABLED default false.
   I-1 + I-4 + PII audits clean.
+- 2026-06-17: **Service-Runtime (Stream-Verdrahtung) — Entry-Pfad
+  ship-ready.** Die 5 Compose-Services laufen jetzt als echte Daemons
+  über Redis Streams statt als Smoke-Stubs. Neu: `common/messaging/
+  events.py` (Envelope-Schemas BarClosed/Features/Decision/Order/Journal,
+  schema_version-gated), `common/service.py` (ServiceRunner: SIGTERM-
+  graceful-shutdown, Heartbeat-Datei `logs/<role>.alive`, Publisher/
+  Consumer-Helfer), `connectors/factory.py` (Replay/Live nach Settings),
+  Pipeline-Factories `features/pipeline.py` + `decision/pipeline.py` +
+  `execution/pipeline.py` (geteilte Verdrahtung Service↔Smoke), 5 Service-
+  Module `data_collector/feature_engine/decision_engine/execution_engine/
+  journal_writer.py` + `healthcheck.py`. `docker_entrypoint._DISPATCH`
+  füllt alle 5 Rollen; neue `ServiceRole.JOURNAL_WRITER`. Compose: stale
+  `command:`-Overrides entfernt (Dispatch via SERVICE_ROLE), `review`-
+  Daemon entfernt (on-demand CLI), `journal-writer`-Service + Heartbeat-
+  Healthcheck ergänzt; Dockerfile COPY decision_agent.md. Neue Tests:
+  `tests/services/` (E2E-fakeredis-Pipeline + Runtime-Units, +7). CLI
+  `xauusd-streams-smoke` für Real-Redis-Verifikation.
+  **Teil-Scope / bewusst offen (NICHT erledigt):**
+  1. **Positions-Lifecycle-Management** (Trailing-Stops, TP-Teilschließung,
+     Emergency-Flatten über Streaming-Bars) ist NICHT getrieben — die
+     Execution-Engine verarbeitet nur Trade-*Entry*. Bausteine
+     (StopManager/TakeProfitManager/EmergencyStopManager) sind verdrahtet,
+     aber der Per-Bar-Management-Loop + Positions-Store fehlen. Siehe
+     `execution/pipeline.py` Docstring.
+  2. **TimescaleDB-Persistenz** bleibt Stub (`TimescaleJournalStore`
+     `NotImplementedError`, kein asyncpg) — `journal_writer` nutzt
+     InMemoryJournalStore (prozess-lokal, nicht durable). Punkt-3-Naht.
+  3. **Feature-Engine-Perf**: stateless Recompute über die Bar-Historie
+     pro Bar (O(history)); `MAX_HISTORY_BARS` bounded den Puffer. Für
+     lange „as fast as possible"-Replays der Flaschenhals; inkrementeller
+     Engine-State ist eine Folge-Optimierung.
+  I-1 weiter gewahrt: kein `MetaTrader5`-Import in den Services;
+  `connectors/factory.py` importiert `LiveMT5Connector` lazy (RPyC, kein
+  MT5). I-3 (Replay-Collector emittiert Bars in Reihenfolge; Feature-Puffer
+  nur bis aktuelle Bar) und I-4 (keine Re-Computation) gewahrt.
 
 **Block-4 Lifecycle-Smoke (Stand 2026-06-15):** `execution_smoke --force-trade`
 läuft komplette Lifecycle (risk → size → stops → order → sweep → trail) mit

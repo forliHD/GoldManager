@@ -22,6 +22,14 @@ x-service-base: &service-base
   volumes:
     - vantage_data:/var/lib/xauusd/vantage
   logging: *default-logging
+  # Liveness via the heartbeat file each service touches (see
+  # common/service.py). A wedged event loop stops touching it → unhealthy.
+  healthcheck:
+    test: ["CMD", "python", "-m", "xauusd_bot.healthcheck"]
+    interval: 15s
+    timeout: 5s
+    retries: 4
+    start_period: 30s
   depends_on:
     redis:
       condition: service_healthy
@@ -62,41 +70,42 @@ services:
       - "5432:5432"
     logging: *default-logging
 
-  # Python services — all use the same image, dispatched by SERVICE_ROLE env
+  # Python services — all use the same image. The entrypoint
+  # (xauusd_bot.docker_entrypoint) dispatches on SERVICE_ROLE, so no
+  # per-service `command:` override is needed.
   data-collector:
     <<: *service-base
     container_name: xauusd-data-collector
     environment:
       SERVICE_ROLE: data-collector
-    command: ["python", "-m", "xauusd_bot.cli.replay_smoke"]
 
   feature-engine:
     <<: *service-base
     container_name: xauusd-feature-engine
     environment:
       SERVICE_ROLE: feature-engine
-    command: ["python", "-m", "xauusd_bot.feature_engine"]
 
   decision-engine:
     <<: *service-base
     container_name: xauusd-decision-engine
     environment:
       SERVICE_ROLE: decision-engine
-    command: ["python", "-m", "xauusd_bot.decision_engine"]
 
   execution-engine:
     <<: *service-base
     container_name: xauusd-execution-engine
     environment:
       SERVICE_ROLE: execution-engine
-    command: ["python", "-m", "xauusd_bot.execution_engine"]
 
-  review:
+  journal-writer:
     <<: *service-base
-    container_name: xauusd-review
+    container_name: xauusd-journal-writer
     environment:
-      SERVICE_ROLE: review
-    command: ["python", "-m", "xauusd_bot.review_engine"]
+      SERVICE_ROLE: journal-writer
+
+  # NOTE: review/backtest run on-demand via their CLIs (not as a
+  # streaming daemon), so there is intentionally no `review` service
+  # here. Run e.g. `python -m xauusd_bot.cli.backtest_smoke` ad hoc.
 
 volumes:
   redis_data:

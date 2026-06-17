@@ -28,7 +28,13 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install -e ".[dev]"
 
-# Healthcheck — service is up if the python interpreter can import xauusd_bot.
+# Runtime prompt for the AI decision layer (OpenRouterClient reads
+# ./decision_agent.md by default). Harmless when the AI layer is off.
+COPY decision_agent.md ./
+
+# Image-level liveness: the interpreter can import the package. The
+# compose healthcheck does the deeper, role-aware heartbeat check
+# (python -m xauusd_bot.healthcheck).
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
     CMD python -c "import xauusd_bot" || exit 1
 
