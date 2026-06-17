@@ -1,12 +1,29 @@
-# XAUUSD Trading Bot
+# XAUUSD Trading Bot — GoldManager
 
-Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter/MiniMax BYOK) → Risk/Execution → Journal/Review.
+Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMax BYOK) → Risk/Execution → Journal/Review → MT5-Overlay-Visualisierung.
 
-This is the **block-1 skeleton**: repo structure, Docker stack, connector abstraction (Replay / Live / Paper),
-data layer (OHLC, Spread, Quality), common layer (config, schemas, Redis Streams, JSON logging),
-synthetic XAUUSD-M1 sample dataset, and a replay smoke CLI.
+**Aktueller Stand (2026-06-17):** Blöcke 1–7 ship-ready auf `dev`. 952 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert. Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
 
-See `00_FINAL_PLAN.md` for the full architecture.
+---
+
+## Build-Status
+
+| Block | Inhalt | Status |
+|-------|--------|--------|
+| 1 | Repo-Skeleton, Docker-Stack, Connector-Abstraktion, Replay/Paper, Data Layer | ✅ ship-ready |
+| 2 | Feature-Engine (Session, Triple-VWAP, FixedVolumeRange, FVG, MarketStructure, CandleMomentum, Liquidity, News) + Overlay-Writer | ✅ ship-ready |
+| 3 | Aggregator + Scoring + RuleBasedFallback + TradeQualification | ✅ ship-ready |
+| 4 | Execution + Risk + Pending/Stop/TP + EmergencyStop | ✅ ship-ready |
+| 5a | TradeJournalDB (TimescaleDB) + FeatureSnapshotStore + Read-API | ✅ ship-ready |
+| 5b | BacktestEngine + WalkForwardEngine (Event-Replay, Slippage/Spread-Modelle, IS/OOS-Windows) | ✅ ship-ready |
+| 5c | Daily/WeeklyReview + FittingProposal | offen |
+| 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready |
+| 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready |
+| 8 | LiveMT5Connector (RPyC) + mt5-terminal-Container (Wine-Bridge auf Ubuntu) | offen |
+| 9 | Custom Web-Dashboard (eigenes Chart + Indikatoren-UI, webbasiert) | offen |
+| 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live mit Mini-Volumen | offen |
+
+Roadmap-Anpassung 2026-06-16: Custom-Dashboard wurde von "optional nach Block 9" zu eigenem **Block 9** hochgestuft. Demo-Forward + Live verschiebt sich auf Block 10.
 
 ---
 
@@ -14,36 +31,74 @@ See `00_FINAL_PLAN.md` for the full architecture.
 
 ```
 GoldManager/
-├── docker-compose.base.yml         # redis, timescaledb, all Python services
-├── docker-compose.dev.yml          # Mac: CONNECTOR_MODE=replay, no MT5
-├── docker-compose.prod.yml         # Ubuntu: + mt5-terminal (Wine)
-├── pyproject.toml
+├── 00_FINAL_PLAN.md                  # Architektur-Spezifikation
+├── 01_orchestrator.md                # Agent-Briefings
+├── 02_data_layer_mt5_bridge.md
+├── 03_feature_engine.md
+├── 04_decision_scoring.md
+├── 05_execution_risk.md
+├── 06_journal_backtest_review.md
+├── 07_devops_docker_viz.md
+├── AGENTS.md                         # Project memory: invariants, caveats, live-bugs
+├── README.md                         # Diese Datei
+├── decision_agent.md                 # System-Prompt für AI-Decision-Layer
+├── news_context_agent.md
+├── review_agent.md
+│
+├── docker-compose.base.yml           # redis, timescaledb, alle Python-Services
+├── docker-compose.dev.yml            # Mac: CONNECTOR_MODE=replay, kein MT5
+├── docker-compose.prod.yml           # Ubuntu: + mt5-terminal (Wine)
 ├── .env.example
+├── pyproject.toml
+│
+├── docker/
+│   ├── service/Dockerfile            # shared Python service image
+│   └── mt5-terminal/                  # Wine + MT5 + RPyC bridge (Block 8)
+│
+├── mql5/
+│   └── BotOverlay.mq5                # MQL5-Indikator (Block 7)
+│
 ├── tools/
-│   └── generate_sample_data.py     # deterministic 30d XAUUSD M1 sample
+│   ├── generate_sample_data.py       # deterministischer 30d XAUUSD M1 Sample
+│   ├── check_mql5_syntax.py          # MQL5 Static-Check (Block 7)
+│   └── run_simulator_against_smoke.py # feature_smoke → MQL5-Simulator (Block 7)
+│
 ├── data/
 │   └── sample/
 │       └── xauusd_m1_sample.parquet
-├── docker/
-│   ├── service/Dockerfile          # shared Python service image
-│   └── mt5-terminal/Dockerfile     # Wine + MT5 + RPyC bridge (STUB)
+│
 ├── src/xauusd_bot/
-│   ├── connectors/                 # IMarketConnector + Replay / Live / Paper / Safety
-│   ├── data/                       # OHLCBuilder, SpreadMonitor, DataQualityMonitor, SymbolSpecLoader
-│   ├── features/                   # (placeholders for block 2)
-│   ├── decision/                   # (placeholders for block 4)
-│   ├── execution/                  # (placeholders for block 4)
-│   ├── journal/                    # (placeholders for block 4)
-│   ├── review/                     # (placeholders for block 4)
-│   ├── viz/                        # (placeholders for block 4)
-│   ├── cli/
-│   │   └── replay_smoke.py         # smoke CLI: replay 10k M1 bars end-to-end
+│   ├── connectors/                   # IMarketConnector + Replay / Live / Paper
+│   ├── data/                         # OHLCBuilder, SpreadMonitor, Quality, SymbolSpec
+│   ├── features/                     # Session, TripleVWAP, VolumeRange, FVG, ...
+│   ├── decision/                     # Aggregator, Scoring, RuleBasedFallback, AI-Layer, Orchestrator
+│   ├── execution/                    # RiskManager, PositionSizer, OrderManager, SL/TP, EmergencyStop
+│   ├── journal/                      # InMemory + TimescaleDB Stores, Queries, Schemas
+│   ├── backtest/                     # BacktestEngine, WalkForwardEngine, Models (Block 5b)
+│   ├── review/                       # ReviewAgent (Block 5c, placeholder)
+│   ├── viz/                          # Overlay-Writer (Block 2) + Bot-Overlay-Simulator (Block 7)
+│   ├── cli/                          # replay_smoke, feature_smoke, decision_smoke, execution_smoke,
+│   │                                 #   journal_smoke, backtest_smoke, ai_smoke
 │   └── common/
-│       ├── config/settings.py      # Pydantic-Settings
-│       ├── schemas/                # Pydantic schemas
-│       ├── messaging/              # Redis Streams wrapper
-│       └── logging/                # structlog setup
-└── tests/                          # pytest
+│       ├── config/                   # Pydantic-Settings
+│       ├── schemas/                  # Pydantic-Schemas (bar, tick, features, journal, AI-Decision)
+│       ├── messaging/                # Redis-Streams-Wrapper
+│       └── logging/                  # structlog
+│
+├── tests/                            # pytest, 952 Tests, 100% Coverage auf viz/
+│   ├── connectors/                   # test_replay, test_schema_parity, test_paper
+│   ├── data/
+│   ├── features/
+│   ├── decision/                     # test_aggregator, test_scoring, test_ai_schemas,
+│   │                                 #   test_openrouter_client, test_ai_layer, test_ai_orchestrator,
+│   │                                 #   test_i4_audit
+│   ├── execution/
+│   ├── journal/
+│   ├── backtest/
+│   ├── viz/                          # test_overlay_writer, test_bot_overlay_logic
+│   └── integration/                  # test_feature_smoke, cross-block
+│
+└── logs/                             # JSON-Reports aller Smoke-CLIs
 ```
 
 ---
@@ -64,7 +119,7 @@ python3.11 -m venv .venv
 cat logs/replay_smoke.json
 ```
 
-> **Heads-up:** some macOS Python 3.14 venvs have a macOS-`UF_HIDDEN` flag
+> **Heads-up (macOS Python 3.14):** some macOS Python 3.14 venvs have a macOS-`UF_HIDDEN` flag
 > on `site-packages/` that prevents editable `.pth` files from loading.
 > If `python -m xauusd_bot.cli.replay_smoke` fails with
 > `ModuleNotFoundError: No module named 'xauusd_bot'`, either:
@@ -75,41 +130,49 @@ cat logs/replay_smoke.json
 >
 > `pytest` is unaffected because `pyproject.toml` sets `pythonpath = ["src"]`.
 
-## Quickstart (Docker, dev)
+---
+
+## Quickstart (Full Pipeline, decision_smoke)
 
 ```bash
-cp .env.example .env
-# edit OPENROUTER_API_KEY if you want to exercise the AI layer later
+# Replay-Connector → Feature-Engine → Decision-Layer (Rule + AI) → TradeQualification
+# → Risk → Execution → Paper-Broker → Journal. 9/200 qualified trades.
+PYTHONPATH=src REDIS_URL=redis://localhost:6379/0 \
+  TIMESCALEDB_URL=postgresql+asyncpg://xauusd:xauusd@localhost:5432/xauusd \
+  ENVIRONMENT=test \
+  .venv/bin/python -m xauusd_bot.cli.decision_smoke \
+    --n-bars 200 --start-bar 2000
 
-docker compose -f docker-compose.base.yml -f docker-compose.dev.yml up
+# Mit AI-Decision-Layer (zusätzlich zu RuleBasedFallback):
+PYTHONPATH=src OPENROUTER_API_KEY=<sk-or-v1-...> \
+  REDIS_URL=redis://localhost:6379/0 \
+  TIMESCALEDB_URL=postgresql+asyncpg://xauusd:xauusd@localhost:5432/xauusd \
+  ENVIRONMENT=test \
+  .venv/bin/python -m xauusd_bot.cli.decision_smoke \
+    --n-bars 200 --start-bar 2000 \
+    --use-ai-layer --ai-max-calls 5 --ai-budget-usd 0.01
+
+# AI-Layer standalone smoke (LLM direkt):
+PYTHONPATH=src OPENROUTER_API_KEY=<sk-or-v1-...> \
+  .venv/bin/python -m xauusd_bot.cli.ai_smoke
+# → exit 0, logs/ai_snapshot.json (oder skipped wenn OPENROUTER_API_KEY unset)
 ```
 
-`docker-compose.dev.yml` excludes the `mt5-terminal` service and overrides
-`CONNECTOR_MODE=replay` so the full pipeline runs on macOS without Wine.
-
-## Quickstart (Docker, prod)
-
-On an Ubuntu VM with Wine-capable kernel:
-
-```bash
-cp .env.example .env  # fill in MT5_LOGIN, MT5_PASSWORD, OPENROUTER_API_KEY
-docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up
-```
-
-The `mt5-terminal` container is **a STUB in this block** — wiring it up against
-`scottyhardy/docker-wine` and a Vantage account is task 15 of the roadmap.
+**Caveats AI-Layer:**
+- OpenRouter Zero-Data-Retention wird via `provider.zdr=true` + `data_collection="deny"` im Request-Body erzwungen (nicht via Header — der offizielle OpenRouter-Mechanismus).
+- LLM gibt nur decision, entry_type, entry_side, entry_zone, invalidations, management, confidence, comment zurück. KEINE Positionsgröße, SL oder TP (Architektur-Invariante I-4: Brain vs Hands).
+- Hard-Rule-Violations (News-Blackout, Zone out of range) → Orchestrator korrigiert auf `no_trade` + LLMFallbackDiscrepancy ins Journal.
+- 1 Retry bei Validation/Zone-Fehler; Timeout/5xx/Auth werden nicht retryt (Latenz-Sturm-Vermeidung).
+- LLM darf "nein" sagen (Veto) — RuleBasedFallback ist sicherheitsautoritativ, LLM kann ihn nicht überstimmen.
 
 ---
 
 ## Quickstart (Backtest, Block 5b)
 
-The BacktestEngine replays historical M1 bars through the same Replay → Features
-→ Decision → Qualification → Risk → Size → Stops → Order → Journal → KPI pipeline
-that the bot will use live. WalkForwardEngine then rolls In-Sample / Out-of-Sample
-windows to detect overfitting.
+Der BacktestEngine replayed historische M1-Bars durch die gleiche Pipeline wie der Live-Mode. WalkForwardEngine rollt IS/OOS-Windows und flagged Overfit.
 
 ```bash
-# 1. Single backtest (no walk-forward), ~20s on 300 M1 bars
+# 1. Single backtest (kein walk-forward), ~20s auf 300 M1-Bars
 PYTHONPATH=src REDIS_URL=redis://localhost:6379/0 \
   TIMESCALEDB_URL=postgresql+asyncpg://xauusd:xauusd@localhost:5432/xauusd \
   ENVIRONMENT=test \
@@ -117,9 +180,7 @@ PYTHONPATH=src REDIS_URL=redis://localhost:6379/0 \
     --start-date 2026-04-15 --end-date 2026-04-30 \
     --warmup-bars 200 --max-bars 300
 
-# 2. With WalkForward (rolling IS/OOS windows), ~3 min on 1-month sample data
-#    Note: total range must be >= in_sample + out_of_sample. With 7d/3d/3d the
-#    30d sample yields ~7 windows.
+# 2. Mit WalkForward (rolling IS/OOS-Windows), ~3 Min auf 1-Monat-Sample
 PYTHONPATH=src REDIS_URL=redis://localhost:6379/0 \
   TIMESCALEDB_URL=postgresql+asyncpg://xauusd:xauusd@localhost:5432/xauusd \
   ENVIRONMENT=test \
@@ -129,49 +190,158 @@ PYTHONPATH=src REDIS_URL=redis://localhost:6379/0 \
     --in-sample-days 7 --out-of-sample-days 3 --step-days 3
 ```
 
-Both commands write `logs/backtest_snapshot.json` with `n_bars_processed`,
-`n_trades`, `stats` (sharpe, sortino, max_dd, profit_factor, expectancy),
-`equity_curve_sample`, `r_distribution`, `setup_breakdown`, and — when
-walk-forward is enabled — `wf_windows`, `wf_oos_degradation`, `wf_is_overfit`.
+`logs/backtest_snapshot.json` enthält: `n_bars_processed`, `n_trades`, `stats` (sharpe, sortino, max_dd, profit_factor, expectancy), `equity_curve_sample`, `r_distribution`, `setup_breakdown`, und bei WalkForward: `wf_windows`, `wf_oos_degradation`, `wf_is_overfit`.
 
 **Caveats:**
-- The shipped `data/sample/xauusd_m1_sample.parquet` is **synthetic**; the
-  backtest CLI injects synthetic TP zones for the same reason as `journal_smoke`
-  (real liquidity engines need real volume clusters). Production data
-  (Dukascopy / Vantage export) bypasses this hack automatically.
-- Slippage and spread models are simplified: `FixedSlippage`, `VolatilitySlippage`,
-  `FixedSpread`, `VolatilitySpread`, `NewsAwareSpread` — see `src/xauusd_bot/backtest/models.py`.
-  Realistic execution modeling (variable per bar, vol-correlated, news-impact)
-  is on the Block-5c / Demo-Forward backlog.
-- WalkForward flags `is_overfit=true` when OOS-Sharpe degrades >30% vs IS-Sharpe.
-  This is a heuristic, not a verdict — review `wf_windows` and the per-window
-  stats in `backtest_snapshot.json` before drawing conclusions.
-- `--max-bars` caps the inner per-bar cost in `BacktestEngine` (default 1500).
-  The CLI defaults to 200 for a fast smoke; raise it for production backtests.
+- Sample-Datensatz ist **synthetisch**; Backtest injiziert synthetic TP-Zonen (real Liquidity-Engines brauchen echte Volume-Cluster). Production-Daten (Dukascopy / Vantage-Export) umgehen das automatisch.
+- Slippage/Spread-Modelle: `FixedSlippage`, `VolatilitySlippage`, `FixedSpread`, `VolatilitySpread`, `NewsAwareSpread` — siehe `src/xauusd_bot/backtest/models.py`. Realistic Execution-Modeling ist Block-5c/Demo-Forward-Backlog.
+- WalkForward flagged `is_overfit=true` wenn OOS-Sharpe > 30% degradiert vs IS-Sharpe. Heuristik, kein Verdict — review `wf_windows` und per-window stats.
+- `--max-bars` cappt inner per-bar cost (default 200 für Smoke, höher für Production-Backtests).
 
 ---
 
-## Architecture invariants (enforced)
+## Quickstart (MT5-Overlay, Block 7)
 
-1. **No `MetaTrader5` import outside `connectors/live.py`.** The `MetaTrader5` package
-   is Windows-only and not available on Mac. Dev runs entirely on `ReplayConnector`
-   + `PaperBroker`; prod uses `LiveMT5Connector` over a Wine/RPyC bridge.
-2. **Identical schemas** between `ReplayConnector` and `LiveMT5Connector` — proven
-   by `tests/test_schemas.py`.
-3. **Point-in-Time:** `ReplayConnector` returns only data with `time <= current_t`.
-   The `advance_time(t)` method moves the cursor forward; the smoke CLI exercises this.
-4. **Brain vs Hands:** the AI layer (block 4) never computes position size, SL, or TP —
-   `RiskManager` and `PositionSizer` are authoritative.
-5. **Tick-volume is relative only.** Consumers (feature engines) MUST treat it as a
-   percentile / z-score, never as an absolute signal.
+`BotOverlay.mq5` ist der MQL5-Indikator, der die vom Bot geschriebene `overlay_levels.json` im MT5-Chart zeichnet. Er ist in CI nicht lauffähig (kein headless MT5 in macOS) — die Logik wird in Python simuliert.
 
-## Build roadmap
+```bash
+# 1. Feature-Smoke schreibt overlay_levels.json (passiert automatisch)
+PYTHONPATH=src .venv/bin/python -m xauusd_bot.cli.feature_smoke
 
-See `00_FINAL_PLAN.md` §9. This commit covers steps **1 + 2 + 3** (skeleton, replay,
-data layer). Subsequent blocks will fill in features, decision, execution, journal,
-review, and AI layer.
+# 2. MQL5-Simulator testet die Read-Logik (33 Tests, alle grün)
+.venv/bin/pytest tests/viz/test_bot_overlay_logic.py -q
+
+# 3. Static-Check auf dem MQL5-File (Brace-Balance, Whitelist, I-1 + I-4)
+.venv/bin/python tools/check_mql5_syntax.py
+# → OK: mql5/BotOverlay.mq5 (mit 4 WARNs zu user-defined helpers, Best-Effort)
+
+# 4. End-to-End Roundtrip: feature_smoke → Simulator
+.venv/bin/python -m tools.run_simulator_against_smoke
+# → exit 0, 154 DrawOps (12 HLINE + 133 RECT + 9 LABEL)
+```
+
+**Caveats (volle Liste in `AGENTS.md` §4g):**
+- MQL5 wird in CI NICHT compiliert — nur Best-Effort Static-Check.
+- Python-Simulator testet die File-Read-Logik, NICHT die Chart-Visual. MT5-Chart-Validation bleibt manuell in MetaEditor.
+- `prev_*` levels am ersten Tag einer neuen Periode sind `null` — MQL5-Indikator MUSS das gracefully handhaben (regress-getestet).
+- FVG-Rechteck-Farben voll opak (MQL5-Limit, User filtert via Chart-Properties).
+- Timer 5s = Latency/CPU-Trade-off; ZeroMQ-Push für Real-Time-Sync bleibt Block-8+ Optional.
+
+**Manueller MT5-Chart-Test (Ubuntu/Win, mit MT5 installiert):**
+1. `mql5/BotOverlay.mq5` in MetaTrader kopieren: `File → Open Data Folder → MQL5/Indicators/`
+2. Im MetaEditor kompilieren (F7) — muss ohne Fehler kompilieren.
+3. Im Chart: `Insert → Indicators → Custom → BotOverlay`
+4. `MQL5/Files/overlay_levels.json` muss existieren (vom Bot geschrieben) — BotOverlay liest sie alle 5s.
+
+---
+
+## Quickstart (Docker, dev)
+
+```bash
+cp .env.example .env
+# edit OPENROUTER_API_KEY if you want to exercise the AI layer
+
+docker compose -f docker-compose.base.yml -f docker-compose.dev.yml up
+```
+
+`docker-compose.dev.yml` excludiert den `mt5-terminal`-Service und setzt `CONNECTOR_MODE=replay`, damit die volle Pipeline auf macOS ohne Wine läuft.
+
+## Quickstart (Docker, prod, Block 8)
+
+Auf einer Ubuntu-VM mit Wine-fähigem Kernel:
+
+```bash
+cp .env.example .env  # fill in MT5_LOGIN, MT5_PASSWORD, OPENROUTER_API_KEY
+
+docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up
+```
+
+Der `mt5-terminal`-Container ist aktuell noch ein **STUB** — die echte Verdrahtung gegen `scottyhardy/docker-wine` und einen Vantage-Account ist Block 8 der Roadmap. Nach Block 8: der `LiveMT5Connector` spricht via RPyC-Bridge mit dem Wine-MT5-Terminal.
+
+---
+
+## Architektur-Invarianten (enforced via Tests + Audits)
+
+1. **I-1: Connector-Isolation.** `import MetaTrader5` (oder `from MetaTrader5`) AUSSCHLIESSLICH in `src/xauusd_bot/connectors/live.py` und `docker/mt5-terminal/`. Alle anderen Module importieren `IMarketConnector` (Protocol aus `connectors/base.py`).
+2. **I-2: Schema-Parität Replay ↔ Live.** `ReplayConnector` und `LiveMT5Connector` liefern identische Methodensignaturen und Rückgabe-Typen — enforced by `tests/connectors/test_schema_parity.py`.
+3. **I-3: Point-in-Time (PIT).** `ReplayConnector` liefert NUR Bars/Ticks mit `time <= current_t`. `advance_time(t)` ist monoton, time-travel backwards → `ValueError`.
+4. **I-4: Brain vs Hands.** Der AI-Decision-Layer (Block 6) berechnet NIEMALS Positionsgröße, SL oder TP. LLM-Output ist strikt JSON via Pydantic, ungültig → 1 Retry → `no_trade`. RuleBasedFallback ist sicherheitsautoritativ — LLM-Veto gewinnt nie gegen harte Regeln.
+5. **I-5: Tick-Volume nur relativ.** `Bar.tick_volume` ist Perzentil/Z-Score-Input, nie absolutes Signal.
+
+**Adversarielle Audits pro Block:** Die Test-Suite enthält für jeden Block canary-Tests (z.B. `tests/decision/test_i4_audit.py`), die prüfen, dass die hartkodierten Regeln nicht durch Refactoring verloren gehen.
+
+---
+
+## Test-Übersicht
+
+```bash
+# Full suite (952 Tests, ~2.5 Min auf Mac)
+PYTHONPATH=src:. .venv/bin/pytest -q --no-header
+
+# Per-Block-Suites
+.venv/bin/pytest tests/connectors/ tests/data/ -q       # Block 1
+.venv/bin/pytest tests/features/ -q                     # Block 2
+.venv/bin/pytest tests/decision/test_aggregator.py tests/decision/test_scoring.py -q  # Block 3
+.venv/bin/pytest tests/execution/ -q                    # Block 4
+.venv/bin/pytest tests/journal/ -q                      # Block 5a
+.venv/bin/pytest tests/backtest/ -q                     # Block 5b
+.venv/bin/pytest tests/decision/test_ai_*.py tests/decision/test_openrouter_client.py -q  # Block 6
+.venv/bin/pytest tests/viz/ -q                          # Block 7
+```
+
+Smoke-CLIs (run real pipeline, JSON in `logs/`):
+
+```bash
+.venv/bin/python -m xauusd_bot.cli.replay_smoke
+.venv/bin/python -m xauusd_bot.cli.feature_smoke
+.venv/bin/python -m xauusd_bot.cli.decision_smoke --n-bars 200 --start-bar 2000
+.venv/bin/python -m xauusd_bot.cli.execution_smoke --force-trade
+.venv/bin/python -m xauusd_bot.cli.journal_smoke --n-bars 200 --start-bar 2000
+.venv/bin/python -m xauusd_bot.cli.backtest_smoke --start-date 2026-04-15 --end-date 2026-04-30 --warmup-bars 200 --max-bars 300
+.venv/bin/python -m xauusd_bot.cli.ai_smoke    # OPENROUTER_API_KEY optional
+```
+
+---
+
+## Build-Roadmap (Details in `00_FINAL_PLAN.md` §9)
+
+1. ✅ Repo-Skeleton + Docker + Connector-Interface
+2. ✅ ReplayConnector + PaperBroker + Sample-Datensatz
+3. ✅ Data Layer: OHLCBuilder, SpreadMonitor, DataQualityMonitor
+4. ✅ Basis-Features: Session, TripleVWAP, MarketStructure, Candle/Momentum
+5. ✅ FixedVolumeRangeEngine (Weekly → Monthly → Yearly)
+6. ✅ FVG + Liquidity Engine
+7. ✅ NewsContextEngine + Kalender-API
+8. ✅ FeatureAggregator + ScoringEngine
+9. ✅ Execution MVP: RiskManager, PositionSizer, OrderManager, SL/TP
+10. ✅ TradeJournalDB + FeatureSnapshotStore (TimescaleDB)
+11. ✅ AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback
+12. ✅ MT5-Viz-Bridge + `BotOverlay.mq5`
+13. ✅ BacktestEngine + WalkForwardEngine
+14. ⏳ Daily/WeeklyReview + FittingProposal
+15. ⏳ LiveMT5Connector + mt5-terminal-Container (Wine-Bridge)
+16. ⏳ Custom Web-Dashboard
+17. ⏳ Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live
+
+(13 von ~17 Punkten ship-ready, 4 offen — Block 8 = LiveMT5, Block 9 = Web-Dashboard, Block 10 = Demo-Forward+Live, Block 5c = DailyReview ist zwischen 13 und 15 einzusortieren.)
+
+---
+
+## Push-Workflow (an Remote)
+
+```bash
+# Status check
+git status
+git log dev --oneline -5
+
+# Push (per expliziter User-Freigabe, nicht automatisch)
+git push origin dev
+```
+
+Remote: `origin` = `https://github.com/forliHD/GoldManager.git` (GitHub, `forliHD`-Account). Commits werden lokal auf `dev` angehäuft und per expliziter Freigabe gepusht — kein Auto-Push.
+
+---
 
 ## Disclaimer
 
-This is a software project, not financial advice. Run on demo until you've validated
-the pipeline end-to-end.
+Das ist ein Software-Projekt, keine Finanzberatung. Bis Block 10 (Demo-Forward) nur auf Demo-Accounts testen. Live-Trading erst nach expliziter Freigabe und mit Mini-Volumen.

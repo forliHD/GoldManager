@@ -38,13 +38,27 @@
 zusätzlich zum MT5-Overlay auch in einem webbasierten Dashboard sehen
 (Backtests, Replay, Live-Monitoring aus einer UI).
 
-Producer-Commits landen auf `dev`. Kein Remote konfiguriert (per Auftrag).
+Producer-Commits landen auf `dev`. Remote: `origin` =
+`https://github.com/forliHD/GoldManager.git`. Push-Workflow: lokale
+Commits auf `dev` anhäufen, dann `git push origin dev` per expliziter
+User-Freigabe (nicht automatisch).
 
-**E2E-Integration (Stand 2026-06-15):** Replay-Connector → Feature-Engine →
-Decision-Layer Pipeline-Smoke grün (`decision_smoke --n-bars 200 --start-bar
-2000` → 9/200 qualified trades, exit 0). Alle Architektur-Invarianten I-1..I-5
-re-verifiziert. Gesamte Test-Suite: **694 passed** (Block 1: 217, Block 2: 70
-neu, Block 3: 85, Block 4: 117 neu, Block 5a: 114 neu).
+**E2E-Integration (Stand 2026-06-17):** Replay-Connector → Feature-Engine →
+Decision-Layer (Rule + AI) → TradeQualification → Risk → Execution →
+Journal → KPI Pipeline-Smoke grün. Gesamte Test-Suite: **952 passed**
+(Block 1: 217, Block 2: 70, Block 3: 85, Block 4: 117, Block 5a: 114,
+Block 5b: 143, Block 6: 72, Block 7: 41). Alle Architektur-Invarianten
+I-1..I-5 re-verifiziert.
+
+**Meilensteine:**
+- 2026-06-15: Block 1-4 ship-ready, 511 Tests, E2E-Smoke grün
+- 2026-06-15: Block 5a (Journal) ship-ready, 625 Tests
+- 2026-06-16: Block 5b (Backtest) ship-ready, 838 Tests
+- 2026-06-16: Block 6 (AI Layer, v2 spec-conformance) ship-ready, 911 Tests
+- 2026-06-17: Block 7 (MT5-Viz-Bridge + BotOverlay.mq5) ship-ready, 952 Tests
+- 2026-06-17: AGENTS.md §4g (Block-7-Caveats) ergänzt, Memory + MQL5-Sim-Pattern
+- 2026-06-17: `origin` = `https://github.com/forliHD/GoldManager.git` aktiv,
+  dev-Branch 9 Commits ahead of origin/dev, Push-Workflow etabliert.
 
 **Block-4 Lifecycle-Smoke (Stand 2026-06-15):** `execution_smoke --force-trade`
 läuft komplette Lifecycle (risk → size → stops → order → sweep → trail) mit
