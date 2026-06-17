@@ -2,7 +2,7 @@
 
 Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMax BYOK) → Risk/Execution → Journal/Review → MT5-Overlay-Visualisierung.
 
-**Aktueller Stand (2026-06-17):** Blöcke 1–7 ship-ready auf `dev`. 952 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert. Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
+**Aktueller Stand (2026-06-17):** Blöcke 1–8 ship-ready auf `dev`. 991 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
 
 ---
 
@@ -19,7 +19,7 @@ Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMa
 | 5c | Daily/WeeklyReview + FittingProposal | offen |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready |
-| 8 | LiveMT5Connector (RPyC) + mt5-terminal-Container (Wine-Bridge auf Ubuntu) | offen |
+| 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready |
 | 9 | Custom Web-Dashboard (eigenes Chart + Indikatoren-UI, webbasiert) | offen |
 | 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live mit Mini-Volumen | offen |
 
@@ -251,19 +251,33 @@ docker compose -f docker-compose.base.yml -f docker-compose.dev.yml up
 Auf einer Ubuntu-VM mit Wine-fähigem Kernel:
 
 ```bash
-cp .env.example .env  # fill in MT5_LOGIN, MT5_PASSWORD, OPENROUTER_API_KEY
+cp .env.example .env
+# fill in: MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, MT5_BRIDGE_AUTH_KEY, OPENROUTER_API_KEY
 
 docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up
 ```
 
-Der `mt5-terminal`-Container ist aktuell noch ein **STUB** — die echte Verdrahtung gegen `scottyhardy/docker-wine` und einen Vantage-Account ist Block 8 der Roadmap. Nach Block 8: der `LiveMT5Connector` spricht via RPyC-Bridge mit dem Wine-MT5-Terminal.
+Der `mt5-terminal`-Container bringt Wine + MetaTrader 5 + Windows-Python +
+RPyC-Bridge mit. Build-Dauer beim Erstbuild: 10–15 Min (Wine + MT5 + Win-Python);
+Re-Deploys nach Code-Änderungen am Bridge-Server: ~30s (Layer-Cache).
+
+**Erstmaliges Vantage-Login:**
+
+1. Browser öffnen: <http://127.0.0.1:6080/vnc.html> (noVNC-Web, loopback-only).
+2. Im MT5-Terminal den Vantage-Demo-Login durchführen (Tools → Options → Server).
+3. VNC nach erfolgreichem Login schließen (oder Port-Mapping
+   ``127.0.0.1:5900:5900`` aus `docker-compose.prod.yml` rausnehmen).
+4. Vom Host aus: `python -c "from xauusd_bot.connectors.live import LiveMT5Connector; c = LiveMT5Connector(host='127.0.0.1', port=18812, login=YOUR_LOGIN, password='YOUR_PASS', server='VantageInternational-Demo', auth_key='YOUR_BRIDGE_KEY'); print(c.get_account())"`.
+
+**VNC-Sicherheit:** Niemals die Ports 5900/6080 auf 0.0.0.0 exposen.
+Falls Remote-Zugriff nötig: Cloudflare Zero Trust Tunnel davor.
 
 ---
 
 ## Architektur-Invarianten (enforced via Tests + Audits)
 
-1. **I-1: Connector-Isolation.** `import MetaTrader5` (oder `from MetaTrader5`) AUSSCHLIESSLICH in `src/xauusd_bot/connectors/live.py` und `docker/mt5-terminal/`. Alle anderen Module importieren `IMarketConnector` (Protocol aus `connectors/base.py`).
-2. **I-2: Schema-Parität Replay ↔ Live.** `ReplayConnector` und `LiveMT5Connector` liefern identische Methodensignaturen und Rückgabe-Typen — enforced by `tests/connectors/test_schema_parity.py`.
+1. **I-1: Connector-Isolation.** `import MetaTrader5` (oder `from MetaTrader5`) AUSSCHLIESSLICH in `docker/mt5-terminal/mt5_bridge_server.py` (Windows-Python / Wine). **Seit Block 8 (2026-06-17) auch nicht mehr in `src/xauusd_bot/connectors/live.py`** — der Linux-Connector ist ein reiner RPyC-Client. Alle anderen Module importieren `IMarketConnector` (Protocol aus `connectors/base.py`).
+2. **I-2: Schema-Parität Replay ↔ Live.** `ReplayConnector` und `LiveMT5Connector` liefern identische Methodensignaturen und Rückgabe-Typen — enforced by `tests/connectors/test_schema_parity.py` (44 Tests, inkl. Live-Mock).
 3. **I-3: Point-in-Time (PIT).** `ReplayConnector` liefert NUR Bars/Ticks mit `time <= current_t`. `advance_time(t)` ist monoton, time-travel backwards → `ValueError`.
 4. **I-4: Brain vs Hands.** Der AI-Decision-Layer (Block 6) berechnet NIEMALS Positionsgröße, SL oder TP. LLM-Output ist strikt JSON via Pydantic, ungültig → 1 Retry → `no_trade`. RuleBasedFallback ist sicherheitsautoritativ — LLM-Veto gewinnt nie gegen harte Regeln.
 5. **I-5: Tick-Volume nur relativ.** `Bar.tick_volume` ist Perzentil/Z-Score-Input, nie absolutes Signal.

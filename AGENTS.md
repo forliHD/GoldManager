@@ -10,8 +10,9 @@
   über Wine-Bridge auf Ubuntu-VM (Prod). Siehe `00_FINAL_PLAN.md` für die
   komplette Spezifikation — dies hier ist die **operative Kurzfassung**.
 - **Stack:** Python 3.11+ (lokal 3.14), pydantic v2, pydantic-settings,
-  pandas, pyarrow, redis, structlog, fastapi, pytest. Docker: redis,
-  timescaledb, service-images, mt5-terminal (STUB).
+  pandas, pyarrow, redis, structlog, fastapi, pytest, **rpyc 6.0+**
+  (Live-Connector). Docker: redis, timescaledb, service-images,
+  mt5-terminal (Wine + MT5 + Windows-Python RPyC-Bridge).
 - **Roadmap:** 16 Schritte in `00_FINAL_PLAN.md §9`. Build-Status siehe
   Abschnitt 2 unten.
 
@@ -28,7 +29,7 @@
 | 5c | Daily/WeeklyReview + FittingProposal | offen |
 | 6 | AIDecisionLayer (OpenRouter) parallel zu RuleBasedFallback | ✅ ship-ready, dev-branch |
 | 7 | MT5-Viz-Bridge + `BotOverlay.mq5` (MQL5-Indikator + Python-Simulator + Static-Check) | ✅ ship-ready, dev-branch |
-| 8 | LiveMT5Connector (RPyC) + mt5-terminal-Container (Wine) | offen |
+| 8 | LiveMT5Connector (RPyC-Client) + mt5-terminal-Container (Wine + MT5 + RPyC-Bridge) + Vantage-XAUUSD-SymbolSpec | ✅ ship-ready, dev-branch |
 | 9 | Custom Web-Dashboard (eigenes Chart + Indikatoren-UI, webbasiert) | offen |
 | 10 | Demo-Forward auf Ubuntu → Monitoring → (erst dann) Live | offen |
 
@@ -45,10 +46,15 @@ User-Freigabe (nicht automatisch).
 
 **E2E-Integration (Stand 2026-06-17):** Replay-Connector → Feature-Engine →
 Decision-Layer (Rule + AI) → TradeQualification → Risk → Execution →
-Journal → KPI Pipeline-Smoke grün. Gesamte Test-Suite: **952 passed**
+Journal → KPI Pipeline-Smoke grün. Gesamte Test-Suite: **991 passed**
 (Block 1: 217, Block 2: 70, Block 3: 85, Block 4: 117, Block 5a: 114,
-Block 5b: 143, Block 6: 72, Block 7: 41). Alle Architektur-Invarianten
-I-1..I-5 re-verifiziert.
+Block 5b: 143, Block 6: 72, Block 7: 41, Block 8: 132) — Stand nach
+Block 8 (LiveMT5Connector + RPyC-Bridge + Vantage-SymbolSpec).
+Alle Architektur-Invarianten I-1..I-5 re-verifiziert; **I-1 wurde
+in Block 8 verschärft**: `import MetaTrader5` darf NUR noch in
+`docker/mt5-terminal/mt5_bridge_server.py` stehen, NICHT mehr in
+`src/xauusd_bot/connectors/live.py` (das war Block-1-Erlaubnis, die
+nun hinfällig ist — der Linux-Connector spricht rein RPyC).
 
 **Meilensteine:**
 - 2026-06-15: Block 1-4 ship-ready, 511 Tests, E2E-Smoke grün
@@ -58,6 +64,11 @@ I-1..I-5 re-verifiziert.
 - 2026-06-17: Block 7 (MT5-Viz-Bridge + BotOverlay.mq5) ship-ready, 952 Tests
 - 2026-06-17: AGENTS.md §4g (Block-7-Caveats) ergänzt, Memory + MQL5-Sim-Pattern
 - 2026-06-17: `origin` = `https://github.com/forliHD/GoldManager.git` aktiv,
+  dev-Branch 9 Commits ahead of origin/dev, Push-Workflow etabliert.
+- 2026-06-17: **Block 8 (LiveMT5Connector + RPyC-Bridge + Vantage-SymbolSpec)
+  ship-ready.** 991 Tests (vorher 952). Echte Linux-RPyC-Client
+  ersetzt den Stub; Wine-MT5-Container mit supervisord-Stack; SymbolSpec
+  mit Live-Override; AGENTS.md §4h ergänzt (10 Caveats).
   dev-Branch 9 Commits ahead of origin/dev, Push-Workflow etabliert.
 
 **Block-4 Lifecycle-Smoke (Stand 2026-06-15):** `execution_smoke --force-trade`
@@ -131,12 +142,21 @@ Worker, der sie bricht, macht den Block ungültig.
 
 ### I-1: Connector-Isolation
 - `import MetaTrader5` (oder `from MetaTrader5`) darf AUSSCHLIESSLICH in
-  `src/xauusd_bot/connectors/live.py` und in `docker/mt5-terminal/`
-  vorkommen.
+  `docker/mt5-terminal/mt5_bridge_server.py` vorkommen
+  (Windows-Python / Wine-Seite).
+- **Stand 2026-06-17 (Block 8 Verschärfung):** die ursprüngliche
+  Block-1-Erlaubnis für `src/xauusd_bot/connectors/live.py` ist
+  hinfällig — der Linux-Connector ist jetzt ein reiner RPyC-Client
+  und enthält KEIN `import MetaTrader5`. Wer das versehentlich
+  wieder hinzufügt, bricht I-1 und der Live-Connector wird auf
+  macOS nicht mehr importierbar.
 - Alle anderen Module importieren `IMarketConnector` (Protocol aus
   `connectors/base.py`).
-- Verifikation: `grep -rn "import MetaTrader5\|from MetaTrader5" src/ tests/ tools/`
-  darf nur die erlaubten Stellen treffen.
+- Verifikation: `grep -rn "import MetaTrader5\|from MetaTrader5" src/ tests/ tools/ docker/`
+  darf nur die eine erlaubte Stelle (`docker/mt5-terminal/mt5_bridge_server.py`)
+  und Docstring-/Test-Erwähnungen treffen. Der
+  `tests/connectors/test_live_connector.py::test_i1_audit_grep_no_metatrader5_in_connectors_live`
+  Test enforced das auch automatisch.
 
 ### I-2: Schema-Parität Replay ↔ Live
 - `ReplayConnector` und `LiveMT5Connector` MÜSSEN identische
@@ -461,6 +481,111 @@ Diese Caveats sind KEINE Blocker, aber zu beachten für Block 8
    — wenn das Schema wächst (z.B. `volume_profile.daily`), MUSS der
    Indikator mit-aktualisiert werden. Eine Schema-Version-Header im
    JSON wäre eine zukünftige Verbesserung.
+
+## 4h. Caveats aus Block 8 (LiveMT5Connector + RPyC-Bridge + Vantage-SymbolSpec)
+
+Diese Caveats sind KEINE Blocker, aber zu beachten für Block 10
+(Demo-Forward / Live auf Ubuntu-VM) und für Operator-Workflows:
+
+1. **MT5-API ist nicht thread-safe.** Die einzige ``MetaTrader5``-fähige
+   Komponente ist der Bridge-Server in
+   ``docker/mt5-terminal/mt5_bridge_server.py``. Alle ``mt5.*``-Calls
+   laufen durch einen ``threading.Lock`` (``self._mt5_lock``) und sind
+   serialisiert. Auf der Connector-Seite: nur EIN Python-Prozess darf
+   den ``LiveMT5Connector`` zur gleichen Zeit aktiv nutzen. Für
+   mehrere parallele Engines: pro Engine eine eigene
+   ``mt5-terminal``-Instanz mit eigenem Bridge-Port (z.B. 18812/18813).
+
+2. **Login-State in der Bridge ist persistent** (über Docker-Volume
+   ``mt5-data``). Nach Container-Restart bleibt der Vantage-Login
+   erhalten. Trade-Operations laufen nach Restart normal weiter, aber
+   pending-Orders / offene Positionen MÜSSEN nach Restart re-queried
+   werden — der ``LiveMT5Connector.positions_get()`` und
+   ``pending_get()`` machen das beim ersten Call automatisch. Wer
+   einen Cache dazwischen hat (z.B. einen ``PositionCache``), muss
+   den bei ``is_connected() → True`` invalidieren.
+
+3. **Vantage-Demo-Server-Name ist ``VantageInternational-Demo``** (per
+   ENV ``MT5_SERVER`` überschreibbar). Andere gängige Vantage-Server:
+   ``VantageInternational-Live``, ``VantageEU-Demo``. Die exakte
+   Server-Liste steht in der Vantage-Account-Email nach Kontoeröffnung
+   oder im MT5-Terminal unter ``Tools → Options → Server``.
+
+4. **SymbolSpec-Defaults sind konservativ.** Wenn der Live-Connector
+   eine aktuelle ``get_symbol_info`` liefert, überschreiben die
+   Live-Werte die Defaults in :func:`xauusd_bot.connectors.symbol_spec.resolve_symbol_spec`.
+   Im Offline-Demo-Mode (Replay-Connector / kein Live-Connector)
+   gelten die Defaults — das ist OK für Pipeline-Smoke, aber im
+   Live-Betrieb muss der Connector verbunden sein. Contract-Drift
+   (Vantage ändert die Conditions) wird beim ersten Connect erkannt
+   und im Log markiert.
+
+5. **VNC nur an 127.0.0.1 binden.** Niemals 0.0.0.0 exposed, niemals
+   öffentlich. Im ``docker-compose.prod.yml`` sind alle drei Ports
+   (18812, 5900, 6080) explizit auf ``127.0.0.1:PORT:PORT`` gepinnt.
+   VNC ist nur für die einmalige Vantage-Account-Login-Prozedur; danach
+   kann der Port gemappt werden (Container weiterlaufen lassen, nur
+   den Port-Mapping rausnehmen). Falls Remote-Zugriff nötig: Cloudflare
+   Zero Trust Tunnel davor, nicht direkt exposen.
+
+6. **RPyC-Bridge hat keine Auth per Default.** In Production
+   ``MT5_BRIDGE_AUTH_KEY`` setzen UND den gleichen Key in
+   ``LiveMT5Connector(auth_key=...)`` übergeben. Sonst kann jeder
+   Prozess im Docker-Netzwerk Trades auslösen. Der
+   :class:`MT5BridgeService.on_connect` Hook refused die Verbindung
+   bei Mismatch. Der Default (kein Auth) ist nur für lokales
+   Development OK.
+
+7. **Wine-Build dauert 10+ Min beim Erstbuild.** Layer-Cache ist im
+   Dockerfile optimiert: ``apt-get install`` in Layer 1, MT5-Installer
+   in Layer 2, Windows-Python in Layer 3, rpyc-pip in Layer 4,
+   bridge_server.py-COPY in Layer 5. Re-Deploys nach Code-Änderungen
+   am Bridge-Server sind ~30s. Erstbuild: ``docker buildx build
+   --cache-from type=registry`` empfohlen. Im
+   ``docker-compose.prod.yml`` ist das Image mit Tag
+   ``xauusd-bot/mt5-terminal:0.8.0`` explizit gepinnt — wer das auf
+   ``:latest`` ändert, riskiert nicht-reproduzierbare Deploys.
+
+8. **macOS Silicon (``mt5-terminal`` läuft NICHT).** Der Container
+   braucht x86-Linux + Wine + X11. Auf Apple Silicon Macs (M1/M2/M3)
+   kann der Container nur über ``--platform linux/amd64`` (QEMU)
+   gestartet werden — und das ist 5-10× langsamer. Auf
+   Apple-Silicon-Dev-Boxen: nur Replay-Connector benutzen (kein
+   Live-Mode). Prod-Linux ist Ubuntu-VM (x86). Plan: Block 10.
+
+9. **Symbol-Name-Discovery.** Vantage XAUUSD kann als ``XAUUSD``,
+   ``XAUUSDm``, ``XAUUSD.sml``, ``XAUUSD.r`` etc. auftauchen, je nach
+   Vantage-Server-Typ. Der Connector nimmt per Default ``XAUUSD``;
+   per ENV ``MT5_SYMBOL=XAUUSD.r`` überschreibbar. Wer automatische
+   Discovery will: ``MT5BridgeService.exposed_get_symbols()`` liefert
+   die komplette Liste, dann filtern mit ``startswith("XAU")``.
+
+10. **MT5-Installer-URL kann sich ändern.** Per ENV
+    ``MT5_INSTALLER_URL`` überschreibbar. Default ist die
+    MetaQuotes-CDN ``https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe``.
+    Mirror-URLs sind üblich (z.B. von Vantage selbst). Bei
+    Build-Failures: erst die URL prüfen, dann den Dockerfile-Cache
+    invalidieren.
+
+11. **(Bonus) Timeout-Retry-Policy.** Der
+    ``LiveMT5Connector._connect`` retryt 3× mit Backoff
+    (1s/2s/4s). Der RPyC-Socket-Timeout selbst ist NICHT der
+    ``timeout``-Parameter im Connector — der ist nur für die
+    per-call-Logik (z.B. ``mt5.copy_rates_from_pos``). Wer einen
+    kürzeren Socket-Timeout braucht: in RPyC-``config``
+    ``{"sync_request_timeout": 5}`` setzen, das wird beim nächsten
+    RPyC-Upgrade vom Client berücksichtigt (Stand 6.0.2 noch nicht
+    unterstützt, manuell über ``socket.settimeout`` falls nötig).
+
+12. **(Bonus) Bridge-Server-Schema-Kopplung.** Der
+    :class:`MT5BridgeService` und der :class:`LiveMT5Connector`
+    sind eng gekoppelt über das Wire-Format (dict-keys, pickle von
+    DataFrames). Wenn der Bridge-Server eine Methode umbenennt oder
+    einen Rückgabe-Key ändert, MUSS der Connector mit-gepatched
+    werden. Tests in ``test_live_connector.py`` enforced das nicht
+    (sie testen den Connector isoliert gegen ein Fake). Vor jedem
+    Bridge-Server-Commit: manuell die E2E-Verbindung testen (auf
+    Ubuntu-VM, echtes Konto).
 
 ## 5. Live-Bug-Journal (Producer-Bugs gefunden, gefixt, regress-getestet)
 
