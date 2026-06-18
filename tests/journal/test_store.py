@@ -298,6 +298,28 @@ async def test_list_snapshots_filters_by_window() -> None:
     assert {s.id for s in out} == {s2.id, s3.id}
 
 
+@pytest.mark.asyncio
+async def test_list_snapshots_newest_first_keeps_latest_under_limit() -> None:
+    # Regression: with limit < window size, the default keeps the OLDEST; the
+    # dashboard overlay needs the NEWEST (else it shows stale levels).
+    store = InMemoryJournalStore()
+    base = _ts()
+    snaps = [
+        make_snapshot(timestamp=base + timedelta(minutes=i), bar_time=base + timedelta(minutes=i))
+        for i in range(5)
+    ]
+    for s in snaps:
+        await store.write_feature_snapshot(s)
+    window = {"start": base - timedelta(hours=1), "end": base + timedelta(hours=1)}
+
+    oldest = await store.list_snapshots(**window, limit=2)
+    assert [s.id for s in oldest] == [snaps[0].id, snaps[1].id]
+
+    newest = await store.list_snapshots(**window, limit=2, newest_first=True)
+    # Newest two, still returned ascending by bar_time.
+    assert [s.id for s in newest] == [snaps[3].id, snaps[4].id]
+
+
 # ----------------------------------------------------------------- update_trade PIT + allowed fields
 
 

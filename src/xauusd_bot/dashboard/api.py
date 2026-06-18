@@ -318,9 +318,9 @@ async def chart_candles(
 
     # --- Fallback: journal feature snapshots (carry OHLC when persisted).
     store = _get_journal_store()
-    end = datetime.now(tz=UTC)
-    start = end - timedelta(days=max(int(count) // 1440 + 2, 7))
-    snaps = await store.list_snapshots(start=start, end=end, symbol=symbol, limit=count)
+    end = datetime.now(tz=UTC) + timedelta(hours=24)  # broker-time bars sit ahead of real UTC
+    start = datetime.now(tz=UTC) - timedelta(days=max(int(count) // 1440 + 2, 7))
+    snaps = await store.list_snapshots(start=start, end=end, symbol=symbol, limit=count, newest_first=True)
     out: list[CandleDict] = []
     for s in snaps:
         f = s.features or {}
@@ -364,7 +364,7 @@ async def chart_overlays(
     # snapshot hours old (stale levels far above the current price).
     end = datetime.now(tz=UTC) + timedelta(hours=24)
     start = datetime.now(tz=UTC) - timedelta(days=2)
-    snaps = await store.list_snapshots(start=start, end=end, symbol=symbol, limit=200)
+    snaps = await store.list_snapshots(start=start, end=end, symbol=symbol, limit=200, newest_first=True)
     overlays = [s for s in snaps if isinstance(s.features.get("overlays"), dict)]
     overlays.sort(key=lambda s: s.bar_time, reverse=True)
     if not overlays:

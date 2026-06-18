@@ -107,6 +107,7 @@ def build_overlay_payload(
                 "size_points": z.size_points,
                 "created_at": z.created_at.isoformat(),
                 "status": z.status.value,
+                "rank_score": z.rank_score,
             }
         )
 

@@ -140,8 +140,13 @@ class JournalStore(Protocol):
         end: datetime,
         symbol: str | None = None,
         limit: int = 1000,
+        newest_first: bool = False,
     ) -> list[FeatureSnapshotRecord]:
-        """Return snapshots in [start, end) sorted by ``bar_time`` (ascending)."""
+        """Return snapshots in [start, end) sorted by ``bar_time`` (ascending).
+
+        With ``newest_first=True`` the *newest* ``limit`` snapshots in the window
+        are kept (still returned ascending); the default keeps the oldest.
+        """
 
         ...
 
@@ -419,6 +424,7 @@ class InMemoryJournalStore:
         end: datetime,
         symbol: str | None = None,
         limit: int = 1000,
+        newest_first: bool = False,
     ) -> list[FeatureSnapshotRecord]:
         async with self._lock:
             candidates = [
@@ -427,7 +433,9 @@ class InMemoryJournalStore:
                 if start <= s.bar_time < end and (symbol is None or s.symbol == symbol)
             ]
             candidates.sort(key=lambda s: s.bar_time)
-            return candidates[:limit]
+            # newest_first selects the newest ``limit`` (still returned ascending);
+            # the default keeps the oldest ``limit`` for PIT-ordered analytics.
+            return candidates[-limit:] if newest_first else candidates[:limit]
 
     async def list_fitting_proposals(
         self,
@@ -742,13 +750,24 @@ class TimescaleJournalStore:
         end: datetime,
         symbol: str | None = None,
         limit: int = 1000,
+        newest_first: bool = False,
     ) -> list[FeatureSnapshotRecord]:
         args = [start, end]
         where = "bar_time>=$1 AND bar_time<$2"
         if symbol is not None:
             args.append(symbol); where += f" AND symbol=${len(args)}"
         args.append(limit)
-        q = f"SELECT data FROM journal_snapshots WHERE {where} ORDER BY bar_time ASC LIMIT ${len(args)}"
+        if newest_first:
+            # The newest ``limit`` rows in the window, returned ascending. Without
+            # this an ``ASC LIMIT n`` over a wide window returns the OLDEST n —
+            # stale data once the window holds more than ``limit`` snapshots.
+            q = (
+                f"SELECT data FROM (SELECT data, bar_time FROM journal_snapshots "
+                f"WHERE {where} ORDER BY bar_time DESC LIMIT ${len(args)}) t "
+                f"ORDER BY bar_time ASC"
+            )
+        else:
+            q = f"SELECT data FROM journal_snapshots WHERE {where} ORDER BY bar_time ASC LIMIT ${len(args)}"
         pool = await self._ensure_pool()
         async with pool.acquire() as con:
             rows = await con.fetch(q, *args)

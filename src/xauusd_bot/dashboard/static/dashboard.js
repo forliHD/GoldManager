@@ -203,7 +203,16 @@
       upColor: '#3fb950', downColor: '#f85149', borderVisible: false,
       wickUpColor: '#3fb950', wickDownColor: '#f85149',
     });
-    new ResizeObserver(() => state.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight })).observe(container);
+    // FVG box layer — HTML rectangles positioned via the chart's coordinate API.
+    const fvgLayer = document.createElement('div');
+    fvgLayer.className = 'fvg-layer';
+    container.appendChild(fvgLayer);
+    state.fvgLayer = fvgLayer;
+    state.chart.timeScale().subscribeVisibleTimeRangeChange(() => positionFvgZones());
+    new ResizeObserver(() => {
+      state.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+      positionFvgZones();
+    }).observe(container);
     state.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
     loadChartData();
   }
@@ -260,6 +269,8 @@
     state.lastCandle = candle;
     if (state.chartTo == null || bucketT > state.chartTo) state.chartTo = bucketT;
     try { state.candleSeries.update(candle); } catch (e) {}
+    // Price autoscale can shift without a time-range change → keep FVG boxes aligned.
+    positionFvgZones();
   }
 
   // Draw a labelled horizontal price line on the candle series (right-axis
@@ -277,6 +288,59 @@
   function clearOverlays() {
     for (const pl of (state.overlayLines || [])) { try { state.candleSeries.removePriceLine(pl); } catch (e) {} }
     state.overlayLines = [];
+    state.fvgZones = [];
+    positionFvgZones();
+  }
+
+  // ---- Fair Value Gap boxes -----------------------------------------------
+  // Keep the latest zones and (re)draw them as HTML rectangles over the chart.
+  const FVG_MAX_BOXES = 7;  // keep the chart readable — only the strongest zones
+  function renderFvgZones(zones) {
+    let z = Array.isArray(zones) ? zones.slice() : [];
+    // Strongest first (size × displacement × freshness, mitigation-penalised);
+    // fall back to gap size when an older payload carries no rank_score.
+    z.sort((a, b) => (Number(b.rank_score || b.size_points || 0)) - (Number(a.rank_score || a.size_points || 0)));
+    state.fvgZones = z.slice(0, FVG_MAX_BOXES);
+    positionFvgZones();
+  }
+  function positionFvgZones() {
+    const layer = state.fvgLayer, series = state.candleSeries, chart = state.chart;
+    if (!layer || !series || !chart) return;
+    layer.innerHTML = '';
+    const zones = state.fvgZones || [];
+    if (!zones.length) return;
+    const ts = chart.timeScale();
+    let paneW = $('#chart').clientWidth;
+    try { paneW -= (chart.priceScale('right').width() || 0); } catch (e) {}
+    if (!(paneW > 0)) paneW = $('#chart').clientWidth;
+    for (const z of zones) {
+      const yTop = series.priceToCoordinate(Number(z.top));
+      const yBot = series.priceToCoordinate(Number(z.bottom));
+      if (yTop == null || yBot == null) continue;
+      const top = Math.min(yTop, yBot), h = Math.max(4, Math.abs(yBot - yTop));
+      // Left edge = where the gap formed; clamp into view, extend to the right edge.
+      let xl = ts.timeToCoordinate(Math.floor(new Date(z.created_at).getTime() / 1000));
+      if (xl == null || xl < 0) xl = 0;          // formed off-screen left → from edge
+      if (xl > paneW) continue;                   // formed beyond the view → skip
+      const bull = (z.type === 'bullish');
+      const partial = (z.status === 'partially_mitigated');
+      const col = bull ? '63,185,80' : '248,81,73';
+      const box = document.createElement('div');
+      box.className = 'fvg-box';
+      box.style.left = xl + 'px';
+      box.style.top = top + 'px';
+      box.style.width = Math.max(2, paneW - xl) + 'px';
+      box.style.height = h + 'px';
+      box.style.background = `rgba(${col},${partial ? 0.06 : 0.13})`;
+      const bstyle = `1px ${partial ? 'dashed' : 'solid'} rgba(${col},0.85)`;
+      box.style.borderTop = bstyle; box.style.borderBottom = bstyle;
+      const tag = document.createElement('div');
+      tag.className = 'fvg-tag';
+      tag.textContent = `FVG ${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}`;
+      tag.style.background = `rgba(${col},0.9)`;
+      box.appendChild(tag);
+      layer.appendChild(box);
+    }
   }
 
   function applyOverlays(o) {
@@ -303,6 +367,7 @@
     drawVA('weekly', 'W', S.Dotted, 1);
     drawVA('prev_week', 'pW', S.Dashed, 2);
     state.overlayLines = lines;
+    renderFvgZones(o.fvg_zones || o.fvgZones || []);
   }
 
   // Draw the open position(s) on the chart: entry + SL + TP1/2/3, labelled.
