@@ -220,6 +220,17 @@ def create_app(
     # WebSocket.
     app.add_api_websocket_route("/ws", websocket_endpoint)
 
+    # Never let the browser hard-cache the SPA shell or its script — a stale
+    # index.html (e.g. an old CDN URL) otherwise survives reloads. Hashed
+    # assets could opt back into caching later; for now keep it simple.
+    @app.middleware("http")
+    async def _no_cache_frontend(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith((".html", ".js")):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
     # Static files (frontend placeholder for now).
     if STATIC_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
