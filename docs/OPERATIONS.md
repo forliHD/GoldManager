@@ -283,19 +283,34 @@ docker exec -u abc xauusd-mt5-terminal sh /config/mt5_bridge_up.sh
 ```
 **Bridge-Health:** `docker exec xauusd-mt5-terminal sh -c "ss -tuln | grep :8001"`.
 
-> **Stage 2 — Connector fertig, Live-Flip ausstehend:** Der **`Mt5LinuxConnector`**
-> (`connectors/mt5linux_connector.py`) ist implementiert + **gegen das echte
-> Terminal validiert** (Ticks/Bars/Account/Symbol/Positionen). Auswahl über
-> `mt5_bridge_kind=mt5linux` (Default) im Attach-Modus — Terminal einmal per
-> Browser einloggen, keine `MT5_*`-Creds nötig. **Zum Live-Schalten:**
-> 1. Service-Image mit mt5linux-Client bauen:
->    `pip install --no-deps mt5linux && pip install ".[live]"` (rpyc==5.2.3 —
->    muss zum Server passen, 5.x/6.x sind inkompatibel).
-> 2. Live-Flip-Block in `docker-compose.mt5.yml` einkommentieren, Stack ohne
->    `mt5-terminal`-Filter starten (`CONNECTOR_MODE=live`).
-> 3. Für Order-Ausführung „Algo Trading" in MT5 aktivieren (grün) →
->    `terminal_info().trade_allowed=true`.
-> Bis dahin bleibt die Pipeline auf Replay.
+**Live geschaltet (Datensammel-Modus):** `data-collector` + `feature-engine`
+laufen live auf `XAUUSD+` über die `mt5linux`-Bridge (Image
+`xauusd-bot/service-mt5:0.1.0`, `docker/service-mt5/Dockerfile`). Hochfahren:
+```bash
+docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
+  -f docker-compose.mt5.yml up -d data-collector feature-engine
+docker exec xauusd-redis redis-cli XREVRANGE market_ticks + - COUNT 1   # live XAUUSD+ bar
+```
+Zurück auf Replay: ohne `-f docker-compose.mt5.yml` neu starten.
+
+> **Attach-Modus — `MT5_*` müssen LEER sein.** Bei gesetzten `MT5_LOGIN/PASSWORD/
+> SERVER` versucht `initialize()` einen programmatischen Login; passt der nicht
+> zum per Browser eingeloggten Account, verklemmt das single-threaded Terminal
+> („result expired"). In `.env` daher auskommentiert lassen → `attach=true`.
+>
+> **Multi-Client-Caveat (execution-engine vorerst AUS).** `mt5linux` teilt EIN
+> globales `MetaTrader5`-Modul über alle RPyC-Clients. Folgen:
+> - `connector.shutdown()` ruft NICHT `mt5.shutdown()` (sonst kappt ein Service
+>   beim Stoppen die IPC aller anderen — gefixt).
+> - Mehrere Services, die gleichzeitig `initialize()`/Account-Polls fahren,
+>   können `-10004 No IPC connection` erzeugen. Die `execution-engine` (Account/
+>   Positionen + Orders) läuft daher noch nicht stabil im Verbund → für reines
+>   Datensammeln weggelassen. Für echtes Trading braucht es ein Single-Owner-
+>   Connection-Design (oder unsere RPyC-Bridge mit Lock).
+>
+> **Order-Ausführung später:** „Algo Trading" in MT5 aktivieren (grün,
+> `trade_allowed`) UND Emergency-Stop im Dashboard lösen. Safety jetzt:
+> `runtime:emergency_stop=true` (`redis-cli SET runtime:emergency_stop true`).
 
 **Dashboard-User anlegen (bcrypt):**
 ```bash
