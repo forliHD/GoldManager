@@ -604,8 +604,17 @@
     const streams = h.streams || {};
     for (const [topic, s] of Object.entries(streams)) {
       const age = s.last_age_s;
-      const cls = age == null ? '' : age < 15 ? 'ok' : age < 60 ? 'warn' : '';
-      parts.push(`<span class="svc" title="${escapeHtml(s.service)} · ${topic} · len ${s.len} · ${age==null?'?':age+'s'}"><span class="sdot ${cls}"></span>${escapeHtml(s.service.replace('-engine','').replace('-',''))}</span>`);
+      let cls, note = '';
+      if (topic === 'orders') {
+        // Orders are sporadic trade events, not a heartbeat — "no recent order"
+        // is normal and must NOT show red. Reflect the engine's liveness
+        // (state freshness) instead of stream age.
+        cls = h.execution_alive ? 'ok' : '';
+        note = ' · sporadic (green = engine alive, not order age)';
+      } else {
+        cls = age == null ? '' : age < 15 ? 'ok' : age < 60 ? 'warn' : '';
+      }
+      parts.push(`<span class="svc" title="${escapeHtml(s.service)} · ${topic} · len ${s.len} · ${age==null?'?':age+'s'}${note}"><span class="sdot ${cls}"></span>${escapeHtml(s.service.replace('-engine','').replace('-',''))}</span>`);
     }
     parts.push(`<span class="svc" title="execution-engine state"><span class="sdot ${h.execution_alive?'ok':''}"></span>exec</span>`);
     el.innerHTML = parts.join('');
