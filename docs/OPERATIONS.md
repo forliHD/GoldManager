@@ -216,6 +216,29 @@ docker compose -f docker-compose.base.yml -f docker-compose.dev.yml down
 ```
 **Prod (Ubuntu, MT5):** `-f docker-compose.prod.yml` statt `-dev` + MT5-Vars in `.env`.
 
+**Dev MIT echtem MT5 (Demo-Account testen):** Layer `docker-compose.mt5.yml`
+auf base+dev — `data-collector`, `feature-engine`, `execution-engine` schalten
+auf den Live-Connector (MT5-Bridge), Rest bleibt dev (LAN-Dashboard etc.).
+Nur auf x86_64 (die VM), nicht auf Apple-Silicon.
+```bash
+# 1. .env: MT5_LOGIN / MT5_PASSWORD / MT5_SERVER (z.B. VantageInternational-Demo)
+#    + VNC_PASSWORD setzen.
+# 2. mt5-terminal-Image bauen (~10-15 Min, einmalig):
+docker build -f docker/mt5-terminal/Dockerfile -t xauusd-bot/mt5-terminal:0.8.0 .
+# 3. Stack mit MT5 starten:
+docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
+               -f docker-compose.mt5.yml up -d
+# 4. EINMALIGER MT5-Login per noVNC (Terminal verlangt interaktive Anmeldung):
+#    ssh -L 6080:127.0.0.1:6080 dev@192.168.178.192   # Tunnel
+#    Browser: http://localhost:6080/vnc.html  → im MT5-Terminal mit dem
+#    Demo-Account einloggen. (Oder MT5_VNC_BIND_HOST=0.0.0.0 für LAN.)
+# 5. Bridge-Health prüfen:
+docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
+               -f docker-compose.mt5.yml ps mt5-terminal      # healthy = Port 18812 lauscht
+docker logs xauusd-data-collector 2>&1 | grep -i connector    # connector_factory_live
+```
+Zurück auf Replay: einfach ohne `-f docker-compose.mt5.yml` neu starten.
+
 **Dashboard-User anlegen (bcrypt):**
 ```bash
 docker run --rm --entrypoint python xauusd-bot/service:0.1.0 \

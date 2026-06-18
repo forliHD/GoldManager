@@ -1,0 +1,99 @@
+# MT5 layer for the DEV stack — run the full pipeline against a REAL MT5
+# demo account (Wine + MetaTrader 5 + RPyC bridge) instead of the replay
+# connector, while keeping the dev conveniences (LAN dashboard, dev env).
+#
+# Usage (layer ON TOP of base + dev):
+#   docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
+#                  -f docker-compose.mt5.yml up -d
+#
+# Prerequisites in .env:
+#   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER (e.g. VantageInternational-Demo)
+#   VNC_PASSWORD (for the one-time terminal login)
+#
+# One-time login: the MT5 terminal needs an interactive login the first
+# time. Reach the desktop via noVNC in a browser:
+#   - default (loopback): SSH tunnel  ssh -L 6080:127.0.0.1:6080 dev@<vm>
+#     then open http://localhost:6080/vnc.html
+#   - or set MT5_VNC_BIND_HOST=0.0.0.0 in .env for direct LAN access
+#     (trusted network only — VNC is a full remote desktop).
+#
+# Cold image build is ~10-15 min (Wine base + MT5 + Windows-Python).
+
+services:
+  mt5-terminal:
+    build:
+      context: .
+      dockerfile: docker/mt5-terminal/Dockerfile
+    image: xauusd-bot/mt5-terminal:0.8.0
+    container_name: xauusd-mt5-terminal
+    environment:
+      MT5_LOGIN: ${MT5_LOGIN:?MT5_LOGIN must be set in .env}
+      MT5_PASSWORD: ${MT5_PASSWORD:?MT5_PASSWORD must be set in .env}
+      MT5_SERVER: ${MT5_SERVER:-VantageInternational-Demo}
+      MT5_SYMBOL: ${MT5_SYMBOL:-XAUUSD}
+      MT5_BRIDGE_HOST: 0.0.0.0
+      MT5_BRIDGE_PORT: "18812"
+      MT5_BRIDGE_AUTH_KEY: ${MT5_BRIDGE_AUTH_KEY:-}
+      MT5_BRIDGE_LOG_LEVEL: ${MT5_BRIDGE_LOG_LEVEL:-INFO}
+      MT5_INSTALLER_URL: ${MT5_INSTALLER_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}
+      PYTHON_WIN_INSTALLER_URL: ${PYTHON_WIN_INSTALLER_URL:-https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe}
+      VNC_PASSWORD: ${VNC_PASSWORD:-changeme}
+      DISPLAY: ":99"
+    # RPyC bridge stays loopback-only. VNC/noVNC are loopback by default
+    # (use an SSH tunnel); set MT5_VNC_BIND_HOST=0.0.0.0 for LAN.
+    ports:
+      - "127.0.0.1:18812:18812"
+      - "${MT5_VNC_BIND_HOST:-127.0.0.1}:5900:5900"
+      - "${MT5_VNC_BIND_HOST:-127.0.0.1}:6080:6080"
+    volumes:
+      - mt5-data:/root/.wine
+      - mt5-bridge-logs:/var/log/supervisor
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; s=socket.socket(); s.connect(('127.0.0.1', 18812)); s.close()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # Connector-using services switch to the live MT5 bridge. They keep
+  # ENVIRONMENT=development (from the dev layer) on purpose.
+  data-collector:
+    environment:
+      CONNECTOR_MODE: live
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
+    depends_on:
+      mt5-terminal:
+        condition: service_healthy
+
+  feature-engine:
+    environment:
+      CONNECTOR_MODE: live
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
+    depends_on:
+      mt5-terminal:
+        condition: service_healthy
+
+  execution-engine:
+    environment:
+      CONNECTOR_MODE: live
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
+    depends_on:
+      mt5-terminal:
+        condition: service_healthy
+
+volumes:
+  mt5-data:
+  mt5-bridge-logs:
