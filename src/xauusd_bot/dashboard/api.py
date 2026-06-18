@@ -186,6 +186,11 @@ async def health(request: Request) -> dict[str, Any]:
         "timestamp": datetime.now(tz=UTC).isoformat(),
         "version": "block9-0.1.0",
         "dashboard_enabled": bool(settings and settings.dashboard_enabled),
+        # The configured trading symbol + connector mode so the frontend
+        # requests the right instrument (e.g. "XAUUSD+") instead of a
+        # hard-coded "XAUUSD", and shows the live/replay badge correctly.
+        "symbol": (settings.symbol if settings else "XAUUSD"),
+        "mode": (settings.connector_mode.value if settings else "replay"),
     }
 
 

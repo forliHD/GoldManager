@@ -92,5 +92,12 @@ services:
     environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
     depends_on: { mt5-terminal: { condition: service_healthy } }
 
+  # Connector-free services — no MT5 image needed. They only need the live
+  # SYMBOL (from .env: XAUUSD+) + the live mode badge in the dashboard.
+  decision-engine:
+    environment: { CONNECTOR_MODE: live }
+  dashboard:
+    environment: { CONNECTOR_MODE: live }
+
 volumes:
   mt5-config:

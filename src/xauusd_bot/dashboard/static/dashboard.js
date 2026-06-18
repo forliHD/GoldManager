@@ -21,6 +21,7 @@
     candleSeries: null,   // candlestick series
     overlaySeries: [],    // [{name, line, kind, color, style}]
     timeframe: 'M5',
+    symbol: 'XAUUSD',     // configured trading symbol, fetched from /api/health
     ws: null,
     wsTopics: new Set(['ticks', 'features', 'decisions', 'orders', 'journal']),
     reconnectAttempt: 0,
@@ -106,6 +107,7 @@
       await login(username, password);
       const user = await me();
       state.user = user;
+      await loadMode();
       onLoginSuccess();
     } catch (e) {
       setText('#login-error', e.status === 401 ? 'Invalid credentials' : `Server error: ${e.message}`);
@@ -200,9 +202,10 @@
 
   async function loadChartData() {
     try {
+      const sym = encodeURIComponent(state.symbol);
       const [candles, overlays] = await Promise.all([
-        api(`/api/chart/candles?symbol=XAUUSD&timeframe=${state.timeframe}&count=500`),
-        api(`/api/chart/overlays?symbol=XAUUSD`),
+        api(`/api/chart/candles?symbol=${sym}&timeframe=${state.timeframe}&count=500`),
+        api(`/api/chart/overlays?symbol=${sym}`),
       ]);
       state.candleSeries.setData(candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: c.open, high: c.high, low: c.low, close: c.close })));
       try { state.chart.timeScale().fitContent(); } catch (e) {}
@@ -257,7 +260,7 @@
       $$('#timeframe-selector button').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.timeframe = btn.dataset.tf;
-      setText('#chart-symbol', `XAUUSD · ${state.timeframe}`);
+      setText('#chart-symbol', `${state.symbol} · ${state.timeframe}`);
       loadChartData();
     });
   });
@@ -295,7 +298,7 @@
   // ----- Trades tab -----
   async function loadTrades() {
     try {
-      const trades = await api('/api/journal/trades?limit=20&symbol=XAUUSD');
+      const trades = await api(`/api/journal/trades?limit=20&symbol=${encodeURIComponent(state.symbol)}`);
       const tbody = $('#trades-table tbody');
       tbody.innerHTML = '';
       for (const t of trades) {
@@ -462,8 +465,10 @@
   async function loadMode() {
     try {
       const r = await api('/api/health');
-      if (r.connector_mode) state.currentMode = r.connector_mode;
+      if (r.mode) state.currentMode = r.mode;
+      if (r.symbol) state.symbol = r.symbol;
       renderModePill();
+      setText('#chart-symbol', `${state.symbol} · ${state.timeframe}`);
     } catch (e) {}
   }
 
@@ -777,7 +782,7 @@
       }
     } else if (t === 'features') {
       // Re-fetch overlays
-      api('/api/chart/overlays?symbol=XAUUSD').then(applyOverlays).catch(e => {});
+      api(`/api/chart/overlays?symbol=${encodeURIComponent(state.symbol)}`).then(applyOverlays).catch(e => {});
     } else if (t === 'decisions') {
       renderLastDecision(d);
     } else if (t === 'orders' || t === 'journal') {
@@ -801,7 +806,7 @@
 
   // ----- Boot -----
   (async function init() {
-    if (await tryRestoreSession()) { onLoginSuccess(); loadMode(); }
+    if (await tryRestoreSession()) { await loadMode(); onLoginSuccess(); }
     else show('#login');
   })();
 
