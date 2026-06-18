@@ -48,17 +48,19 @@ _ = logging  # symmetry with rest of codebase
 # is the same name (minus the "stream_" prefix we don't have here).
 DEFAULT_STREAMS: tuple[str, ...] = (
     "market_ticks",
+    "market_live",
     "features",
     "decisions",
     "orders",
     "journal",
 )
 
-# Redis stream name → WebSocket topic name. They match except for the bar
-# stream, which is ``market_ticks`` on Redis but the broker/frontend call
-# the WS topic ``ticks``. Without this mapping the broker rejects every bar
-# as an unknown topic.
-_STREAM_TO_WS_TOPIC: dict[str, str] = {"market_ticks": "ticks"}
+# Redis stream name → WebSocket topic name. Both the closed-bar stream
+# (``market_ticks``) and the forming-bar animation stream (``market_live``)
+# map to the single WS topic ``ticks`` — the frontend buckets each bar into
+# the active timeframe's candle, so closed bars finalise it and forming bars
+# animate it. Without this mapping the broker rejects bars as unknown topics.
+_STREAM_TO_WS_TOPIC: dict[str, str] = {"market_ticks": "ticks", "market_live": "ticks"}
 
 # XREAD block timeout (ms). Short enough to keep shutdown latency low.
 _BLOCK_MS = 1000

@@ -147,6 +147,9 @@ def make_publisher(settings: Settings, *, maxlen: int | None = None) -> Publishe
     overrides = {
         StreamTopic.FEATURES.value: settings.stream_maxlen_large,
         StreamTopic.DECISIONS.value: settings.stream_maxlen_large,
+        # Forming-bar animation channel — only the latest entry is ever read
+        # (dashboard XREADs with a $ cursor), so keep it tiny.
+        StreamTopic.MARKET_LIVE.value: 200,
     }
     return Publisher(settings.redis_url, maxlen=base, maxlen_overrides=overrides)
 

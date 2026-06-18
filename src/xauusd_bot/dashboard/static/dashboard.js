@@ -22,6 +22,7 @@
     overlaySeries: [],    // [{name, line, kind, color, style}]
     timeframe: 'M5',
     symbol: 'XAUUSD',     // configured trading symbol, fetched from /api/health
+    lastCandle: null,     // active-timeframe candle being live-updated
     ws: null,
     wsTopics: new Set(['ticks', 'features', 'decisions', 'orders', 'journal']),
     reconnectAttempt: 0,
@@ -207,12 +208,41 @@
         api(`/api/chart/candles?symbol=${sym}&timeframe=${state.timeframe}&count=500`),
         api(`/api/chart/overlays?symbol=${sym}`),
       ]);
-      state.candleSeries.setData(candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: c.open, high: c.high, low: c.low, close: c.close })));
+      const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: c.open, high: c.high, low: c.low, close: c.close }));
+      state.candleSeries.setData(mapped);
+      state.lastCandle = mapped.length ? { ...mapped[mapped.length - 1] } : null;
       try { state.chart.timeScale().fitContent(); } catch (e) {}
       applyOverlays(overlays);
     } catch (e) {
       console.error('chart load failed', e);
     }
+  }
+
+  // Seconds per timeframe bucket, for live candle aggregation.
+  const TF_SECONDS = { M1: 60, M5: 300, M15: 900, H1: 3600 };
+
+  // Merge a live bar (closed or forming) into the active timeframe's candle so
+  // the chart animates on every timeframe (like MT5's forming candle).
+  function liveUpdateCandle(bar) {
+    if (!bar || !state.candleSeries) return;
+    const tfSec = TF_SECONDS[state.timeframe] || 60;
+    const barT = Math.floor(new Date(bar.time).getTime() / 1000);
+    if (isNaN(barT)) return;
+    const bucketT = Math.floor(barT / tfSec) * tfSec;
+    const o = Number(bar.open), h = Number(bar.high), l = Number(bar.low), c = Number(bar.close);
+    const last = state.lastCandle;
+    let candle;
+    if (last && last.time === bucketT) {
+      // Same bucket → extend the forming candle (keep open, widen H/L, latest close).
+      candle = { time: bucketT, open: last.open, high: Math.max(last.high, h), low: Math.min(last.low, l), close: c };
+    } else if (last && bucketT < last.time) {
+      return; // stale/out-of-order bar — ignore
+    } else {
+      // New bucket → start a fresh candle (the M1 open is the bucket open).
+      candle = { time: bucketT, open: o, high: h, low: l, close: c };
+    }
+    state.lastCandle = candle;
+    try { state.candleSeries.update(candle); } catch (e) {}
   }
 
   function clearOverlays() {
@@ -766,20 +796,11 @@
     const t = msg.topic;
     const d = msg.data || {};
     if (t === 'ticks') {
-      // Live bar from market_ticks (envelope: { bar: {time,open,high,low,close} }).
-      // Only live-update on M1 — higher timeframes are aggregated server-side,
-      // so a raw M1 bar would corrupt them (use Refresh to re-aggregate). Use
-      // the bar's own time, not wall-clock, so it lines up with the replay data.
-      const bar = d.bar;
-      if (bar && state.candleSeries && state.timeframe === 'M1') {
-        try {
-          state.candleSeries.update({
-            time: Math.floor(new Date(bar.time).getTime() / 1000),
-            open: Number(bar.open), high: Number(bar.high),
-            low: Number(bar.low), close: Number(bar.close),
-          });
-        } catch (e) {}
-      }
+      // Live bar (envelope: { bar: {time,open,high,low,close} }). Comes from
+      // both the closed-bar stream (market_ticks, once/min) and the forming-bar
+      // stream (market_live, ~1/s). We bucket each into the active timeframe's
+      // candle and merge — so the candle animates like MT5 on every timeframe.
+      liveUpdateCandle(d.bar);
     } else if (t === 'features') {
       // Re-fetch overlays
       api(`/api/chart/overlays?symbol=${encodeURIComponent(state.symbol)}`).then(applyOverlays).catch(e => {});

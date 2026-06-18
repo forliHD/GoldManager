@@ -162,6 +162,8 @@ def envelope_for_topic() -> dict[str, type[_Envelope]]:
 
     return {
         StreamTopic.MARKET_TICKS.value: BarClosedEvent,
+        # Forming-bar animation channel — same envelope as closed bars.
+        StreamTopic.MARKET_LIVE.value: BarClosedEvent,
         StreamTopic.FEATURES.value: FeaturesEvent,
         StreamTopic.DECISIONS.value: DecisionEvent,
         StreamTopic.ORDERS.value: OrderEvent,

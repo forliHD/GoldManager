@@ -368,7 +368,9 @@ async def chart_overlays(
             fvg_zones=[],
         )
     latest = overlays[0].features["overlays"]
-    vwaps = latest.get("vwaps", {"utc00": None, "utc07": None, "utc12": None})
+    # build_overlay_payload emits the VWAP section under "vwap" (singular); the
+    # API response field is "vwaps". Read the payload key, not the response key.
+    vwaps = latest.get("vwap", latest.get("vwaps", {"utc00": None, "utc07": None, "utc12": None}))
     vp = latest.get("volume_profile", {})
     fvg = latest.get("fvg_zones", [])
     return OverlayDict(

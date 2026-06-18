@@ -41,6 +41,10 @@ class StreamTopic(str, Enum):
     """The fixed set of stream topics the bot uses."""
 
     MARKET_TICKS = "market_ticks"
+    # Forming (not-yet-closed) bar, republished frequently for live chart
+    # animation only. NOT consumed by the trading pipeline (which decides on
+    # closed bars from MARKET_TICKS). Tightly capped — only the latest matters.
+    MARKET_LIVE = "market_live"
     FEATURES = "features"
     DECISIONS = "decisions"
     ORDERS = "orders"

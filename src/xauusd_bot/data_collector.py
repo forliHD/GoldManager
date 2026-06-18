@@ -78,6 +78,11 @@ async def _run_live(settings: Settings, connector, publisher, stop: asyncio.Even
             await publisher.publish(StreamTopic.MARKET_TICKS, BarClosedEvent(symbol=symbol, bar=closed))
             last_time = closed.time
             log.debug("live_bar_published", time=str(closed.time))
+        # Forming bar → MARKET_LIVE every poll, for live chart animation only
+        # (the trading pipeline never reads this; it decides on closed bars).
+        forming = recent[-1] if recent else None
+        if forming is not None:
+            await publisher.publish(StreamTopic.MARKET_LIVE, BarClosedEvent(symbol=symbol, bar=forming))
         await _sleep_or_stop(stop, 1.0)
 
 
