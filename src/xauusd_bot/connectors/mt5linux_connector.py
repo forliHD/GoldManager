@@ -493,17 +493,24 @@ class Mt5LinuxConnector(IMarketConnector):
         out_deals = [d for d in deals if int(getattr(d, "entry", 0)) == entry_out]
         if not out_deals:
             return None
+        # Realized PnL = price profit + ALL costs across EVERY deal of the
+        # position. Commission is charged per side, so the entry (IN) deal
+        # carries its own commission — summing only OUT deals silently drops it.
+        # The spread is already inside ``profit`` (the bid/ask fills).
         pnl = Decimal("0")
-        vol_sum = 0.0
-        px_vol = 0.0
-        last_time = 0
-        reason_code: int | None = None
-        for d in out_deals:
+        for d in deals:
             prof = float(getattr(d, "profit", 0) or 0)
             swap = float(getattr(d, "swap", 0) or 0)
             comm = float(getattr(d, "commission", 0) or 0)
             fee = float(getattr(d, "fee", 0) or 0)
             pnl += Decimal(str(prof + swap + comm + fee))
+        # Exit price (volume-weighted), close time and reason come from the
+        # closing (OUT) deals only.
+        vol_sum = 0.0
+        px_vol = 0.0
+        last_time = 0
+        reason_code: int | None = None
+        for d in out_deals:
             v = float(getattr(d, "volume", 0) or 0)
             px = float(getattr(d, "price", 0) or 0)
             vol_sum += v
