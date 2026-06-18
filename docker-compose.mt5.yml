@@ -92,6 +92,23 @@ services:
     environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
     depends_on: { mt5-terminal: { condition: service_healthy } }
 
+  # Live setup PERSISTS Redis (AOF) — overrides the ephemeral dev redis. The
+  # per-position management plans (mgmt:pos:*) and runtime flags
+  # (emergency_stop / ai_layer_enabled) must survive a Redis restart, or open
+  # positions would silently lose their TP/SL plan. Data is bounded now
+  # (per-topic maxlen + bundle compaction), so AOF reload is fast.
+  redis:
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-4gb}"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+
   # Connector-free services — no MT5 image needed. They only need the live
   # SYMBOL (from .env: XAUUSD+) + the live mode badge in the dashboard.
   decision-engine:

@@ -60,8 +60,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    # Loopback-only: services reach Redis over the docker network (redis:6379),
+    # never the published host port. Binding to 127.0.0.1 keeps it off the LAN
+    # (it has no auth). Override REDIS_BIND_HOST only for a trusted setup.
     ports:
-      - "6379:6379"
+      - "${REDIS_BIND_HOST:-127.0.0.1}:6379:6379"
     logging: *default-logging
 
   timescaledb:
@@ -78,8 +81,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    # Loopback-only (services use the docker network timescaledb:5432).
     ports:
-      - "5432:5432"
+      - "${TIMESCALE_BIND_HOST:-127.0.0.1}:5432:5432"
     logging: *default-logging
 
   # Python services — all use the same image. The entrypoint
