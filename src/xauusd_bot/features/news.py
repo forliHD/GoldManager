@@ -141,7 +141,7 @@ class ForexFactoryNewsProvider(NewsProviderClient):
             rows = resp.json()
         except Exception as exc:  # noqa: BLE001 - keep the last good cache on failure
             log.warning("news_forexfactory_fetch_failed", error=str(exc))
-            self._fetched_at = now  # back off; don't hammer on every bar
+            self._fetched_at = now  # back off; avoid re-fetching every bar
             return
         events: list[NewsEvent] = []
         for it in rows if isinstance(rows, list) else []:
