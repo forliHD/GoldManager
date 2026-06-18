@@ -552,14 +552,15 @@
   }
   async function loadLive() {
     try {
-      const [acc, risk, positions, decisions, orders, health, usage] = await Promise.all([
-        api('/api/account'), api('/api/risk'), api('/api/positions'),
+      const [acc, risk, positions, decisions, orders, health, usage, news, aiLast] = await Promise.all([
+        api('/api/account'), api('/api/risk'), api('/api/positions/managed'),
         api('/api/decisions/recent?count=40'), api('/api/orders/recent?count=30'),
         api('/api/health/services'), api('/api/usage'),
+        api('/api/news').catch(() => null), api('/api/ai/last').catch(() => null),
       ]);
       renderAccount(acc); renderRisk(risk); renderPositions(positions);
       renderDecisionFeed(decisions); renderOrders(orders); renderServiceHealth(health);
-      renderUsage(usage);
+      renderUsage(usage); renderNews(news); renderScores(decisions && decisions[0]); renderAILast(aiLast);
       const ts = acc && acc.ts ? new Date(acc.ts) : null;
       const stale = !ts || (Date.now() - ts.getTime() > 20000);
       setText('#live-stale', stale ? '⚠ keine aktuellen Daten — läuft die execution-engine?' : '');
@@ -672,12 +673,66 @@
       const tr = document.createElement('tr');
       const sideCls = p.side === 'buy' ? 'pos-long' : 'pos-short';
       const pnlCls = (p.profit || 0) < 0 ? 'pnl-neg' : 'pnl-pos';
+      const pl = p.plan;
+      let tpCell;
+      if (pl) {
+        const m = (v, taken) => v == null ? '—' : `<span style="${taken ? 'color:var(--ok);text-decoration:line-through' : ''}">${fmtNum(v)}</span>`;
+        tpCell = `<span style="font-size:10px">T1 ${m(pl.tp1, pl.tp1_taken)} · T2 ${m(pl.tp2, pl.tp2_taken)} · T3 ${pl.tp3 != null ? fmtNum(pl.tp3) : '—'}${pl.breakeven ? ' · <b style="color:var(--ok)">BE</b>' : ''}</span>`;
+      } else {
+        tpCell = p.tp != null ? fmtNum(p.tp) : '—';
+      }
       tr.innerHTML = `<td class="${sideCls}">${escapeHtml((p.side || '').toUpperCase())}</td>
         <td class="num">${fmtNum(p.volume, 2)}</td><td class="num">${fmtNum(p.open_price)}</td>
-        <td class="num">${p.sl != null ? fmtNum(p.sl) : '—'}</td><td class="num">${p.tp != null ? fmtNum(p.tp) : '—'}</td>
+        <td class="num">${p.sl != null ? fmtNum(p.sl) : '—'}</td><td class="num">${tpCell}</td>
         <td class="num ${pnlCls}">${fmtMoney(p.profit)}</td>`;
       tb.appendChild(tr);
     }
+  }
+
+  // ----- News / Score-breakdown / AI panels (Live cockpit) -----
+  function renderNews(n) {
+    const el = $('#live-news'), badge = $('#live-news-badge'); if (!el) return;
+    if (badge) badge.innerHTML = (n && n.in_blackout) ? '<span style="color:var(--bad);font-weight:700">⛔ BLACKOUT</span>' : '';
+    if (!n) { el.innerHTML = '<span class="muted">—</span>'; return; }
+    let html;
+    if (n.next) {
+      const mins = n.minutes_until_next;
+      const cd = mins == null ? '' : (mins < 60 ? `in ${Math.round(mins)} min` : `in ${(mins / 60).toFixed(1)} h`);
+      html = `<div>nächstes High-Impact: <b>${escapeHtml(n.next.title || '')}</b> <span class="muted">${escapeHtml(n.next.currency || '')} · ${cd}</span></div>`;
+    } else {
+      html = '<div class="muted">kein High-Impact in den nächsten 24 h</div>';
+    }
+    const up = (n.upcoming || []).filter(e => e.impact === 'high').slice(0, 4);
+    if (up.length) html += '<div style="margin-top:4px;font-size:11px">' + up.map(e => `<div>${escapeHtml(fmtTs(e.ts))} · ${escapeHtml(e.title || '')} <span class="muted">${escapeHtml(e.currency || '')}</span></div>`).join('') + '</div>';
+    el.innerHTML = html;
+  }
+
+  const _ENGINE_LABELS = { h1_zone: 'H1-Zone', m5_zone: 'M5-Zone', triple_vwap: 'VWAP', htf_volume_profile: 'VolProfile', session_liquidity: 'Sess/Liq', news: 'News', momentum: 'Momentum' };
+  function renderScores(d) {
+    const el = $('#live-scores'), tot = $('#live-score-total'); if (!el) return;
+    if (!d || !d.subscores || !Object.keys(d.subscores).length) { el.innerHTML = '<span class="muted">—</span>'; if (tot) tot.textContent = ''; return; }
+    if (tot) tot.textContent = d.score != null ? `(${Math.round(d.score)}/100 · ${escapeHtml(d.band || '')})` : '';
+    el.innerHTML = Object.entries(d.subscores).map(([k, v]) => {
+      const val = Math.round(v || 0), w = Math.max(2, Math.min(100, val));
+      const col = val >= 65 ? 'var(--ok)' : val >= 45 ? 'var(--warn)' : 'var(--border)';
+      return `<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:11px">
+        <span style="width:68px;color:var(--muted)">${escapeHtml(_ENGINE_LABELS[k] || k)}</span>
+        <span style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><span style="display:block;height:100%;width:${w}%;background:${col}"></span></span>
+        <span style="width:22px;text-align:right">${val}</span></div>`;
+    }).join('');
+  }
+
+  function renderAILast(a) {
+    const el = $('#live-ai'); if (!el) return;
+    if (!a || !a.comment) { el.innerHTML = '<span class="muted">noch kein M3-Call</span>'; return; }
+    const conf = a.confidence != null ? `${a.confidence}%` : '—';
+    const ez = a.entry_zone || {};
+    const zone = (ez.min != null || ez.max != null) ? ` · Zone ${ez.min != null ? fmtNum(ez.min) : '?'}–${ez.max != null ? fmtNum(ez.max) : '?'}` : '';
+    let html = `<div><b>${escapeHtml(a.decision || '—')}</b> ${a.entry_side ? escapeHtml(a.entry_side) : ''} <span class="muted">conf ${conf}${zone}</span></div>`;
+    html += `<div style="font-size:11px;margin-top:3px">${escapeHtml(a.comment)}</div>`;
+    if (a.invalidations && a.invalidations.length) html += `<div class="muted" style="font-size:10px;margin-top:3px">✗ ${a.invalidations.map(escapeHtml).join(' · ')}</div>`;
+    html += `<div class="muted" style="font-size:10px;margin-top:2px">${escapeHtml(fmtTs(a.ts))}</div>`;
+    el.innerHTML = html;
   }
   function startLivePolling() {
     if (state.liveTimer) clearInterval(state.liveTimer);

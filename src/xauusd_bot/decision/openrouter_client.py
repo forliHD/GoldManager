@@ -239,7 +239,38 @@ class OpenRouterClient:
                 log.debug("openrouter_usage_record_failed", error=str(exc))
 
         # Status-code dispatch.
-        return self._parse_response(response)
+        parsed = self._parse_response(response)
+        # Side-channel for the dashboard: publish the LLM's verbal output so the
+        # AI-decision detail (rationale / confidence / entry zone) is visible.
+        if self._usage_redis is not None:
+            try:
+                from datetime import UTC, datetime
+
+                from xauusd_bot.common.runtime_config import set_json
+
+                ez = getattr(parsed, "entry_zone", None)
+                await set_json(
+                    self._usage_redis,
+                    "state:last_ai",
+                    {
+                        "ts": datetime.now(tz=UTC).isoformat(),
+                        "decision": getattr(parsed, "decision", None),
+                        "entry_side": getattr(parsed, "entry_side", None),
+                        "entry_type": getattr(parsed, "entry_type", None),
+                        "entry_zone": (
+                            {"min": getattr(ez, "price_min", None), "max": getattr(ez, "price_max", None)}
+                            if ez is not None
+                            else None
+                        ),
+                        "confidence": getattr(parsed, "confidence", None),
+                        "comment": getattr(parsed, "comment", None),
+                        "invalidations": list(getattr(parsed, "invalidations", None) or []),
+                    },
+                    ttl=1800,
+                )
+            except Exception as exc:  # noqa: BLE001 - dashboard side-channel is best-effort
+                log.debug("openrouter_last_ai_publish_failed", error=str(exc))
+        return parsed
 
     # ============================================================ request building
 

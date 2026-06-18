@@ -1049,6 +1049,83 @@ async def risk_state(
     return await get_json(_streams_redis(request), STATE_KEY_RISK) or {}
 
 
+@router.get("/news")
+async def news_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Latest news context — blackout flag + upcoming high/medium-impact events.
+
+    Read from the freshest ``features`` bundle (the news engine already applies
+    the broker→UTC offset, so all times are real UTC, matching the chart).
+    """
+    events = await _read_stream(_streams_redis(request), "features", 1)
+    news = ((events[0].get("bundle") or {}).get("news") if events else None) or {}
+    nh = news.get("next_high_impact")
+    upcoming = [
+        {"ts": e.get("ts"), "title": e.get("title"), "currency": e.get("currency"), "impact": e.get("impact")}
+        for e in (news.get("upcoming_events") or [])
+        if e.get("impact") in ("high", "medium")
+    ]
+    return {
+        "in_blackout": bool(news.get("in_blackout_flag")),
+        "minutes_until_next": news.get("minutes_until_next_high_impact"),
+        "next": (
+            {"ts": nh.get("ts"), "title": nh.get("title"), "currency": nh.get("currency")} if nh else None
+        ),
+        "upcoming": upcoming[:8],
+    }
+
+
+@router.get("/positions/managed")
+async def positions_managed(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> list[dict[str, Any]]:
+    """Open positions enriched with their TP1/2/3 + trailing management plan."""
+    rc = _streams_redis(request)
+    positions = await get_json(rc, STATE_KEY_POSITIONS) or []
+    plans: dict[str, Any] = {}
+    try:
+        async for key in rc.scan_iter(match="mgmt:pos:*"):
+            data = await get_json(rc, key)
+            if data:
+                plans[str(data.get("ticket"))] = data
+    except Exception as exc:  # noqa: BLE001 - plans are best-effort enrichment
+        log.warning("positions_managed_scan_failed", error=str(exc))
+    out: list[dict[str, Any]] = []
+    for p in positions:
+        plan = plans.get(str(p.get("id")))
+        out.append(
+            {
+                **p,
+                "plan": (
+                    {
+                        "tp1": plan.get("tp1_price"),
+                        "tp2": plan.get("tp2_price"),
+                        "tp3": plan.get("tp3_price"),
+                        "tp1_taken": bool(plan.get("tp1_taken")),
+                        "tp2_taken": bool(plan.get("tp2_taken")),
+                        "breakeven": bool(plan.get("breakeven_done")),
+                        "sl": plan.get("sl_price"),
+                    }
+                    if plan
+                    else None
+                ),
+            }
+        )
+    return out
+
+
+@router.get("/ai/last")
+async def ai_last(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """The most recent M3/LLM verbal decision (rationale, confidence, entry zone)."""
+    return await get_json(_streams_redis(request), "state:last_ai") or {}
+
+
 class EmergencyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
