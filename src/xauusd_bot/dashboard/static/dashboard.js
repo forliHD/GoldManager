@@ -59,7 +59,9 @@
   function fmtTs(s) {
     if (!s) return '—';
     const d = new Date(s);
-    return d.toLocaleString('en-GB', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    // Show in UTC (= the broker/exchange bar time the chart also displays), NOT
+    // the browser's local timezone — otherwise the feed is offset from the chart.
+    return d.toLocaleString('en-GB', { timeZone: 'UTC', year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
   function fmtDate(s) {
     if (!s) return '—';
@@ -612,7 +614,10 @@
         cls = h.execution_alive ? 'ok' : '';
         note = ' · sporadic (green = engine alive, not order age)';
       } else {
-        cls = age == null ? '' : age < 15 ? 'ok' : age < 60 ? 'warn' : '';
+        // Bars/features/decisions publish once per closed M1 bar (~1/min), so a
+        // 15s green window flickered to yellow between bars. Widen to the bar
+        // cadence: green < 90s (a bar every 60s stays green), yellow < 180s.
+        cls = age == null ? '' : age < 90 ? 'ok' : age < 180 ? 'warn' : '';
       }
       parts.push(`<span class="svc" title="${escapeHtml(s.service)} · ${topic} · len ${s.len} · ${age==null?'?':age+'s'}${note}"><span class="sdot ${cls}"></span>${escapeHtml(s.service.replace('-engine','').replace('-',''))}</span>`);
     }
