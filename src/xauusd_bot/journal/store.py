@@ -727,6 +727,32 @@ class TimescaleJournalStore:
     async def write_discrepancy_v2(self, d: LLMFallbackDiscrepancyV2) -> UUID:
         return await self._write_discrepancy(d, 2)
 
+    async def _list_discrepancies(self, version, model_cls, start, end, limit):
+        clauses, args = ["version=$1"], [version]
+        if start is not None:
+            args.append(start); clauses.append(f"ts>=${len(args)}")
+        if end is not None:
+            args.append(end); clauses.append(f"ts<${len(args)}")
+        args.append(limit)
+        q = (
+            f"SELECT data FROM journal_discrepancies WHERE {' AND '.join(clauses)} "
+            f"ORDER BY ts ASC LIMIT ${len(args)}"
+        )
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            rows = await con.fetch(q, *args)
+        return [model_cls.model_validate(json.loads(r["data"])) for r in rows]
+
+    async def list_discrepancies(
+        self, start: datetime | None = None, end: datetime | None = None, limit: int = 1000
+    ) -> list[LLMFallbackDiscrepancy]:
+        return await self._list_discrepancies(1, LLMFallbackDiscrepancy, start, end, limit)
+
+    async def list_discrepancies_v2(
+        self, start: datetime | None = None, end: datetime | None = None, limit: int = 1000
+    ) -> list[LLMFallbackDiscrepancyV2]:
+        return await self._list_discrepancies(2, LLMFallbackDiscrepancyV2, start, end, limit)
+
     # ---------------------------------------------------------------- reads
 
     async def list_trades(

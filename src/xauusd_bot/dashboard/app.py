@@ -155,6 +155,35 @@ def create_app(
         # live (e.g. the AI-layer flag). Distinct from the session Redis.
         app.state.streams_redis = await make_streams_redis(settings)
 
+        # Default review / fitting engines when not injected, so the Reviews and
+        # Proposals tabs work in the deployed service (uvicorn calls create_app
+        # with no args). Fitting needs only the journal; Reviews additionally
+        # needs an OpenRouter reviewer, so it stays disabled (503) without a key.
+        if app.state.fitting_proposal_engine is None:
+            try:
+                from xauusd_bot.review.fitting_proposal import FittingProposalEngine
+
+                app.state.fitting_proposal_engine = FittingProposalEngine(journal=app.state.journal_store)
+            except Exception as exc:  # noqa: BLE001 - optional dashboard feature
+                log.warning("dashboard_fitting_engine_init_failed", error=str(exc))
+        if app.state.review_engine is None and settings.openrouter_api_key is not None:
+            try:
+                from xauusd_bot.decision.openrouter_client import OpenRouterClient
+                from xauusd_bot.review.engine import ReviewEngine
+                from xauusd_bot.review.reviewer_client import ReviewerOpenRouterClient
+
+                base = OpenRouterClient(
+                    settings=settings,
+                    prompt_path=Path("decision_agent.md"),
+                    usage_redis=app.state.streams_redis,
+                )
+                reviewer = ReviewerOpenRouterClient(base_client=base, prompt_path=Path("review_agent.md"))
+                app.state.review_engine = ReviewEngine(
+                    journal=app.state.journal_store, backtest=None, reviewer=reviewer, settings=settings
+                )
+            except Exception as exc:  # noqa: BLE001 - optional dashboard feature
+                log.warning("dashboard_review_engine_init_failed", error=str(exc))
+
         # WebSocket broker.
         app.state.ws_broker = WebSocketBroker()
 

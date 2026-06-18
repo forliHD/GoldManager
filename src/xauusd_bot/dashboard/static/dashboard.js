@@ -294,13 +294,21 @@
 
   // ---- Fair Value Gap boxes -----------------------------------------------
   // Keep the latest zones and (re)draw them as HTML rectangles over the chart.
-  const FVG_MAX_BOXES = 7;  // keep the chart readable — only the strongest zones
+  // Cap PER timeframe so each TF stays represented — a global cap by rank_score
+  // would always drop the small M1 gaps in favour of the larger H1/M5 ones.
+  const FVG_MAX_PER_TF = 4;
   function renderFvgZones(zones) {
-    let z = Array.isArray(zones) ? zones.slice() : [];
-    // Strongest first (size × displacement × freshness, mitigation-penalised);
-    // fall back to gap size when an older payload carries no rank_score.
-    z.sort((a, b) => (Number(b.rank_score || b.size_points || 0)) - (Number(a.rank_score || a.size_points || 0)));
-    state.fvgZones = z.slice(0, FVG_MAX_BOXES);
+    const z = Array.isArray(zones) ? zones.slice() : [];
+    const rank = (x) => Number(x.rank_score || x.size_points || 0);
+    z.sort((a, b) => rank(b) - rank(a));  // strongest first within each TF
+    const perTf = {};
+    const kept = [];
+    for (const zone of z) {
+      const tf = zone.tf || '?';
+      perTf[tf] = (perTf[tf] || 0) + 1;
+      if (perTf[tf] <= FVG_MAX_PER_TF) kept.push(zone);
+    }
+    state.fvgZones = kept;
     positionFvgZones();
   }
   function positionFvgZones() {
