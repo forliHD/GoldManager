@@ -4,10 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>XAUUSD Bot — Dashboard</title>
-  <!-- Pinned to v4: the dashboard uses the v4 series API (addCandlestickSeries /
-       addLineSeries). The unpinned URL now resolves to v5, which removed those
-       methods and breaks chart init. -->
-  <script src="https://unpkg.com/lightweight-charts@4/dist/lightweightcharts.standalone.production.js"></script>
+  <!-- Vendored locally (v4.2.3): the dashboard uses the v4 series API
+       (addCandlestickSeries / addLineSeries). Serving it same-origin avoids
+       both the CDN version drift (unpkg now ships a breaking v5) and any
+       content-blocker that would block a third-party CDN. -->
+  <script src="lightweight-charts.v4.standalone.js"></script>
   <style>
     :root {
       --bg: #0e1116;
