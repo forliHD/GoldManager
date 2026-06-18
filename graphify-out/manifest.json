@@ -1255,9 +1255,9 @@
     "semantic_hash": "9fd7877817afc994e71c41a83e079654"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/connectors/mt5linux_connector.py": {
-    "mtime": 1781815835.7459831,
-    "ast_hash": "e94389974980e916dc6d43aafb5c38db",
-    "semantic_hash": "e94389974980e916dc6d43aafb5c38db"
+    "mtime": 1781820617.3460476,
+    "ast_hash": "83834a826ec7844e0b2494a556f6a211",
+    "semantic_hash": "83834a826ec7844e0b2494a556f6a211"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/connectors/paper_broker.py": {
     "mtime": 1781443105.2459686,
@@ -1290,9 +1290,9 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/api.py": {
-    "mtime": 1781814674.660093,
-    "ast_hash": "e5a1dfb3093b293e3818aca46830c186",
-    "semantic_hash": "e5a1dfb3093b293e3818aca46830c186"
+    "mtime": 1781820164.3675406,
+    "ast_hash": "d8660aa2e65ff3060938da4c94b1f764",
+    "semantic_hash": "d8660aa2e65ff3060938da4c94b1f764"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/app.py": {
     "mtime": 1781817767.5348296,
@@ -1310,9 +1310,9 @@
     "semantic_hash": "662b7955fc1443524486c6b2319d551d"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/dashboard.js": {
-    "mtime": 1781817577.1618068,
-    "ast_hash": "08c023888ff8efeac0532de71381925d",
-    "semantic_hash": "08c023888ff8efeac0532de71381925d"
+    "mtime": 1781820399.8490596,
+    "ast_hash": "8542b65b4b7f1fad1992351eafc564b5",
+    "semantic_hash": "8542b65b4b7f1fad1992351eafc564b5"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/lightweight-charts.v4.standalone.js": {
     "mtime": 1781767630.8489945,
@@ -2140,8 +2140,8 @@
     "semantic_hash": "b21c0c375de15b4f36bac0a2fd9cb1d8"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/index.html": {
-    "mtime": 1781808731.6982088,
-    "ast_hash": "69af7ad6bf8bc3bc3b3cf157f5c74200",
-    "semantic_hash": "69af7ad6bf8bc3bc3b3cf157f5c74200"
+    "mtime": 1781820299.8193452,
+    "ast_hash": "b6a6267b7ba1ec02b39db748544412cc",
+    "semantic_hash": "b6a6267b7ba1ec02b39db748544412cc"
   }
 }
