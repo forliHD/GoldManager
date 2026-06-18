@@ -298,15 +298,15 @@ Zurück auf Replay: ohne `-f docker-compose.mt5.yml` neu starten.
 > zum per Browser eingeloggten Account, verklemmt das single-threaded Terminal
 > („result expired"). In `.env` daher auskommentiert lassen → `attach=true`.
 >
-> **Multi-Client-Caveat (execution-engine vorerst AUS).** `mt5linux` teilt EIN
-> globales `MetaTrader5`-Modul über alle RPyC-Clients. Folgen:
-> - `connector.shutdown()` ruft NICHT `mt5.shutdown()` (sonst kappt ein Service
->   beim Stoppen die IPC aller anderen — gefixt).
-> - Mehrere Services, die gleichzeitig `initialize()`/Account-Polls fahren,
->   können `-10004 No IPC connection` erzeugen. Die `execution-engine` (Account/
->   Positionen + Orders) läuft daher noch nicht stabil im Verbund → für reines
->   Datensammeln weggelassen. Für echtes Trading braucht es ein Single-Owner-
->   Connection-Design (oder unsere RPyC-Bridge mit Lock).
+> **Multi-Client-Hinweis.** `mt5linux` teilt EIN globales `MetaTrader5`-Modul
+> über alle RPyC-Clients. Daher: `connector.shutdown()` ruft NICHT
+> `mt5.shutdown()` (sonst kappt ein Service beim Stoppen die IPC aller anderen —
+> gefixt). Mit Attach-Modus (keine `MT5_*`-Creds) laufen data-collector +
+> feature-engine + **execution-engine** stabil gemeinsam (Account/Risk/Positionen
+> erscheinen im Dashboard, ~3 s-Takt). Das frühere `-10004 No IPC connection`
+> kam vom kaputten Cross-Account-Login-Wedge, nicht von der Parallelität — bei
+> sehr hoher gleichzeitiger Last auf dem single-threaded Terminal aber im Auge
+> behalten.
 >
 > **Order-Ausführung später:** „Algo Trading" in MT5 aktivieren (grün,
 > `trade_allowed`) UND Emergency-Stop im Dashboard lösen. Safety jetzt:
