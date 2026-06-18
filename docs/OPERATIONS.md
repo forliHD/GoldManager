@@ -283,15 +283,19 @@ docker exec -u abc xauusd-mt5-terminal sh /config/mt5_bridge_up.sh
 ```
 **Bridge-Health:** `docker exec xauusd-mt5-terminal sh -c "ss -tuln | grep :8001"`.
 
-> **Stage 2 (offen):** Bridge läuft (8001), aber die Trading-Pipeline ist noch
-> NICHT live geschaltet. Zwei Schritte fehlen:
-> 1. **Browser-Login** in MT5 (Vantage-Demo) — danach verbindet sich die
->    Bridge per `initialize()` mit dem eingeloggten, laufenden Terminal.
-> 2. **Connector-Anpassung:** Unser `LiveMT5Connector` spricht das eigene RPyC
->    (18812); gmag11 bietet die `mt5linux`-API (8001). Connector auf den
->    `mt5linux`-Client umstellen (rpyc==5.2.3 ins Service-Image pinnen), dann
->    den auskommentierten Live-Flip-Block in `docker-compose.mt5.yml` aktivieren
->    (Port 8001). Bis dahin bleibt die Pipeline auf Replay.
+> **Stage 2 — Connector fertig, Live-Flip ausstehend:** Der **`Mt5LinuxConnector`**
+> (`connectors/mt5linux_connector.py`) ist implementiert + **gegen das echte
+> Terminal validiert** (Ticks/Bars/Account/Symbol/Positionen). Auswahl über
+> `mt5_bridge_kind=mt5linux` (Default) im Attach-Modus — Terminal einmal per
+> Browser einloggen, keine `MT5_*`-Creds nötig. **Zum Live-Schalten:**
+> 1. Service-Image mit mt5linux-Client bauen:
+>    `pip install --no-deps mt5linux && pip install ".[live]"` (rpyc==5.2.3 —
+>    muss zum Server passen, 5.x/6.x sind inkompatibel).
+> 2. Live-Flip-Block in `docker-compose.mt5.yml` einkommentieren, Stack ohne
+>    `mt5-terminal`-Filter starten (`CONNECTOR_MODE=live`).
+> 3. Für Order-Ausführung „Algo Trading" in MT5 aktivieren (grün) →
+>    `terminal_info().trade_allowed=true`.
+> Bis dahin bleibt die Pipeline auf Replay.
 
 **Dashboard-User anlegen (bcrypt):**
 ```bash

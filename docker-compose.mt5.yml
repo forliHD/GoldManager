@@ -65,23 +65,25 @@ services:
         max-size: "20m"
         max-file: "5"
 
-# --- STAGE 2 (disabled): flip the pipeline onto the live MT5 bridge ---------
-# Enable only after LiveMT5Connector is adapted to mt5linux (port 8001).
-# Then uncomment and bring the stack up without the `mt5-terminal`-only filter.
+# --- STAGE 2: flip the pipeline onto the live MT5 bridge (mt5linux) ----------
+# Mt5LinuxConnector is implemented + validated against the live terminal. To go
+# live, the connector-using service IMAGE must carry the mt5linux client:
+#   pip install --no-deps mt5linux && pip install ".[live]"   # rpyc==5.2.3
+# (build a thin image FROM xauusd-bot/service:0.1.0 with those two lines, or add
+# them to the prod Dockerfile). Then uncomment the block below and bring the
+# stack up WITHOUT the `mt5-terminal`-only filter. CONNECTOR_MODE=live +
+# mt5_bridge_kind defaults to "mt5linux" (attach-mode — no MT5_* creds needed;
+# log the terminal in once via KasmVNC). For live ORDER execution, also click
+# "Algo Trading" in the MT5 toolbar so terminal_info().trade_allowed is true.
 #
 #  data-collector:
-#    environment:
-#      CONNECTOR_MODE: live
-#      MT5_BRIDGE_HOST: mt5-terminal
-#      MT5_BRIDGE_PORT: "8001"
-#    depends_on:
-#      mt5-terminal:
-#        condition: service_healthy
+#    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+#    depends_on: { mt5-terminal: { condition: service_healthy } }
 #  feature-engine:
-#    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+#    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
 #    depends_on: { mt5-terminal: { condition: service_healthy } }
 #  execution-engine:
-#    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+#    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
 #    depends_on: { mt5-terminal: { condition: service_healthy } }
 
 volumes:

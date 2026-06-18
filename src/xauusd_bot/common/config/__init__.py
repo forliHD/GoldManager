@@ -125,11 +125,25 @@ class Settings(BaseSettings):
     mt5_login: str | None = None
     mt5_password: SecretStr | None = None
     mt5_server: str | None = None
+    mt5_bridge_kind: Literal["mt5linux", "rpyc"] = Field(
+        default="mt5linux",
+        description=(
+            "Which live bridge to talk to. 'mt5linux' = the gmag11/metatrader5_vnc "
+            "container's mt5linux RPyC server (port 8001, attach-mode — operator logs in "
+            "via KasmVNC, no MT5_* creds required). 'rpyc' = our own mt5_bridge_server "
+            "(port 18812, programmatic login with MT5_LOGIN/PASSWORD/SERVER)."
+        ),
+    )
     mt5_bridge_host: str = Field(
         default="mt5-terminal",
-        description="Hostname of the RPyC MT5 bridge (the mt5-terminal container in prod).",
+        description="Hostname of the MT5 bridge (the mt5-terminal container in prod).",
     )
-    mt5_bridge_port: int = Field(default=18812, ge=1, le=65535, description="RPyC bridge port.")
+    mt5_bridge_port: int = Field(
+        default=8001,
+        ge=1,
+        le=65535,
+        description="Bridge port. 8001 for mt5linux (default), 18812 for the rpyc bridge.",
+    )
     mt5_bridge_auth_key: SecretStr | None = Field(
         default=None, description="Optional shared secret for the RPyC bridge (MT5_BRIDGE_AUTH_KEY)."
     )

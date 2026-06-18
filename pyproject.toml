@@ -36,6 +36,15 @@ dev = [
     "ruff>=0.4",
     "fakeredis>=2.0",  # Block 9 — tests for DashboardAuth sessions.
 ]
+# Live MT5 bridge clients (prod / mt5-terminal layer only). rpyc is pinned to
+# 5.2.3 to match the mt5linux server inside gmag11/metatrader5_vnc — 5.x and 6.x
+# RPyC wire protocols are incompatible. NOTE: install mt5linux with --no-deps
+# (its declared deps include the Windows-only MetaTrader5 package, which cannot
+# install on Linux): `pip install --no-deps mt5linux && pip install -e .[live]`.
+live = [
+    "rpyc==5.2.3",
+    "plumbum>=1.7",
+]
 
 [project.scripts]
 xauusd-replay-smoke = "xauusd_bot.cli.replay_smoke:main"

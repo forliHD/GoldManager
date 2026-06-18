@@ -33,9 +33,31 @@ def make_connector(settings: Settings) -> IMarketConnector:
     """
 
     if settings.is_live_connector():
+        if settings.mt5_bridge_kind == "mt5linux":
+            # Attach-mode: the operator logs the terminal in via KasmVNC, so
+            # MT5_* credentials are optional (passed through only if all set).
+            from xauusd_bot.connectors.mt5linux_connector import Mt5LinuxConnector
+
+            log.info(
+                "connector_factory_live_mt5linux",
+                host=settings.mt5_bridge_host,
+                port=settings.mt5_bridge_port,
+                symbol=settings.symbol,
+                attach=not (settings.mt5_login and settings.mt5_password and settings.mt5_server),
+            )
+            return Mt5LinuxConnector(
+                host=settings.mt5_bridge_host,
+                port=settings.mt5_bridge_port,
+                symbol=settings.symbol,
+                login=(int(settings.mt5_login) if settings.mt5_login else None),
+                password=(settings.mt5_password.get_secret_value() if settings.mt5_password else None),
+                server=settings.mt5_server,
+            )
+
         if not (settings.mt5_login and settings.mt5_password and settings.mt5_server):
             raise RuntimeError(
-                "CONNECTOR_MODE=live requires MT5_LOGIN, MT5_PASSWORD and MT5_SERVER to be set."
+                "CONNECTOR_MODE=live with mt5_bridge_kind='rpyc' requires "
+                "MT5_LOGIN, MT5_PASSWORD and MT5_SERVER to be set."
             )
         from xauusd_bot.connectors.live import LiveMT5Connector
 
