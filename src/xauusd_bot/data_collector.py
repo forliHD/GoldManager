@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import datetime
 
 import structlog
 
@@ -60,10 +61,45 @@ async def _run_replay(settings: Settings, connector, publisher, stop: asyncio.Ev
     await _idle_until_stop(stop)
 
 
+async def _backfill_history(settings: Settings, connector, publisher) -> datetime | None:
+    """One-time history backfill into ``market_ticks`` for chart context.
+
+    Gated on stream length so a restart with history already present is a
+    no-op. Returns the last backfilled bar time (so the live loop won't
+    re-publish it) or ``None``.
+    """
+    n = settings.live_backfill_bars
+    if n <= 0:
+        return None
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+    try:
+        existing = await r.xlen(StreamTopic.MARKET_TICKS.value)
+    except Exception:  # noqa: BLE001 - if we can't tell, attempt the backfill
+        existing = 0
+    finally:
+        await r.aclose()
+    if existing >= n // 2:
+        log.info("live_backfill_skipped", existing=existing)
+        return None
+    try:
+        history = await asyncio.to_thread(connector.get_rates, settings.symbol, "M1", n)
+    except Exception as exc:  # noqa: BLE001 - backfill is best-effort
+        log.warning("live_backfill_failed", error=str(exc))
+        return None
+    last = None
+    for bar in history:
+        await publisher.publish(StreamTopic.MARKET_TICKS, BarClosedEvent(symbol=settings.symbol, bar=bar))
+        last = bar.time
+    log.info("live_backfill_published", bars=len(history))
+    return last
+
+
 async def _run_live(settings: Settings, connector, publisher, stop: asyncio.Event) -> None:
     symbol = settings.symbol
-    last_time = None
     log.info("live_collector_starting", symbol=symbol)
+    last_time = await _backfill_history(settings, connector, publisher)
     while not stop.is_set():
         try:
             recent = connector.get_rates(symbol, "M1", count=2)

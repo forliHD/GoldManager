@@ -23,6 +23,8 @@
     timeframe: 'M5',
     symbol: 'XAUUSD',     // configured trading symbol, fetched from /api/health
     lastCandle: null,     // active-timeframe candle being live-updated
+    chartFrom: null,      // first loaded candle time (for overlay line spans)
+    chartTo: null,        // latest candle time (extended by live updates)
     ws: null,
     wsTopics: new Set(['ticks', 'features', 'decisions', 'orders', 'journal']),
     reconnectAttempt: 0,
@@ -211,7 +213,16 @@
       const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: c.open, high: c.high, low: c.low, close: c.close }));
       state.candleSeries.setData(mapped);
       state.lastCandle = mapped.length ? { ...mapped[mapped.length - 1] } : null;
-      try { state.chart.timeScale().fitContent(); } catch (e) {}
+      state.chartFrom = mapped.length ? mapped[0].time : null;
+      state.chartTo = mapped.length ? mapped[mapped.length - 1].time : null;
+      // Show a consistent, comfortable window — the most recent ~120 bars —
+      // instead of fitContent (which stretches few bars into giant candles,
+      // worst on H1 with little history). Falls back to "show all" when fewer.
+      try {
+        const n = mapped.length;
+        const visible = 120;
+        state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - visible), to: n + 4 });
+      } catch (e) {}
       applyOverlays(overlays);
     } catch (e) {
       console.error('chart load failed', e);
@@ -242,6 +253,7 @@
       candle = { time: bucketT, open: o, high: h, low: l, close: c };
     }
     state.lastCandle = candle;
+    if (state.chartTo == null || bucketT > state.chartTo) state.chartTo = bucketT;
     try { state.candleSeries.update(candle); } catch (e) {}
   }
 
@@ -254,19 +266,26 @@
 
   function applyOverlays(o) {
     clearOverlays();
-    // VWAPs
-    if (o.vwap) {
+    if (!o) return;
+    // Horizontal levels span the actual loaded candle time range (broker time),
+    // NOT wall-clock — otherwise the lines land hours away and off-screen.
+    const from = state.chartFrom, to = state.chartTo;
+    if (from == null || to == null) return;
+    const hline = (val, opts) => {
+      const s = state.chart.addLineSeries({ priceLineVisible: false, lastValueVisible: false, ...opts });
+      s.setData([{ time: from, value: Number(val) }, { time: to, value: Number(val) }]);
+      return s;
+    };
+    // VWAPs — the API response field is `vwaps` (fall back to `vwap` for safety).
+    const vwaps = o.vwaps || o.vwap;
+    if (vwaps) {
       const colors = { utc00: '#1f77b4', utc07: '#ff7f0e', utc12: '#e377c2' };
-      for (const [k, v] of Object.entries(o.vwap)) {
+      for (const [k, v] of Object.entries(vwaps)) {
         if (v === null || v === undefined) continue;
-        const series = state.chart.addLineSeries({ color: colors[k] || '#fff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-        // For VWAP we approximate a horizontal-ish line using the latest bar time + a forward time
-        const lastTime = state.candleSeries.dataByIndex ? Math.floor(Date.now() / 1000) : Math.floor(Date.now() / 1000);
-        series.setData([{ time: lastTime - 3600, value: v }, { time: lastTime + 3600, value: v }]);
-        state.overlaySeries.push({ name: 'vwap_' + k, line: series });
+        state.overlaySeries.push({ name: 'vwap_' + k, line: hline(v, { color: colors[k] || '#fff', lineWidth: 1 }) });
       }
     }
-    // Volume profile
+    // Volume profile (VAH / VPOC / VAL per period).
     if (o.volume_profile) {
       for (const [period, vp] of Object.entries(o.volume_profile)) {
         if (!vp) continue;
@@ -276,10 +295,7 @@
         const lineStyle = isDeveloping ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid;
         for (const level of ['vah', 'vpoc', 'val']) {
           if (vp[level] === null || vp[level] === undefined) continue;
-          const series = state.chart.addLineSeries({ color, lineWidth, lineStyle, priceLineVisible: false, lastValueVisible: false });
-          const now = Math.floor(Date.now() / 1000);
-          series.setData([{ time: now - 3600, value: vp[level] }, { time: now + 3600, value: vp[level] }]);
-          state.overlaySeries.push({ name: 'vp_' + period + '_' + level, line: series });
+          state.overlaySeries.push({ name: 'vp_' + period + '_' + level, line: hline(vp[level], { color, lineWidth, lineStyle }) });
         }
       }
     }
