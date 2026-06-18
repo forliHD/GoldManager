@@ -177,9 +177,32 @@ class Settings(BaseSettings):
         ge=1,
         description=(
             "Approximate MAXLEN cap (XADD ~) for bundle-carrying streams "
-            "(features/decisions). Each event embeds the full FeatureSnapshotBundle "
-            "(~800 KB), so the cap must be ~1000× smaller than stream_maxlen or Redis "
-            "OOMs: at 1.5k this is ~1.3 GB/stream, keeping features+decisions under ~2.5 GB."
+            "(features/decisions). The published bundle is compacted before XADD "
+            "(see compact_bundle) so each event is now tens of KB rather than "
+            "~800 KB; this cap stays as a safety net so a regression in payload "
+            "size cannot OOM Redis."
+        ),
+    )
+    bundle_compact_max_swings: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Transport compaction: how many of the most-recent structure swings to "
+            "keep in the published FeatureSnapshotBundle. Execution only reads the "
+            "latest swing high/low (see execution.stops._last_swing), so the long "
+            "history tail is dropped. Set high enough to always include the most "
+            "recent high and low."
+        ),
+    )
+    bundle_compact_max_mitigated_zones_per_tf: int = Field(
+        default=10,
+        ge=0,
+        description=(
+            "Transport compaction: how many fully-mitigated FVG zones to keep per "
+            "timeframe in the published bundle. Open/partially-mitigated zones are "
+            "always kept; the (mostly M1) mitigated tail is the bulk of the payload. "
+            "Kept above the aggregator's mitigated-count thresholds (>5) so decision "
+            "scoring is preserved."
         ),
     )
 

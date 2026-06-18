@@ -21,6 +21,7 @@ import structlog
 
 from xauusd_bot.common.config import ServiceRole, Settings, load_settings
 from xauusd_bot.common.logging import setup_logging
+from xauusd_bot.common.messaging.compact import compact_bundle
 from xauusd_bot.common.messaging.events import (
     ENVELOPE_SCHEMA_VERSION,
     BarClosedEvent,
@@ -49,6 +50,15 @@ def _make_handler(settings: Settings, pipeline: FeaturePipeline, publisher: Publ
         if len(buffer) > max_hist:
             del buffer[: len(buffer) - max_hist]
         bundle = pipeline.assemble(buffer, ev.bar.time)
+        # Slim the bundle before it hits the wire — the rich bundle's
+        # fvg.zones / structure history is ~99 % of the payload and the
+        # root cause of Redis OOM. compact_bundle keeps only what the
+        # decision- and execution-engines read. See compact_bundle.
+        bundle = compact_bundle(
+            bundle,
+            max_swings=settings.bundle_compact_max_swings,
+            max_mitigated_zones_per_tf=settings.bundle_compact_max_mitigated_zones_per_tf,
+        )
         await publisher.publish(
             StreamTopic.FEATURES,
             FeaturesEvent(symbol=ev.symbol, bundle=bundle, ref_price=ev.bar.close),

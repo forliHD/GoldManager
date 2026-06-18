@@ -87,7 +87,14 @@ class FeaturesEvent(_Envelope):
     """The full feature bundle for one bar, emitted by the feature-engine."""
 
     kind: Literal["features"] = "features"
-    bundle: FeatureSnapshotBundle
+    bundle: FeatureSnapshotBundle = Field(
+        description=(
+            "Feature bundle for the bar. Publishers compact it first "
+            "(see xauusd_bot.common.messaging.compact.compact_bundle) — the "
+            "fvg.zones / structure history tail is dropped to keep the wire "
+            "payload small; everything downstream reads survives."
+        ),
+    )
     ref_price: Decimal | None = Field(
         default=None,
         description="Close of the bar these features were computed on — the execution-engine's market entry reference.",
@@ -107,7 +114,12 @@ class DecisionEvent(_Envelope):
     score: Score
     qualification: TradeQualification | None = None
     bundle: FeatureSnapshotBundle = Field(
-        description="The feature bundle the decision was made on — the execution-engine needs it for ATR-based SL/TP placement.",
+        description=(
+            "The feature bundle the decision was made on — the execution-engine "
+            "needs it for ATR-based SL/TP placement. Compacted before publish "
+            "(see compact_bundle): execution reads the latest swing high/low and "
+            "the open/top FVG zones, all of which survive compaction."
+        ),
     )
     ref_price: Decimal | None = Field(
         default=None,

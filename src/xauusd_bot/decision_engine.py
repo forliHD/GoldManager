@@ -23,6 +23,7 @@ import structlog
 
 from xauusd_bot.common.config import ServiceRole, Settings, load_settings
 from xauusd_bot.common.logging import setup_logging
+from xauusd_bot.common.messaging.compact import compact_bundle
 from xauusd_bot.common.messaging.events import (
     ENVELOPE_SCHEMA_VERSION,
     DecisionEvent,
@@ -82,6 +83,15 @@ def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _Ru
         decision, score, qualification = await pipeline.decide(
             ev.bundle, account=None, use_ai=use_ai
         )
+        # The features stream is already compacted upstream; re-compact
+        # (idempotent) so the decisions stream is bounded even if a future
+        # path feeds in a full bundle. The execution-engine reads this
+        # bundle for SL/TP.
+        bundle = compact_bundle(
+            ev.bundle,
+            max_swings=pipeline.settings.bundle_compact_max_swings,
+            max_mitigated_zones_per_tf=pipeline.settings.bundle_compact_max_mitigated_zones_per_tf,
+        )
         await publisher.publish(
             StreamTopic.DECISIONS,
             DecisionEvent(
@@ -89,7 +99,7 @@ def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _Ru
                 decision=decision,
                 score=score,
                 qualification=qualification,
-                bundle=ev.bundle,
+                bundle=bundle,
                 ref_price=ev.ref_price,
             ),
         )
