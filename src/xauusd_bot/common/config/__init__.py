@@ -179,9 +179,15 @@ class Settings(BaseSettings):
         description="When True the data-collector restarts the replay from the top after exhausting the source; when False it idles until shutdown.",
     )
     warmup_bars: int = Field(
-        default=500,
+        default=1500,
         ge=0,
-        description="Bars the feature-engine fetches from the connector at startup to seed its buffer (live mode only; replay fills from the stream).",
+        description=(
+            "Bars the feature-engine fetches from the connector at startup to seed its buffer "
+            "(live mode only; replay fills from the stream). Must span the current day's 00:00 "
+            "anchor so the three anchored VWAPs (00:00/07:00/12:00) are distinct right after a "
+            "restart — with too few bars all anchors collapse to the buffer start and read "
+            "identical. ~1500 M1 ≈ 25h covers it regardless of restart time."
+        ),
     )
     chart_history_bars: int = Field(
         default=1500,

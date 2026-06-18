@@ -30,6 +30,10 @@ def test_settings_loads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.connector_mode == ConnectorMode.REPLAY
     assert s.service_role == ServiceRole.DATA_COLLECTOR
     assert s.environment == "test"
+    # Warmup must span a full trading day (1440 M1 bars) so the three anchored
+    # VWAPs (00:00/07:00/12:00) are distinct right after a feature-engine
+    # restart — too few bars collapse every anchor onto the buffer start.
+    assert s.warmup_bars >= 1440
 
 
 def test_settings_loads_from_dotenv_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
