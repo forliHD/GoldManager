@@ -1,99 +1,88 @@
-# MT5 layer for the DEV stack — run the full pipeline against a REAL MT5
-# demo account (Wine + MetaTrader 5 + RPyC bridge) instead of the replay
-# connector, while keeping the dev conveniences (LAN dashboard, dev env).
+# MT5 layer for the DEV stack — runs MetaTrader 5 under Wine with a
+# browser-accessible KasmVNC desktop, using the maintained upstream image
+# gmag11/metatrader5_vnc (https://github.com/gmag11/MetaTrader5-Docker, v2.3).
 #
-# Usage (layer ON TOP of base + dev):
+# Why this image instead of our own docker/mt5-terminal/Dockerfile: the
+# MetaQuotes web installer (mt5setup.exe /auto) hangs under *headless* Wine.
+# gmag11 runs it under a real X display (KasmVNC + openbox), so the install
+# completes. The image self-installs, on first boot (~10-15 min):
+#   * Wine-Mono, MetaTrader 5, Python 3.9 (Wine), MetaTrader5==5.0.36 + mt5linux
+#   * a `mt5linux` RPyC bridge on port 8001 (mirrors the MetaTrader5 package API)
+#   * the MT5 GUI, served over KasmVNC on port 3000
+#
+# Usage (layer ON TOP of base + dev — bring up ONLY the terminal for now):
 #   docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
-#                  -f docker-compose.mt5.yml up -d
+#                  -f docker-compose.mt5.yml up -d mt5-terminal
 #
-# Prerequisites in .env:
-#   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER (e.g. VantageInternational-Demo)
-#   VNC_PASSWORD (for the one-time terminal login)
+# Browser access (KasmVNC):  http://<vm-ip>:3000
+#   login: MT5_VNC_USER / MT5_VNC_PASSWORD  (see .env)
+# MT5 account login: in the MT5 window use File -> Login to Trade Account and
+#   enter MT5_LOGIN / MT5_PASSWORD / MT5_SERVER. It persists in the
+#   `mt5-config` volume, so you only do it once.
 #
-# One-time login: the MT5 terminal needs an interactive login the first
-# time. Reach the desktop via noVNC in a browser:
-#   - default (loopback): SSH tunnel  ssh -L 6080:127.0.0.1:6080 dev@<vm>
-#     then open http://localhost:6080/vnc.html
-#   - or set MT5_VNC_BIND_HOST=0.0.0.0 in .env for direct LAN access
-#     (trusted network only — VNC is a full remote desktop).
-#
-# Cold image build is ~10-15 min (Wine base + MT5 + Windows-Python).
+# NOTE — pipeline is NOT yet flipped to this bridge. The bot's
+# LiveMT5Connector speaks our own RPyC bridge (port 18812); pointing it at
+# gmag11's mt5linux server (port 8001) is a follow-up. Until that lands the
+# trading pipeline stays on the replay connector (dev layer). See the
+# disabled live-flip block at the bottom.
 
 services:
   mt5-terminal:
-    build:
-      context: .
-      dockerfile: docker/mt5-terminal/Dockerfile
-    image: xauusd-bot/mt5-terminal:0.8.0
+    image: gmag11/metatrader5_vnc:latest
     container_name: xauusd-mt5-terminal
     environment:
-      MT5_LOGIN: ${MT5_LOGIN:?MT5_LOGIN must be set in .env}
-      MT5_PASSWORD: ${MT5_PASSWORD:?MT5_PASSWORD must be set in .env}
-      MT5_SERVER: ${MT5_SERVER:-VantageInternational-Demo}
-      MT5_SYMBOL: ${MT5_SYMBOL:-XAUUSD}
-      MT5_BRIDGE_HOST: 0.0.0.0
-      MT5_BRIDGE_PORT: "18812"
-      MT5_BRIDGE_AUTH_KEY: ${MT5_BRIDGE_AUTH_KEY:-}
-      MT5_BRIDGE_LOG_LEVEL: ${MT5_BRIDGE_LOG_LEVEL:-INFO}
-      MT5_INSTALLER_URL: ${MT5_INSTALLER_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}
-      PYTHON_WIN_INSTALLER_URL: ${PYTHON_WIN_INSTALLER_URL:-https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe}
-      VNC_PASSWORD: ${VNC_PASSWORD:-changeme}
-      DISPLAY: ":99"
-    # RPyC bridge stays loopback-only. VNC/noVNC are loopback by default
-    # (use an SSH tunnel); set MT5_VNC_BIND_HOST=0.0.0.0 for LAN.
+      # KasmVNC web auth (linuxserver base).
+      CUSTOM_USER: ${MT5_VNC_USER:-trader}
+      PASSWORD: ${MT5_VNC_PASSWORD:?set MT5_VNC_PASSWORD in .env}
+      TITLE: GoldManager MT5
+      TZ: ${TZ:-Europe/Berlin}
     ports:
-      - "127.0.0.1:18812:18812"
-      - "${MT5_VNC_BIND_HOST:-127.0.0.1}:5900:5900"
-      - "${MT5_VNC_BIND_HOST:-127.0.0.1}:6080:6080"
+      # KasmVNC web desktop. Bound LAN-wide by default so you can reach it
+      # from the Mac; it is password-protected. Set MT5_VNC_BIND_HOST=127.0.0.1
+      # in .env to require an SSH tunnel instead (more conservative).
+      - "${MT5_VNC_BIND_HOST:-0.0.0.0}:3000:3000"
+      # mt5linux RPyC bridge — loopback-only on the host. The bot will reach it
+      # over the compose network as `mt5-terminal:8001` (no host publish needed);
+      # the 127.0.0.1 publish is just for debugging from the VM itself.
+      - "127.0.0.1:8001:8001"
     volumes:
-      - mt5-data:/root/.wine
-      - mt5-bridge-logs:/var/log/supervisor
+      - mt5-config:/config
+    shm_size: "1gb"
+    security_opt:
+      - seccomp:unconfined
     restart: unless-stopped
     healthcheck:
-      test:
-        - CMD
-        - python3
-        - -c
-        - "import socket; s=socket.socket(); s.connect(('127.0.0.1', 18812)); s.close()"
+      # Ready once the mt5linux bridge is listening on 8001 (after the long
+      # first-boot install). start_period is generous to cover that install.
+      test: ["CMD-SHELL", "ss -tuln 2>/dev/null | grep -q ':8001 ' || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 120s
+      retries: 5
+      start_period: 1200s
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
 
-  # Connector-using services switch to the live MT5 bridge. They keep
-  # ENVIRONMENT=development (from the dev layer) on purpose.
-  data-collector:
-    environment:
-      CONNECTOR_MODE: live
-      MT5_BRIDGE_HOST: mt5-terminal
-      MT5_BRIDGE_PORT: "18812"
-    depends_on:
-      mt5-terminal:
-        condition: service_healthy
-
-  feature-engine:
-    environment:
-      CONNECTOR_MODE: live
-      MT5_BRIDGE_HOST: mt5-terminal
-      MT5_BRIDGE_PORT: "18812"
-    depends_on:
-      mt5-terminal:
-        condition: service_healthy
-
-  execution-engine:
-    environment:
-      CONNECTOR_MODE: live
-      MT5_BRIDGE_HOST: mt5-terminal
-      MT5_BRIDGE_PORT: "18812"
-    depends_on:
-      mt5-terminal:
-        condition: service_healthy
+# --- STAGE 2 (disabled): flip the pipeline onto the live MT5 bridge ---------
+# Enable only after LiveMT5Connector is adapted to mt5linux (port 8001).
+# Then uncomment and bring the stack up without the `mt5-terminal`-only filter.
+#
+#  data-collector:
+#    environment:
+#      CONNECTOR_MODE: live
+#      MT5_BRIDGE_HOST: mt5-terminal
+#      MT5_BRIDGE_PORT: "8001"
+#    depends_on:
+#      mt5-terminal:
+#        condition: service_healthy
+#  feature-engine:
+#    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+#    depends_on: { mt5-terminal: { condition: service_healthy } }
+#  execution-engine:
+#    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+#    depends_on: { mt5-terminal: { condition: service_healthy } }
 
 volumes:
-  mt5-data:
-  mt5-bridge-logs:
+  mt5-config:

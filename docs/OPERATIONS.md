@@ -65,7 +65,7 @@ wählt `SERVICE_ROLE` (Dispatcher `xauusd_bot.docker_entrypoint`). Das Dashboard
 | `xauusd-execution-engine` | Risk/Stops/TP/Order → `orders`/`journal` | — | Heartbeat `logs/execution-engine.alive` |
 | `xauusd-journal-writer` | `journal` → JournalStore | — | Heartbeat `logs/journal-writer.alive` |
 | `xauusd-dashboard` | FastAPI + WebSocket + Charts | `8080` | `GET /api/health` |
-| `xauusd-mt5-terminal` *(prod)* | Wine + MT5 + RPyC-Bridge | `18812` (intern), VNC intern | RPyC-Ping |
+| `xauusd-mt5-terminal` | Wine + MT5 + KasmVNC + `mt5linux`-Bridge (Image `gmag11/metatrader5_vnc`) | `3000` (KasmVNC-Web), `8001` (Bridge, loopback) | Bridge lauscht auf `8001` |
 
 **Heartbeat:** Jeder Stream-Service schreibt alle 15 s `logs/<rolle>.alive`.
 Ein hängender Event-Loop = stehender Heartbeat = unhealthy Container.
@@ -79,7 +79,8 @@ Ein hängender Event-Loop = stehender Heartbeat = unhealthy Container.
 | 6379 | Redis | published `6379:6379` | DB **0** = Trading-Streams + Runtime-Flags; DB **1** = Dashboard-Sessions |
 | 5432 | TimescaleDB | published `5432:5432` | User/PW/DB: `xauusd`/`xauusd`/`xauusd` |
 | 8080 | Dashboard | `${DASHBOARD_BIND_HOST:-127.0.0.1}:8080` | Default loopback; `0.0.0.0` für LAN |
-| 18812 | MT5-RPyC-Bridge *(prod)* | intern | nur im Compose-Netz `xauusd-net` |
+| 3000 | MT5 KasmVNC-Web | `${MT5_VNC_BIND_HOST:-0.0.0.0}:3000` | **Browser-Zugang zum MT5-Desktop**, Basic-Auth (`MT5_VNC_USER`/`MT5_VNC_PASSWORD`) |
+| 8001 | MT5 `mt5linux`-Bridge | `127.0.0.1:8001` | RPyC; Bot erreicht sie compose-intern als `mt5-terminal:8001` |
 
 Docker-Netz: `xauusd-net` (alle Container; Service-Namen sind DNS-auflösbar,
 z. B. `redis`, `timescaledb`).
@@ -234,28 +235,58 @@ docker compose -f docker-compose.base.yml -f docker-compose.dev.yml down
 ```
 **Prod (Ubuntu, MT5):** `-f docker-compose.prod.yml` statt `-dev` + MT5-Vars in `.env`.
 
-**Dev MIT echtem MT5 (Demo-Account testen):** Layer `docker-compose.mt5.yml`
-auf base+dev — `data-collector`, `feature-engine`, `execution-engine` schalten
-auf den Live-Connector (MT5-Bridge), Rest bleibt dev (LAN-Dashboard etc.).
-Nur auf x86_64 (die VM), nicht auf Apple-Silicon.
+### MT5-Terminal im Browser (KasmVNC) — Demo-Account
+
+Der MT5-Container nutzt das gepflegte Image **`gmag11/metatrader5_vnc`**
+(`docker-compose.mt5.yml`): MT5 läuft unter Wine mit einem echten X-Display, das
+per **KasmVNC im Browser** erreichbar ist. Beim ersten Start installiert sich das
+Image selbst (Mono, MT5, Wine-Python, `mt5linux`-Bridge) — **~10-15 Min**. Nur
+auf x86_64 (die VM), nicht auf Apple-Silicon.
+
 ```bash
-# 1. .env: MT5_LOGIN / MT5_PASSWORD / MT5_SERVER (z.B. VantageInternational-Demo)
-#    + VNC_PASSWORD setzen.
-# 2. mt5-terminal-Image bauen (~10-15 Min, einmalig):
-docker build -f docker/mt5-terminal/Dockerfile -t xauusd-bot/mt5-terminal:0.8.0 .
-# 3. Stack mit MT5 starten:
+# 1. .env (einmalig): MT5_LOGIN / MT5_PASSWORD / MT5_SERVER (z.B.
+#    VantageInternational-Demo). MT5_PASSWORD mit Sonderzeichen QUOTEN!
+#    + KasmVNC-Zugang: MT5_VNC_USER / MT5_VNC_PASSWORD / MT5_VNC_BIND_HOST=0.0.0.0
+# 2. NUR den MT5-Terminal hochfahren (Pipeline bleibt vorerst auf Replay):
 docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
-               -f docker-compose.mt5.yml up -d
-# 4. EINMALIGER MT5-Login per noVNC (Terminal verlangt interaktive Anmeldung):
-#    ssh -L 6080:127.0.0.1:6080 dev@192.168.178.192   # Tunnel
-#    Browser: http://localhost:6080/vnc.html  → im MT5-Terminal mit dem
-#    Demo-Account einloggen. (Oder MT5_VNC_BIND_HOST=0.0.0.0 für LAN.)
-# 5. Bridge-Health prüfen:
-docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
-               -f docker-compose.mt5.yml ps mt5-terminal      # healthy = Port 18812 lauscht
-docker logs xauusd-data-collector 2>&1 | grep -i connector    # connector_factory_live
+               -f docker-compose.mt5.yml up -d mt5-terminal
+# 3. Erststart-Fortschritt beobachten ([1/7]…[7/7]):
+docker logs -f xauusd-mt5-terminal
 ```
-Zurück auf Replay: einfach ohne `-f docker-compose.mt5.yml` neu starten.
+
+**Browser-Zugang vom Mac:** `http://192.168.178.192:3000`
+→ Basic-Auth `MT5_VNC_USER` / `MT5_VNC_PASSWORD` (siehe `.env`).
+Du siehst den MT5-Desktop (während [3/7] läuft der Installer sichtbar).
+Konservativer statt LAN: `MT5_VNC_BIND_HOST=127.0.0.1` + SSH-Tunnel
+`ssh -L 3000:127.0.0.1:3000 dev@192.168.178.192`, dann `http://localhost:3000`.
+
+**MT5-Account-Login:** Im MT5-Fenster *Datei → Beim Handelskonto anmelden* →
+`MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER`. Persistiert im Volume
+`goldmanager_mt5-config`, also nur einmal nötig.
+
+**Bridge starten (Helper, wegen zweier gmag11-v2.3-Bugs nötig):** Der
+eingebaute `[7/7]`-Start der `mt5linux`-Bridge schlägt fehl, weil (a) das
+Image-`start.sh` den entfernten `-w`-Schalter nutzt (mt5linux 1.0.3 dropte ihn —
+der Server muss UNTER wine-python laufen) und (b) Wine-Python numpy 2.x mitbringt,
+das `import MetaTrader5` (5.0.36, numpy-1.x-ABI) bricht. Beides fixt das
+idempotente Helper-Skript `scripts/mt5_bridge_up.sh` (numpy<2 + rpyc==5.2.3
+angleichen + Server korrekt starten); die Fixes persistieren im `mt5-config`-Volume:
+```bash
+docker exec -u abc xauusd-mt5-terminal sh /config/mt5_bridge_up.sh
+# → "[bridge] OK — mt5linux listening on 0.0.0.0:8001"
+# (nach jedem Container-Restart einmal ausführen)
+```
+**Bridge-Health:** `docker exec xauusd-mt5-terminal sh -c "ss -tuln | grep :8001"`.
+
+> **Stage 2 (offen):** Bridge läuft (8001), aber die Trading-Pipeline ist noch
+> NICHT live geschaltet. Zwei Schritte fehlen:
+> 1. **Browser-Login** in MT5 (Vantage-Demo) — danach verbindet sich die
+>    Bridge per `initialize()` mit dem eingeloggten, laufenden Terminal.
+> 2. **Connector-Anpassung:** Unser `LiveMT5Connector` spricht das eigene RPyC
+>    (18812); gmag11 bietet die `mt5linux`-API (8001). Connector auf den
+>    `mt5linux`-Client umstellen (rpyc==5.2.3 ins Service-Image pinnen), dann
+>    den auskommentierten Live-Flip-Block in `docker-compose.mt5.yml` aktivieren
+>    (Port 8001). Bis dahin bleibt die Pipeline auf Replay.
 
 **Dashboard-User anlegen (bcrypt):**
 ```bash
@@ -290,12 +321,18 @@ docker exec xauusd-redis redis-cli SET runtime:ai_layer_enabled false
 
 **Bekannte Grenzen**
 - **feature-engine ist O(history)** pro Bar — bei `REPLAY_LOOP=true` wächst der
-  Puffer und der Durchsatz sinkt mit der Zeit.
-- **Demo-Forward → Live (Block 10)** noch offen; LiveMT5Connector ist code-complete,
-  aber nie gegen ein echtes Terminal gelaufen.
-- **VM-Disk:** Der `mt5-terminal`-Image-Build (Wine + MT5, mehrere GB) sprengt
-  die aktuellen **15 GB** der VM. Für MT5-im-Dev die VM-Disk vergrößern
-  (Proxmox/LVM) — sonst `no space left on device` beim Build.
+  Puffer und der Durchsatz sinkt mit der Zeit (feature-engine fällt dann hinter
+  `market_ticks` zurück, sichtbar als steigender `lag` in `XINFO GROUPS`).
+- **MT5-Bridge-Anbindung (Stage 2) offen:** `gmag11/metatrader5_vnc` läuft (MT5
+  per Browser, KasmVNC:3000) und stellt `mt5linux` auf 8001 bereit. Unser
+  `LiveMT5Connector` (RPyC 18812) muss noch auf diese API umgestellt werden,
+  bevor die Pipeline live geht. Bis dahin: Replay.
+- **Redis-Speicher:** `features`/`decisions` tragen das (große)
+  FeatureSnapshotBundle. Caps sind jetzt **pro Topic** (`stream_maxlen` für
+  market_ticks, `stream_maxlen_large` für features/decisions) — verhindert das
+  frühere OOM. Bei OOM-Verdacht: `XINFO GROUPS <stream>` + `INFO memory`.
+- **VM-Disk:** auf **48 GB** vergrößert (Proxmox/LVM) — reicht für das
+  6,7-GB-MT5-Image + Stack.
 - **Position-Lifecycle:** Die `execution-engine` treibt Trade-*Entry*; Trailing/
   TP-Teilschließung über Folge-Bars ist noch nicht verdrahtet (Kill-Switch +
   Risk-Halt funktionieren).
