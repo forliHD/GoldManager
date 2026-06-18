@@ -3,6 +3,22 @@
 #   docker compose -f docker-compose.base.yml -f docker-compose.dev.yml up
 
 services:
+  # Dev: cap Redis memory and disable persistence. The fast replay loop +
+  # large feature/decision payloads can otherwise grow Redis past the VM's
+  # RAM (OOM-kill), and AOF persistence makes it crash-loop reloading the
+  # huge dataset on restart. Dev data is regenerable from the replay.
+  redis:
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "2gb"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+
   # Force replay mode for every Python service in dev.
   data-collector:
     environment:

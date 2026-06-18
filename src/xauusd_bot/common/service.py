@@ -134,10 +134,14 @@ async def service_runtime(
         log.info("service_stopped", role=name)
 
 
-def make_publisher(settings: Settings, *, maxlen: int = 1_000_000) -> Publisher:
-    """Construct a :class:`Publisher` bound to ``settings.redis_url``."""
+def make_publisher(settings: Settings, *, maxlen: int | None = None) -> Publisher:
+    """Construct a :class:`Publisher` bound to ``settings.redis_url``.
 
-    return Publisher(settings.redis_url, maxlen=maxlen)
+    ``maxlen`` defaults to ``settings.stream_maxlen`` so stream memory stays
+    bounded (the features/decisions payloads are large — see Settings).
+    """
+
+    return Publisher(settings.redis_url, maxlen=maxlen if maxlen is not None else settings.stream_maxlen)
 
 
 def make_consumer(

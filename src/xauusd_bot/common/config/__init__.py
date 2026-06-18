@@ -164,6 +164,15 @@ class Settings(BaseSettings):
     stream_batch_size: int = Field(
         default=64, ge=1, description="Max messages a service consumer fetches per iteration."
     )
+    stream_maxlen: int = Field(
+        default=50_000,
+        ge=1,
+        description=(
+            "Approximate MAXLEN cap (XADD ~) per Redis stream. Bounds Redis memory: "
+            "the features/decisions events carry full bundles (several KB each), so a "
+            "1M cap can blow past available RAM. 50k keeps total well under ~2GB."
+        ),
+    )
 
     # --- Risk (fractions, e.g. 0.04 = 4%)
     risk_max_daily: float = Field(default=0.04, ge=0, le=1)
