@@ -140,7 +140,10 @@ async def _run(settings: Settings) -> int:
                 if latest.tzinfo is None:
                     latest = latest.replace(tzinfo=UTC)
                 offset_min = round((latest - datetime.now(UTC)).total_seconds() / 3600.0) * 60
-                pipeline.news.set_clock_offset(offset_min)
+                # Fan the offset out to ALL time-of-day-anchored engines
+                # (session / VWAP / volume-range / news), not just news —
+                # otherwise sessions and VWAP anchors are broker-time-shifted.
+                pipeline.set_clock_offset(offset_min)
                 log.info("feature_engine_broker_clock_offset", offset_minutes=offset_min)
         except Exception as exc:  # noqa: BLE001 - warmup is best-effort
             log.warning("feature_engine_warmup_failed", error=str(exc))

@@ -109,8 +109,18 @@ class SessionEngine:
         of each other. Default 0.5.
     """
 
-    def __init__(self, equal_threshold_atr: float = 0.5) -> None:
+    def __init__(self, equal_threshold_atr: float = 0.5, clock_offset_minutes: float = 0.0) -> None:
         self._equal_thr = equal_threshold_atr
+        # Subtracted from incoming (broker) bar/cursor times to recover real
+        # UTC, so the session windows (defined in real UTC) classify correctly.
+        # MT5 bar times are broker-server time (e.g. UTC+3). 0 for replay/tests
+        # where bar time is already the comparison frame. Set live via
+        # :meth:`set_clock_offset` (mirrors NewsContextEngine).
+        self._offset_min = float(clock_offset_minutes)
+
+    def set_clock_offset(self, minutes: float) -> None:
+        """Set the broker→UTC offset (minutes) applied to incoming times."""
+        self._offset_min = float(minutes)
 
     def compute(self, bars: Iterable[Bar], current_t: datetime) -> SessionEngineOutput:
         """Compute session state for ``current_t`` given all visible bars.
@@ -121,8 +131,13 @@ class SessionEngine:
         """
 
         pit_bars = [b for b in bars if b.time <= current_t]
-        window = _classify(current_t)
-        start, end = _session_start_end(current_t)
+        # Classify in real UTC (subtract the broker offset), then shift the
+        # window bounds back into the broker frame so the rest of the function
+        # (bar-membership, progress, output) compares against native bar times.
+        off = timedelta(minutes=self._offset_min)
+        window = _classify(current_t - off)
+        start, end = _session_start_end(current_t - off)
+        start, end = start + off, end + off
         pit_bars.sort(key=lambda b: b.time)
 
         # Bars in the current session, in chronological order.

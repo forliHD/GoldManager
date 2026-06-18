@@ -51,6 +51,20 @@ class FeaturePipeline:
         self.liquidity = LiquidityEngine()
         self.news = NewsContextEngine(provider=news_provider or StubNewsProvider())
 
+    def set_clock_offset(self, minutes: float) -> None:
+        """Fan the broker→UTC offset out to every time-of-day-anchored engine.
+
+        MT5 bar times are broker-server time (e.g. UTC+3). Session windows,
+        the VWAP 00:00/07:00/12:00 anchors, the volume-profile period bounds
+        and the news calendar are all defined in real UTC, so each must
+        subtract this offset to classify/anchor correctly. 0 in replay/tests.
+        """
+
+        self.session.set_clock_offset(minutes)
+        self.vwap.set_clock_offset(minutes)
+        self.volume_range.set_clock_offset(minutes)
+        self.news.set_clock_offset(minutes)
+
     def assemble(self, bars: list[Bar], ts: datetime) -> FeatureSnapshotBundle:
         """Run every engine over ``bars`` (PIT-filtered to ``ts``) and bundle it."""
 

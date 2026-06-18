@@ -373,3 +373,32 @@ def test_zero_tick_volume_bars_dont_divide_by_zero() -> None:
     # Should not raise ZeroDivisionError.
     out = eng.compute(bars, ts + timedelta(minutes=1))
     assert out.levels["utc00"].value is not None
+
+
+def test_clock_offset_shifts_anchor_to_real_utc() -> None:
+    """The 07:00 anchor must fire at real-UTC 07:00, not broker 07:00.
+
+    Regression: with a +180min broker offset, real 07:00 UTC == broker 10:00.
+    A bar at broker 09:30 (real 06:30) is therefore BEFORE the utc07 anchor
+    and must be excluded from that level; without the offset it would wrongly
+    be inside the 07:00 window.
+    """
+
+    # Bars every minute from broker 09:00 to 11:00 (real 06:00–08:00).
+    start = datetime(2026, 1, 5, 9, 0, tzinfo=UTC)
+    bars = [_bar(start + timedelta(minutes=i), 2000 + i * 0.1, 2000 + i * 0.1 + 0.5,
+                 2000 + i * 0.1 - 0.5, 2000 + i * 0.1) for i in range(121)]
+    cursor = bars[-1].time
+
+    naive = TripleVWAPEngine().compute(bars, cursor)
+    eng = TripleVWAPEngine()
+    eng.set_clock_offset(180)
+    shifted = eng.compute(bars, cursor)
+
+    n_naive = naive.levels["utc07"].n_bars_anchored
+    n_shifted = shifted.levels["utc07"].n_bars_anchored
+    # Without offset the broker-07:00 anchor caught every bar (09:00+);
+    # with the offset the real-07:00 (= broker 10:00) anchor caught only the
+    # bars from 10:00 onward — strictly fewer.
+    assert n_naive == 121
+    assert 0 < n_shifted < n_naive

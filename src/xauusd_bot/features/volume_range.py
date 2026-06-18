@@ -323,10 +323,20 @@ class FixedVolumeRangeEngine:
         bin_sizes: dict[VolumeProfileName, float] | None = None,
         value_area_pct: float = 0.70,
         distribution: VolumeDistribution = VolumeDistribution.UNIFORM_HL,
+        clock_offset_minutes: float = 0.0,
     ) -> None:
         self._bin_sizes = {**_DEFAULT_BIN_SIZES, **(bin_sizes or {})}
         self._value_area_pct = value_area_pct
         self._distribution = distribution
+        # Broker→UTC offset (minutes), subtracted from incoming times so the
+        # week/month/year boundaries align to real-UTC midnight (MT5 bar times
+        # are broker-server time). 0 for replay/tests; set live via
+        # :meth:`set_clock_offset` (mirrors NewsContextEngine).
+        self._offset_min = float(clock_offset_minutes)
+
+    def set_clock_offset(self, minutes: float) -> None:
+        """Set the broker→UTC offset (minutes) applied to incoming times."""
+        self._offset_min = float(minutes)
 
     def compute(
         self,
@@ -343,12 +353,20 @@ class FixedVolumeRangeEngine:
         developing: dict[VolumeProfileName, _ProfileAccumulator] = {}
         previous: dict[VolumeProfileName, _ProfileAccumulator] = {}
 
+        # Compute period boundaries in real UTC (subtract the broker offset),
+        # then shift them back into the broker frame so they bracket native bar
+        # times in the dispatch loop. MT5 bar times are broker-server time.
+        off = timedelta(minutes=self._offset_min)
+        ct = current_t - off
         for name, period_fn in _PERIOD_FUNCS.items():
-            d_start, d_end = period_fn(current_t)
+            # All period_fn math stays in real UTC; we add ``off`` only when
+            # storing bounds in an accumulator (those bracket native broker
+            # bar times in the dispatch loop).
+            d_start, d_end = period_fn(ct)
             developing[name] = _ProfileAccumulator(
                 name=name,
-                period_start=d_start,
-                period_end=d_end,
+                period_start=d_start + off,
+                period_end=d_end + off,
                 bin_size=self._bin_sizes[name],
                 dist=self._distribution,
             )
@@ -365,8 +383,8 @@ class FixedVolumeRangeEngine:
                 p_end = d_start
             prev = _ProfileAccumulator(
                 name=name,
-                period_start=p_start,
-                period_end=p_end,
+                period_start=p_start + off,
+                period_end=p_end + off,
                 bin_size=self._bin_sizes[name],
                 dist=self._distribution,
             )

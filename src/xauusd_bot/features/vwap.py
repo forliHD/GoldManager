@@ -138,8 +138,17 @@ class TripleVWAPEngine:
     ``t2 > t1``).
     """
 
-    def __init__(self, cluster_atr: float = _CLUSTER_ATR) -> None:
+    def __init__(self, cluster_atr: float = _CLUSTER_ATR, clock_offset_minutes: float = 0.0) -> None:
         self._cluster_atr = cluster_atr
+        # Broker→UTC offset (minutes), subtracted from incoming times so the
+        # 00:00/07:00/12:00 anchors fire at real-UTC session opens (MT5 bar
+        # times are broker-server time, e.g. UTC+3). 0 for replay/tests; set
+        # live via :meth:`set_clock_offset` (mirrors NewsContextEngine).
+        self._offset_min = float(clock_offset_minutes)
+
+    def set_clock_offset(self, minutes: float) -> None:
+        """Set the broker→UTC offset (minutes) applied to incoming times."""
+        self._offset_min = float(minutes)
 
     def compute(self, bars: Iterable[Bar], current_t: datetime) -> TripleVWAPOutput:
         bars = sorted([b for b in bars if b.time <= current_t], key=lambda b: b.time)
@@ -153,13 +162,20 @@ class TripleVWAPEngine:
         # morning there is *no* 00:00-VWAP yet. The 07:00 and 12:00 levels
         # are day-local: they only have state once the anchor has fired
         # *today*.
+        # Compute anchors in real UTC (subtract the broker offset), then shift
+        # them back into the broker frame so they compare against native bar
+        # times below. MT5 bar times are broker-server time (e.g. UTC+3).
+        off = timedelta(minutes=self._offset_min)
+        ct = current_t - off
         anchors: dict[VWAPLevel, datetime | None] = {
-            lvl: _last_anchor_before(current_t, t) for lvl, t in _ANCHORS
+            lvl: _last_anchor_before(ct, t) for lvl, t in _ANCHORS
         }
         # If today's 00:00 hasn't fired, fall back to yesterday's 00:00.
         # This implements the "Vortags-VWAP weiterführen" rule from Plan §8.
         if anchors[VWAPLevel.UTC00] is None:
-            anchors[VWAPLevel.UTC00] = _previous_day_anchor(current_t, _ANCHORS[0][1])
+            anchors[VWAPLevel.UTC00] = _previous_day_anchor(ct, _ANCHORS[0][1])
+        if self._offset_min:
+            anchors = {lvl: (a + off if a is not None else None) for lvl, a in anchors.items()}
 
         states: dict[VWAPLevel, _VwapState] = {}
         for lvl, anchor_ts in anchors.items():

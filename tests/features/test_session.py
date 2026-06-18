@@ -308,3 +308,27 @@ def test_sweep_atr_distance_filter() -> None:
     # documentation check, not a strict assertion — the sweep flag
     # should be True because the geometric criteria are met.
     assert out.is_session_sweep is True
+
+
+def test_clock_offset_classifies_in_real_utc() -> None:
+    """A broker-time bar (UTC+offset, labelled Z) must classify in real UTC.
+
+    Regression: MT5 bar times are broker-server time (e.g. UTC+3) but tagged
+    as UTC. With a +180min offset, a 22:30 broker bar is really 19:30 UTC =
+    NY session (16:00–21:00). Without the offset the engine would read 22:30
+    and wrongly report 'closed'.
+    """
+
+    broker_t = datetime(2026, 1, 5, 22, 30, tzinfo=UTC)
+    bars = [_bar(broker_t - timedelta(minutes=i), 2000, 2001, 1999, 2000.5) for i in range(20)]
+
+    # No offset → reads the broker hour (22:30) → closed.
+    naive = SessionEngine().compute(bars, broker_t)
+    assert naive.current_session == SessionName.CLOSED
+
+    # +180min offset → real 19:30 UTC → NY (full risk window).
+    eng = SessionEngine()
+    eng.set_clock_offset(180)
+    out = eng.compute(bars, broker_t)
+    assert out.current_session == SessionName.NY
+    assert out.session_risk_factor == 1.0
