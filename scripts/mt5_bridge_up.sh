@@ -9,6 +9,15 @@
 #   2. Wine-python ships numpy 2.x, which breaks `import MetaTrader5` (5.0.36
 #      was built against the numpy 1.x ABI).
 WP=/config/.wine
+# 0. ensure the KasmVNC web-auth file exists. The gmag11 v2.3 init does not
+#    reliably create ${HOME}/.kasmpasswd from CUSTOM_USER/PASSWORD, so a fresh
+#    /config volume yields a login that rejects all credentials. Recreate it
+#    idempotently from the container env (CUSTOM_USER/PASSWORD).
+if [ ! -s /config/.kasmpasswd ] && [ -n "${PASSWORD}" ]; then
+  echo "[vnc] creating /config/.kasmpasswd for user ${CUSTOM_USER:-trader}..."
+  printf "%s\n%s\n" "${PASSWORD}" "${PASSWORD}" \
+    | kasmvncpasswd -u "${CUSTOM_USER:-trader}" -rwo /config/.kasmpasswd
+fi
 # 1. ensure numpy<2 in wine-python (idempotent; persisted in the /config volume)
 if ! WINEPREFIX=$WP WINEDEBUG=-all wine python -c "import numpy,sys;sys.exit(0 if numpy.__version__[:2]=='1.' else 1)" 2>/dev/null; then
   echo "[bridge] installing numpy<2 in wine-python..."

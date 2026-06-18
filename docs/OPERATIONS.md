@@ -256,6 +256,11 @@ docker logs -f xauusd-mt5-terminal
 
 **Browser-Zugang vom Mac:** `http://192.168.178.192:3000`
 → Basic-Auth `MT5_VNC_USER` / `MT5_VNC_PASSWORD` (siehe `.env`).
+> **Gotcha:** Der gmag11-v2.3-Init erzeugt die KasmVNC-Auth-Datei
+> `/config/.kasmpasswd` **nicht** zuverlässig aus `CUSTOM_USER`/`PASSWORD` →
+> der Login lehnt dann *alle* Daten ab. `scripts/mt5_bridge_up.sh` legt sie
+> idempotent an (Schritt 0). Manuell:
+> `docker exec -u abc xauusd-mt5-terminal sh -c 'printf "%s\n%s\n" "$PASSWORD" "$PASSWORD" | kasmvncpasswd -u "$CUSTOM_USER" -rwo /config/.kasmpasswd'`
 Du siehst den MT5-Desktop (während [3/7] läuft der Installer sichtbar).
 Konservativer statt LAN: `MT5_VNC_BIND_HOST=127.0.0.1` + SSH-Tunnel
 `ssh -L 3000:127.0.0.1:3000 dev@192.168.178.192`, dann `http://localhost:3000`.
