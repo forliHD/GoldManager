@@ -504,9 +504,14 @@ class Mt5LinuxConnector(IMarketConnector):
             return False
 
     def shutdown(self) -> None:
+        # IMPORTANT: mt5linux exposes ONE shared MetaTrader5 module to every
+        # RPyC client, and ``MetaTrader5.shutdown()`` is process-global — calling
+        # it here would tear down the terminal IPC for *all* connected services
+        # (e.g. stopping the execution-engine would freeze the data-collector).
+        # We therefore only drop our local client handle; the terminal stays
+        # attached for siblings. The RPyC socket is closed on GC.
         with self._lock:
-            if self._mt5 is not None:
-                self._safe(lambda: self._mt5.shutdown())
+            self._mt5 = None
             self._initialized = False
 
 
