@@ -129,6 +129,16 @@ class JournalStore(Protocol):
 
         ...
 
+    async def get_trade_by_order_id(self, order_id: str) -> TradeRecord | None:
+        """Fetch the most-recent *open* trade carrying ``order_id`` in ``order_ids``.
+
+        Used to resolve a broker close (keyed by ticket) back to its journal
+        trade. Prefers a still-open record (``timestamp_close`` is None); falls
+        back to the most recent match. Returns None if no trade references the id.
+        """
+
+        ...
+
     async def get_snapshot(self, snapshot_id: UUID) -> FeatureSnapshotRecord | None:
         """Fetch a single feature snapshot by id, or None if missing."""
 
@@ -413,6 +423,15 @@ class InMemoryJournalStore:
     async def get_trade(self, trade_id: UUID) -> TradeRecord | None:
         async with self._lock:
             return self._trades.get(trade_id)
+
+    async def get_trade_by_order_id(self, order_id: str) -> TradeRecord | None:
+        async with self._lock:
+            matches = [t for t in self._trades.values() if order_id in t.order_ids]
+            if not matches:
+                return None
+            # Prefer a still-open record; otherwise the most recent match.
+            pool = [t for t in matches if t.timestamp_close is None] or matches
+            return max(pool, key=lambda t: t.timestamp_open)
 
     async def get_snapshot(self, snapshot_id: UUID) -> FeatureSnapshotRecord | None:
         async with self._lock:
@@ -736,6 +755,18 @@ class TimescaleJournalStore:
         pool = await self._ensure_pool()
         async with pool.acquire() as con:
             row = await con.fetchrow("SELECT data FROM journal_trades WHERE id=$1", str(trade_id))
+        return TradeRecord.model_validate(json.loads(row["data"])) if row else None
+
+    async def get_trade_by_order_id(self, order_id: str) -> TradeRecord | None:
+        # ``data->'order_ids' ? $1`` = the JSON array contains the ticket string.
+        # Open trades (timestamp_close NULL) sort first, then most-recent open.
+        q = (
+            "SELECT data FROM journal_trades WHERE data->'order_ids' ? $1 "
+            "ORDER BY (timestamp_close IS NOT NULL), timestamp_open DESC LIMIT 1"
+        )
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            row = await con.fetchrow(q, str(order_id))
         return TradeRecord.model_validate(json.loads(row["data"])) if row else None
 
     async def get_snapshot(self, snapshot_id: UUID) -> FeatureSnapshotRecord | None:

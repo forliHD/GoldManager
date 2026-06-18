@@ -41,6 +41,7 @@ from xauusd_bot.connectors.base import IMarketConnector
 from xauusd_bot.connectors.schemas import (
     AccountInfo,
     Bar,
+    ClosedPositionInfo,
     OrderRequest,
     OrderResult,
     OrderSide,
@@ -468,6 +469,56 @@ class Mt5LinuxConnector(IMarketConnector):
             error_code=(None if accepted else str(retcode)),
             error_message=(None if accepted else str(getattr(result, "comment", "") or "close rejected")),
             raw={"retcode": retcode},
+        )
+
+    def closed_position_info(self, ticket: str) -> ClosedPositionInfo | None:
+        """Reconcile a now-closed position from broker deal history.
+
+        Sums the OUT (closing) deals for ``ticket`` to get realized PnL
+        (profit + swap + commission + fee) and a volume-weighted exit price;
+        ``close_time`` is the last deal, ``reason_code`` the last deal's reason
+        (MT5 ``DEAL_REASON_*``: 4 = SL, 5 = TP). Returns ``None`` if no deal
+        history is available (best-effort — never raises into the caller).
+        """
+        try:
+            mt5 = self._ensure()
+            deals = mt5.history_deals_get(position=int(ticket))
+        except Exception as exc:  # noqa: BLE001 - history is best-effort
+            log.warning("mt5_closed_position_info_failed", ticket=ticket, error=str(exc))
+            return None
+        deals = list(deals) if deals else []
+        if not deals:
+            return None
+        entry_out = int(getattr(mt5, "DEAL_ENTRY_OUT", 1))
+        out_deals = [d for d in deals if int(getattr(d, "entry", 0)) == entry_out]
+        if not out_deals:
+            return None
+        pnl = Decimal("0")
+        vol_sum = 0.0
+        px_vol = 0.0
+        last_time = 0
+        reason_code: int | None = None
+        for d in out_deals:
+            prof = float(getattr(d, "profit", 0) or 0)
+            swap = float(getattr(d, "swap", 0) or 0)
+            comm = float(getattr(d, "commission", 0) or 0)
+            fee = float(getattr(d, "fee", 0) or 0)
+            pnl += Decimal(str(prof + swap + comm + fee))
+            v = float(getattr(d, "volume", 0) or 0)
+            px = float(getattr(d, "price", 0) or 0)
+            vol_sum += v
+            px_vol += px * v
+            t = int(getattr(d, "time", 0) or 0)
+            if t >= last_time:
+                last_time = t
+                reason_code = int(getattr(d, "reason", 0)) if hasattr(d, "reason") else None
+        exit_price = Decimal(str(px_vol / vol_sum)) if vol_sum > 0 else Decimal(str(getattr(out_deals[-1], "price", 0) or 0))
+        return ClosedPositionInfo(
+            ticket=str(ticket),
+            exit_price=exit_price,
+            pnl_realized=pnl,
+            close_time=datetime.fromtimestamp(last_time, tz=UTC) if last_time else datetime.now(tz=UTC),
+            reason_code=reason_code,
         )
 
     def pending_get(self, symbol: str | None = None) -> list[OrderRequest]:

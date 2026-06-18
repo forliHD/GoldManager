@@ -95,6 +95,26 @@ class ExitReasonTag(str, Enum):
     INVALIDATION = "invalidation"
 
 
+class TradeCloseUpdate(BaseModel):
+    """Close-time finalisation for a previously-opened journal trade.
+
+    Emitted by the execution-engine when a tracked position disappears from
+    the broker (SL/TP/manual close). The journal-writer resolves ``order_id``
+    (the broker ticket) to the open trade record and applies these fields via
+    ``update_trade``. ``pnl_realized`` / ``r_multiple`` are optional because a
+    connector without deal-history can only report the exit price.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: str = Field(description="Broker ticket; resolves to the open trade via order_ids.")
+    timestamp_close: datetime
+    exit_price: Decimal
+    pnl_realized: Decimal | None = None
+    r_multiple: float | None = None
+    exit_reason: ExitReasonTag
+
+
 class OrderStatusTag(str, Enum):
     """Stable order status strings for the journal."""
 

@@ -40,8 +40,10 @@ from xauusd_bot.common.runtime_config import (
     set_json,
 )
 from xauusd_bot.common.notify import TelegramNotifier
+from xauusd_bot.common.schemas.journal import ExitReasonTag, TradeCloseUpdate
 from xauusd_bot.common.service import make_consumer, make_publisher, service_runtime
 from xauusd_bot.connectors.factory import make_connector
+from xauusd_bot.connectors.schemas import OrderSide
 from xauusd_bot.execution.pipeline import ExecutionPipeline
 from xauusd_bot.execution.position_manager import ManagedPosition, PositionManager
 
@@ -205,7 +207,82 @@ async def _apply_action(connector, ticket: str, action) -> None:
         await asyncio.to_thread(fn, ticket, action.volume if action.kind == "partial_close" else None)
 
 
-async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, current_price, notifier=None) -> None:
+def _r_multiple(side: OrderSide, entry: Decimal, sl: Decimal, exit_price: Decimal) -> float | None:
+    """R = reward / initial risk. None when risk is undefined (entry == sl)."""
+    risk = abs(entry - sl)
+    if risk == 0:
+        return None
+    reward = (exit_price - entry) if side == OrderSide.BUY else (entry - exit_price)
+    return float(reward / risk)
+
+
+# MT5 DEAL_REASON_* → our exit tag. 4 = SL, 5 = TP (the only two the broker tags).
+_MT5_REASON_SL = 4
+_MT5_REASON_TP = 5
+
+
+def _exit_reason(mp: ManagedPosition, exit_price: Decimal, reason_code: int | None) -> ExitReasonTag:
+    """Best-effort close reason: broker deal reason first, else price proximity."""
+    if reason_code == _MT5_REASON_SL:
+        return ExitReasonTag.TRAILED if mp.breakeven_done else ExitReasonTag.SL_HIT
+    if reason_code == _MT5_REASON_TP:
+        if mp.tp2_taken:
+            return ExitReasonTag.TP3_HIT
+        return ExitReasonTag.TP2_HIT if mp.tp1_taken else ExitReasonTag.TP1_HIT
+    # No tagged reason → infer from the closest configured level.
+    levels = [(mp.sl_price, ExitReasonTag.TRAILED if mp.breakeven_done else ExitReasonTag.SL_HIT)]
+    for px, tag in ((mp.tp1_price, ExitReasonTag.TP1_HIT), (mp.tp2_price, ExitReasonTag.TP2_HIT), (mp.tp3_price, ExitReasonTag.TP3_HIT)):
+        if px is not None:
+            levels.append((px, tag))
+    nearest = min(levels, key=lambda lt: abs(exit_price - lt[0]))
+    # Only attribute to a level if we're genuinely close to it; else manual.
+    if abs(exit_price - nearest[0]) <= abs(mp.entry_price - mp.sl_price):
+        return nearest[1]
+    return ExitReasonTag.MANUAL
+
+
+async def _journal_close(publisher, connector, mp: ManagedPosition, ticket, current_price, settings) -> None:
+    """Finalise a closed position in the journal (best-effort — never raises).
+
+    Pulls the broker deal history for exit price + realized PnL when the
+    connector supports it; otherwise falls back to the last bar price (PnL
+    left unknown). Publishes a ``trade_close`` journal event; the journal-writer
+    resolves the ticket to the open trade and applies the close fields.
+    """
+    try:
+        info = None
+        fn = getattr(connector, "closed_position_info", None)
+        if fn is not None:
+            info = await asyncio.to_thread(fn, ticket)
+        if info is not None:
+            exit_price = Decimal(str(info.exit_price))
+            pnl = Decimal(str(info.pnl_realized))
+            close_time = info.close_time
+            reason_code = info.reason_code
+        else:
+            # No deal history → approximate exit at the last seen price.
+            exit_price = Decimal(str(current_price))
+            pnl = None
+            close_time = datetime.now(tz=UTC)
+            reason_code = None
+        update = TradeCloseUpdate(
+            order_id=str(ticket),
+            timestamp_close=close_time,
+            exit_price=exit_price,
+            pnl_realized=pnl,
+            r_multiple=_r_multiple(mp.side, mp.entry_price, mp.sl_price, exit_price),
+            exit_reason=_exit_reason(mp, exit_price, reason_code),
+        )
+        await publisher.publish(
+            StreamTopic.JOURNAL,
+            JournalEvent(symbol=settings.symbol, entry_type="trade_close", trade_close=update),
+        )
+        log.info("execution_trade_close_journaled", ticket=ticket, exit=str(exit_price), pnl=(str(pnl) if pnl is not None else None))
+    except Exception as exc:  # noqa: BLE001 - journaling must never disturb management
+        log.warning("execution_trade_close_journal_failed", ticket=ticket, error=str(exc))
+
+
+async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, current_price, notifier=None, publisher=None) -> None:
     """Drive each tracked open position forward one bar (TP partials / SL trail)."""
     stored = await _load_managed_all(redis_client)
     if not stored:
@@ -216,7 +293,11 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
     price = Decimal(str(current_price))
     for ticket, mp in stored.items():
         if ticket not in open_tickets:
-            await _delete_managed(redis_client, ticket)  # position closed → drop plan
+            # Position closed on the broker → finalise the journal trade, then
+            # drop the management plan.
+            if publisher is not None:
+                await _journal_close(publisher, connector, mp, ticket, current_price, settings)
+            await _delete_managed(redis_client, ticket)
             continue
         actions, mp2 = pos_mgr.plan(mp, bundle, price)
         for a in actions:
@@ -254,7 +335,7 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_clien
         #    no_trade — the bundle + ref_price ride on every decision event.
         if ev.bundle is not None and ev.ref_price is not None:
             try:
-                await _manage_positions(pipeline, pos_mgr, redis_client, settings, ev.bundle, ev.ref_price, notifier)
+                await _manage_positions(pipeline, pos_mgr, redis_client, settings, ev.bundle, ev.ref_price, notifier, publisher)
             except Exception as exc:  # noqa: BLE001 - management must never kill the service
                 log.warning("execution_manage_failed", error=str(exc))
 

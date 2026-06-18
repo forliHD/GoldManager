@@ -612,3 +612,20 @@ async def test_v2_optional_llm_fields_default_to_none() -> None:
     )
     assert rec.llm_decision is None
     assert rec.llm_raw_response is None
+
+
+@pytest.mark.asyncio
+async def test_get_trade_by_order_id_prefers_open() -> None:
+    store = InMemoryJournalStore()
+    base = _ts()
+    # An older closed trade and a newer open trade share the same ticket.
+    closed = make_trade(timestamp_open=base, timestamp_close=base + timedelta(hours=1),
+                        order_ids=["TICKET-1"], exit_price=Decimal("2371"))
+    open_t = make_trade(timestamp_open=base + timedelta(hours=2), order_ids=["TICKET-1"])
+    other = make_trade(timestamp_open=base, order_ids=["TICKET-2"])
+    for t in (closed, open_t, other):
+        await store.write_trade(t)
+
+    hit = await store.get_trade_by_order_id("TICKET-1")
+    assert hit is not None and hit.id == open_t.id  # prefers the still-open record
+    assert await store.get_trade_by_order_id("UNKNOWN") is None

@@ -228,3 +228,20 @@ class Position(BaseModel):
     commission: Decimal = Decimal("0")
     comment: str = ""
     magic: int = 0
+
+
+class ClosedPositionInfo(BaseModel):
+    """Reconciled close of a position, from broker deal history.
+
+    Returned by an (optional) ``closed_position_info`` connector method when a
+    tracked position is no longer open, so the execution-engine can finalise
+    the journal trade (exit price + realized PnL + close time).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticket: str
+    exit_price: Decimal
+    pnl_realized: Decimal = Decimal("0")
+    close_time: datetime
+    reason_code: int | None = Field(default=None, description="Raw broker deal reason (e.g. MT5 DEAL_REASON_*).")

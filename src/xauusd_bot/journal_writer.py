@@ -45,6 +45,23 @@ def _make_handler(store):
             await store.write_order(ev.order)
         elif ev.entry_type == "feature_snapshot" and ev.snapshot is not None:
             await store.write_feature_snapshot(ev.snapshot)
+        elif ev.entry_type == "trade_close" and ev.trade_close is not None:
+            tc = ev.trade_close
+            trade = await store.get_trade_by_order_id(tc.order_id)
+            if trade is None:
+                log.warning("journal_writer_trade_close_no_match", order_id=tc.order_id)
+                return
+            updates: dict[str, object] = {
+                "timestamp_close": tc.timestamp_close,
+                "exit_price": tc.exit_price,
+                "exit_reason": tc.exit_reason,
+            }
+            if tc.pnl_realized is not None:
+                updates["pnl_realized"] = tc.pnl_realized
+            if tc.r_multiple is not None:
+                updates["r_multiple"] = tc.r_multiple
+            await store.update_trade(trade.id, updates)
+            log.info("journal_writer_trade_closed", order_id=tc.order_id, trade_id=str(trade.id))
         else:
             log.warning("journal_writer_empty_event", entry_type=ev.entry_type)
 
