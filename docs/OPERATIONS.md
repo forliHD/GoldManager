@@ -141,6 +141,8 @@ UI: oben rechts **AI**-Pille + Toggle (operator/admin), **Mode**-Pille (admin),
 **⛔ STOP** (Kill-Switch, operator/admin). Default-Tab **„Live"** = Ops-Cockpit:
 Account, Risk-Gauges (Tages-/Wochen-PnL vs Caps), Positions-Blotter,
 Decision-Feed (Score-Breakdown), Recent-Orders; Service-Health-Dots im Footer.
+Tab **„Performance"**: KPIs (Win-Rate, Profit-Factor, Expectancy, Sharpe,
+Max-DD), Equity-Sparkline, R-Distribution, Setup-Breakdown (aus TimescaleDB).
 
 ---
 
