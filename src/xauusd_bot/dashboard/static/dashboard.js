@@ -250,6 +250,7 @@
       $$('#timeframe-selector button').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.timeframe = btn.dataset.tf;
+      setText('#chart-symbol', `XAUUSD · ${state.timeframe}`);
       loadChartData();
     });
   });
@@ -536,10 +537,19 @@
     const t = msg.topic;
     const d = msg.data || {};
     if (t === 'ticks') {
-      // Update last candle close
-      if (d.close && state.candleSeries) {
-        const now = Math.floor(Date.now() / 1000);
-        try { state.candleSeries.update({ time: now, close: d.close }); } catch (e) {}
+      // Live bar from market_ticks (envelope: { bar: {time,open,high,low,close} }).
+      // Only live-update on M1 — higher timeframes are aggregated server-side,
+      // so a raw M1 bar would corrupt them (use Refresh to re-aggregate). Use
+      // the bar's own time, not wall-clock, so it lines up with the replay data.
+      const bar = d.bar;
+      if (bar && state.candleSeries && state.timeframe === 'M1') {
+        try {
+          state.candleSeries.update({
+            time: Math.floor(new Date(bar.time).getTime() / 1000),
+            open: Number(bar.open), high: Number(bar.high),
+            low: Number(bar.low), close: Number(bar.close),
+          });
+        } catch (e) {}
       }
     } else if (t === 'features') {
       // Re-fetch overlays

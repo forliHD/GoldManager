@@ -212,6 +212,39 @@ class OverlayDict(BaseModel):
     fvg_zones: list[dict[str, Any]]
 
 
+# Timeframe → minutes per bar. The data-collector feeds M1; higher
+# timeframes are aggregated on read.
+_TF_MINUTES: dict[str, int] = {
+    "M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440,
+}
+
+
+def _resample_candles(candles: list[CandleDict], minutes: int) -> list[CandleDict]:
+    """Aggregate ascending M1 candles into ``minutes``-sized OHLC buckets."""
+
+    if minutes <= 1 or not candles:
+        return candles
+    bucket = minutes * 60
+    groups: dict[int, list[CandleDict]] = {}
+    for c in candles:
+        key = (int(c.time.timestamp()) // bucket) * bucket
+        groups.setdefault(key, []).append(c)
+    out: list[CandleDict] = []
+    for key in sorted(groups):
+        g = groups[key]  # ascending within the bucket
+        out.append(
+            CandleDict(
+                time=datetime.fromtimestamp(key, tz=UTC),
+                open=g[0].open,
+                high=max(x.high for x in g),
+                low=min(x.low for x in g),
+                close=g[-1].close,
+                tick_volume=sum(x.tick_volume for x in g),
+            )
+        )
+    return out
+
+
 @router.get("/chart/candles")
 async def chart_candles(
     request: Request,
@@ -229,11 +262,14 @@ async def chart_candles(
     empty/unavailable.
     """
 
-    # --- Primary: read closed bars straight from the market_ticks stream.
+    minutes = _TF_MINUTES.get(timeframe.upper(), 1)
+    # --- Primary: read closed M1 bars straight from the market_ticks stream.
     stream_redis = getattr(request.app.state, "streams_redis", None)
     if stream_redis is not None:
+        # Pull enough M1 bars to yield ~count candles at the target timeframe.
+        fetch_n = min(count * minutes * 2, 50000)
         try:
-            entries = await stream_redis.xrevrange("market_ticks", count=min(count * 3, 15000))
+            entries = await stream_redis.xrevrange("market_ticks", count=fetch_n)
         except Exception as exc:  # noqa: BLE001 - fall through to the journal store
             log.warning("chart_candles_stream_read_failed", error=str(exc))
             entries = []
@@ -258,7 +294,8 @@ async def chart_candles(
             except (KeyError, TypeError, ValueError):
                 continue
         if by_time:
-            return sorted(by_time.values(), key=lambda c: c.time)[-count:]
+            m1 = sorted(by_time.values(), key=lambda c: c.time)
+            return _resample_candles(m1, minutes)[-count:]
 
     # --- Fallback: journal feature snapshots (carry OHLC when persisted).
     store = _get_journal_store()
