@@ -30,13 +30,126 @@ from xauusd_bot.common.messaging.events import (
     OrderEvent,
 )
 from xauusd_bot.common.messaging.streams import Publisher, StreamMessage, StreamTopic
-from xauusd_bot.common.service import make_publisher, run_consumer_service
+from xauusd_bot.common.runtime_config import (
+    STATE_KEY_ACCOUNT,
+    STATE_KEY_POSITIONS,
+    STATE_KEY_RISK,
+    get_emergency_stop,
+    set_json,
+)
+from xauusd_bot.common.service import make_consumer, make_publisher, service_runtime
 from xauusd_bot.connectors.factory import make_connector
 from xauusd_bot.execution.pipeline import ExecutionPipeline
 
 log = structlog.get_logger(__name__)
 
 GROUP = "execution-engine-v1"
+
+# How often the operational state (account/positions/risk) is snapshotted
+# to Redis for the dashboard's live cockpit.
+_STATE_INTERVAL_SECONDS = 3.0
+
+
+def _account_snapshot(acc) -> dict:
+    def f(v):
+        return float(v) if v is not None else None
+
+    return {
+        "balance": f(acc.balance),
+        "equity": f(acc.equity),
+        "margin": f(acc.margin),
+        "free_margin": f(acc.free_margin),
+        "currency": acc.currency,
+        "leverage": acc.leverage,
+        "daily_pnl": f(acc.daily_pnl),
+        "weekly_pnl": f(acc.weekly_pnl),
+        "current_spread": f(acc.current_spread),
+        "trade_allowed": acc.trade_allowed,
+        "server_time": acc.server_time.isoformat() if acc.server_time else None,
+        "ts": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+def _risk_snapshot(acc, settings: Settings, n_positions: int) -> dict:
+    balance = float(acc.balance) if acc.balance is not None else 0.0
+    daily_pnl = float(acc.daily_pnl) if acc.daily_pnl is not None else 0.0
+    weekly_pnl = float(acc.weekly_pnl) if acc.weekly_pnl is not None else 0.0
+    spread = float(acc.current_spread) if acc.current_spread is not None else None
+    return {
+        "daily_pnl": daily_pnl,
+        "daily_loss_cap": -balance * settings.risk_max_daily,
+        "daily_cap_pct": settings.risk_max_daily,
+        "weekly_pnl": weekly_pnl,
+        "weekly_loss_cap": -balance * settings.risk_max_weekly,
+        "weekly_cap_pct": settings.risk_max_weekly,
+        "open_positions": n_positions,
+        "max_open_positions": settings.risk_max_open_positions,
+        "max_trades_per_session": settings.risk_max_trades_per_session,
+        "spread_max_pips": settings.spread_max_pips,
+        "current_spread_pips": (spread / 10.0) if spread is not None else None,
+        "ts": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+async def _sync_emergency(pipeline: ExecutionPipeline, redis_client) -> None:
+    """Mirror the dashboard kill-switch onto the EmergencyStopManager.
+
+    Engaging flattens + cancels the book and halts new entries (the
+    RiskManager refuses while the stop is active); clearing releases it.
+    """
+
+    engaged = await get_emergency_stop(redis_client)
+    active = pipeline.emergency.is_active()
+    if engaged and not active:
+        await asyncio.to_thread(pipeline.emergency.manual_trigger, "dashboard")
+        log.warning("execution_emergency_engaged_from_dashboard")
+    elif not engaged and active:
+        await asyncio.to_thread(pipeline.emergency.clear)
+        log.info("execution_emergency_cleared_from_dashboard")
+
+
+async def _publish_state(
+    pipeline: ExecutionPipeline,
+    connector,
+    settings: Settings,
+    redis_client,
+    stop_event: asyncio.Event,
+) -> None:
+    """Snapshot account / positions / risk to Redis on a timer for the dashboard.
+
+    Also syncs the operator kill-switch each tick (≤3s latency).
+    """
+
+    while not stop_event.is_set():
+        try:
+            await _sync_emergency(pipeline, redis_client)
+        except Exception as exc:  # noqa: BLE001 - never let the kill-switch sync crash the loop
+            log.warning("execution_emergency_sync_failed", error=str(exc))
+        try:
+            # Connector calls are sync (RPyC can block) — run off the loop.
+            acc = await asyncio.to_thread(connector.get_account)
+            positions = await asyncio.to_thread(connector.positions_get, settings.symbol)
+            pos_snap = [
+                {
+                    "id": p.position_id,
+                    "symbol": p.symbol,
+                    "side": p.side.value,
+                    "volume": float(p.volume),
+                    "open_price": float(p.open_price),
+                    "sl": float(p.sl) if p.sl is not None else None,
+                    "tp": float(p.tp) if p.tp is not None else None,
+                    "profit": float(p.profit),
+                    "open_time": p.open_time.isoformat() if p.open_time else None,
+                }
+                for p in positions
+            ]
+            await set_json(redis_client, STATE_KEY_ACCOUNT, _account_snapshot(acc))
+            await set_json(redis_client, STATE_KEY_POSITIONS, pos_snap)
+            await set_json(redis_client, STATE_KEY_RISK, _risk_snapshot(acc, settings, len(positions)))
+        except Exception as exc:  # noqa: BLE001 - never let state publishing kill the service
+            log.warning("execution_state_publish_failed", error=str(exc))
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=_STATE_INTERVAL_SECONDS)
 
 
 def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher):
@@ -80,28 +193,42 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher):
 
 
 async def _run(settings: Settings) -> int:
+    import redis.asyncio as aioredis
+
     connector = make_connector(settings)
     pipeline = ExecutionPipeline(settings, connector)
     publisher = make_publisher(settings)
     await publisher.connect()
-
-    async def _on_stop() -> None:
-        await publisher.close()
-        with contextlib.suppress(Exception):
-            connector.shutdown()
-
-    handler = _make_handler(pipeline, publisher)
-    return await run_consumer_service(
-        ServiceRole.EXECUTION_ENGINE,
+    state_redis = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+    consumer = make_consumer(
         settings,
-        topic=StreamTopic.DECISIONS,
-        group=GROUP,
-        model_cls=DecisionEvent,
-        handler=handler,
-        on_stop=_on_stop,
+        StreamTopic.DECISIONS,
+        GROUP,
         block_ms=settings.stream_block_ms,
         batch_size=settings.stream_batch_size,
     )
+    handler = _make_handler(pipeline, publisher)
+
+    # service_runtime gives us the shared stop_event so the consumer loop
+    # and the state-publisher task shut down together.
+    async with service_runtime(ServiceRole.EXECUTION_ENGINE) as stop:
+        state_task = asyncio.create_task(
+            _publish_state(pipeline, connector, settings, state_redis, stop),
+            name="execution-state-publisher",
+        )
+        log.info("execution_engine_consuming", topic=StreamTopic.DECISIONS.value, group=GROUP)
+        try:
+            await consumer.run_forever(handler, DecisionEvent, stop_event=stop)
+        finally:
+            state_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await state_task
+            await consumer.close()
+            await publisher.close()
+            await state_redis.aclose()
+            with contextlib.suppress(Exception):
+                connector.shutdown()
+    return 0
 
 
 def main() -> int:

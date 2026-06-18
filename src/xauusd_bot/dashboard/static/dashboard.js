@@ -120,8 +120,9 @@
     // version) block the WebSocket and the rest of the app.
     try { initChart(); } catch (e) { console.error('initChart failed:', e); }
     connectWebSocket();
-    activateTab('indicators');
+    activateTab('live');
     loadIndicators();
+    startLivePolling();
     loadTrades();
     loadBacktestList();
     loadProposals();
@@ -135,12 +136,15 @@
     // Mode toggle visible only for admin
     if (state.user.role === 'admin') show('#mode-toggle-wrap');
     else hide('#mode-toggle-wrap');
-    // AI toggle visible for operator + admin
+    // AI toggle + Emergency stop visible for operator + admin
     if (state.user.role === 'admin' || state.user.role === 'operator') {
       show('#ai-toggle-wrap');
+      show('#emergency-btn');
       loadAIState();
+      loadEmergencyState();
     } else {
       hide('#ai-toggle-wrap');
+      hide('#emergency-btn');
     }
   }
 
@@ -160,11 +164,13 @@
   });
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-    const tabs = ['indicators', 'trades', 'backtest', 'reviews', 'proposals'];
+    const tabs = ['live', 'indicators', 'trades', 'backtest', 'reviews', 'proposals'];
     tabs.forEach(n => {
       const el = $('#tab-' + n);
       if (el) el.classList.toggle('hidden', n !== name);
     });
+    state.activeTab = name;
+    if (name === 'live') loadLive();
     if (name === 'trades') loadTrades();
     if (name === 'backtest') loadBacktestList();
     if (name === 'reviews') setDefaultDates();
@@ -483,6 +489,100 @@
       state.aiAvailable = r.available;
       renderAIPill();
     } catch (e) {}
+  }
+
+  // ----- Live ops cockpit -----
+  function fmtMoney(n) {
+    return (n === null || n === undefined || isNaN(n)) ? '—'
+      : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  async function loadLive() {
+    try {
+      const [acc, risk, positions] = await Promise.all([
+        api('/api/account'), api('/api/risk'), api('/api/positions'),
+      ]);
+      renderAccount(acc); renderRisk(risk); renderPositions(positions);
+      const ts = acc && acc.ts ? new Date(acc.ts) : null;
+      const stale = !ts || (Date.now() - ts.getTime() > 20000);
+      setText('#live-stale', stale ? '⚠ keine aktuellen Daten — läuft die execution-engine?' : '');
+    } catch (e) { setText('#live-stale', 'Fehler beim Laden der Live-Daten'); }
+  }
+  function renderAccount(a) {
+    if (!a || a.equity === undefined) { setHtml('#live-account', '<span class="muted">keine Daten</span>'); return; }
+    const m = (label, val) => `<div class="metric"><div class="label">${label}</div><div class="value">${val}</div></div>`;
+    setHtml('#live-account',
+      m('Equity', fmtMoney(a.equity) + ' ' + (a.currency || '')) +
+      m('Balance', fmtMoney(a.balance)) +
+      m('Free Margin', fmtMoney(a.free_margin)) +
+      m('Margin', fmtMoney(a.margin)) +
+      m('Leverage', '1:' + (a.leverage ?? '—')) +
+      m('Spread', a.current_spread != null ? a.current_spread + ' pts' : '—'));
+  }
+  function riskBar(label, pnl, cap) {
+    const loss = pnl < 0 ? -pnl : 0;
+    const capAbs = Math.abs(cap || 0) || 1;
+    const pct = Math.min(100, (loss / capAbs) * 100);
+    const cls = pct >= 90 ? 'crit' : pct >= 60 ? 'warn' : '';
+    const pnlCls = pnl < 0 ? 'pnl-neg' : 'pnl-pos';
+    return `<div class="risk-row"><div class="risk-head"><span>${label}</span>
+      <span class="${pnlCls}">${fmtMoney(pnl)} / cap ${fmtMoney(cap)} (${pct.toFixed(0)}%)</span></div>
+      <div class="risk-bar"><span class="${cls}" style="width:${pct}%"></span></div></div>`;
+  }
+  function renderRisk(r) {
+    if (!r || r.daily_cap_pct === undefined) { setHtml('#live-risk', '<span class="muted">keine Daten</span>'); return; }
+    const posPct = r.max_open_positions ? (r.open_positions / r.max_open_positions) * 100 : 0;
+    const posCls = posPct >= 100 ? 'crit' : posPct >= 66 ? 'warn' : '';
+    setHtml('#live-risk',
+      riskBar(`Tagesverlust (${(r.daily_cap_pct * 100).toFixed(0)}%)`, r.daily_pnl, r.daily_loss_cap) +
+      riskBar(`Wochenverlust (${(r.weekly_cap_pct * 100).toFixed(0)}%)`, r.weekly_pnl, r.weekly_loss_cap) +
+      `<div class="risk-row"><div class="risk-head"><span>Offene Positionen</span>
+        <span>${r.open_positions} / ${r.max_open_positions}</span></div>
+        <div class="risk-bar"><span class="${posCls}" style="width:${Math.min(100, posPct)}%"></span></div></div>`);
+  }
+  function renderPositions(positions) {
+    const tb = $('#positions-table tbody');
+    setText('#live-pos-count', positions && positions.length ? `(${positions.length})` : '');
+    if (!tb) return;
+    if (!positions || !positions.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">keine offenen Positionen</td></tr>'; return; }
+    tb.innerHTML = '';
+    for (const p of positions) {
+      const tr = document.createElement('tr');
+      const sideCls = p.side === 'buy' ? 'pos-long' : 'pos-short';
+      const pnlCls = (p.profit || 0) < 0 ? 'pnl-neg' : 'pnl-pos';
+      tr.innerHTML = `<td class="${sideCls}">${escapeHtml((p.side || '').toUpperCase())}</td>
+        <td class="num">${fmtNum(p.volume, 2)}</td><td class="num">${fmtNum(p.open_price)}</td>
+        <td class="num">${p.sl != null ? fmtNum(p.sl) : '—'}</td><td class="num">${p.tp != null ? fmtNum(p.tp) : '—'}</td>
+        <td class="num ${pnlCls}">${fmtMoney(p.profit)}</td>`;
+      tb.appendChild(tr);
+    }
+  }
+  function startLivePolling() {
+    if (state.liveTimer) clearInterval(state.liveTimer);
+    state.liveTimer = setInterval(() => { if (state.activeTab === 'live') loadLive(); }, 3000);
+  }
+
+  // ----- Emergency stop (kill switch) -----
+  $('#emergency-btn').addEventListener('click', () => {
+    const target = !state.emergencyEngaged;
+    showConfirmModal(
+      target ? 'NOTAUS aktivieren' : 'NOTAUS aufheben',
+      target ? 'Alle offenen Positionen werden <b>geschlossen</b> und neue Trades <b>gestoppt</b>. Sicher?'
+             : 'Trading wieder <b>freigeben</b>?',
+      () => doEmergency(target));
+  });
+  async function doEmergency(engaged) {
+    try {
+      const r = await api('/api/emergency', { method: 'POST', body: JSON.stringify({ engaged }), headers: { 'Content-Type': 'application/json' } });
+      state.emergencyEngaged = r.engaged; renderEmergency();
+    } catch (e) { alert('Emergency toggle failed: ' + e.message); }
+  }
+  function renderEmergency() {
+    const b = $('#emergency-btn'); if (!b) return;
+    b.classList.toggle('engaged', !!state.emergencyEngaged);
+    b.textContent = state.emergencyEngaged ? '⛔ STOPP AKTIV' : '⛔ STOP';
+  }
+  async function loadEmergencyState() {
+    try { const r = await api('/api/emergency'); state.emergencyEngaged = r.engaged; renderEmergency(); } catch (e) {}
   }
 
   // ----- Modal -----

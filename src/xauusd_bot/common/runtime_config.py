@@ -13,11 +13,22 @@ flips a toggle.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 # Key namespace on the trading Redis. Keep the prefix stable — both the
 # writer (dashboard) and the reader (decision-engine) hard-code it.
 RUNTIME_KEY_AI_ENABLED = "runtime:ai_layer_enabled"
+# Operator kill-switch: dashboard sets it, execution-engine reads it and
+# flattens + halts new entries.
+RUNTIME_KEY_EMERGENCY_STOP = "runtime:emergency_stop"
+
+# Operational state snapshots the execution-engine publishes for the
+# dashboard (TTL'd so stale state disappears if the publisher dies).
+STATE_KEY_ACCOUNT = "state:account"
+STATE_KEY_POSITIONS = "state:positions"
+STATE_KEY_RISK = "state:risk"
+STATE_TTL_SECONDS = 15
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
@@ -52,9 +63,48 @@ async def set_ai_enabled(redis_client: Any, enabled: bool) -> None:
     await redis_client.set(RUNTIME_KEY_AI_ENABLED, "true" if enabled else "false")
 
 
+async def get_emergency_stop(redis_client: Any) -> bool:
+    """Return the operator kill-switch flag (default False when unset)."""
+
+    return bool(coerce_bool(await redis_client.get(RUNTIME_KEY_EMERGENCY_STOP)))
+
+
+async def set_emergency_stop(redis_client: Any, engaged: bool) -> None:
+    """Engage/clear the operator kill-switch on the trading Redis."""
+
+    await redis_client.set(RUNTIME_KEY_EMERGENCY_STOP, "true" if engaged else "false")
+
+
+async def set_json(redis_client: Any, key: str, obj: Any, *, ttl: int = STATE_TTL_SECONDS) -> None:
+    """Write a JSON snapshot to ``key`` with a TTL (stale state self-expires)."""
+
+    await redis_client.set(key, json.dumps(obj, default=str), ex=ttl)
+
+
+async def get_json(redis_client: Any, key: str) -> Any | None:
+    """Read a JSON snapshot from ``key`` (None if missing/expired)."""
+
+    raw = await redis_client.get(key)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 __all__ = [
     "RUNTIME_KEY_AI_ENABLED",
+    "RUNTIME_KEY_EMERGENCY_STOP",
+    "STATE_KEY_ACCOUNT",
+    "STATE_KEY_POSITIONS",
+    "STATE_KEY_RISK",
+    "STATE_TTL_SECONDS",
     "coerce_bool",
     "get_ai_enabled",
+    "get_emergency_stop",
+    "get_json",
     "set_ai_enabled",
+    "set_emergency_stop",
+    "set_json",
 ]

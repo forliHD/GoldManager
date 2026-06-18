@@ -48,7 +48,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from xauusd_bot.common.config import ConnectorMode, Settings
-from xauusd_bot.common.runtime_config import get_ai_enabled, set_ai_enabled
+from xauusd_bot.common.runtime_config import (
+    STATE_KEY_ACCOUNT,
+    STATE_KEY_POSITIONS,
+    STATE_KEY_RISK,
+    get_ai_enabled,
+    get_emergency_stop,
+    get_json,
+    set_ai_enabled,
+    set_emergency_stop,
+)
 from xauusd_bot.common.schemas.review import (
     FittingProposal,
     FittingProposalFilter,
@@ -972,6 +981,75 @@ async def ai_toggle(
         model=settings.openrouter_model,
         default=settings.ai_layer_enabled,
     )
+
+
+# ---------------------------------------------------------------- live ops state
+#
+# The execution-engine publishes account / positions / risk snapshots to
+# Redis (TTL'd). These endpoints just surface the latest snapshot — an
+# empty/null result means the publisher hasn't run (e.g. execution-engine
+# down) rather than "zero".
+
+
+@router.get("/account")
+async def account_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Latest account snapshot (balance/equity/margin/PnL)."""
+
+    return await get_json(_streams_redis(request), STATE_KEY_ACCOUNT) or {}
+
+
+@router.get("/positions")
+async def positions_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> list[dict[str, Any]]:
+    """Currently open positions (live blotter)."""
+
+    return await get_json(_streams_redis(request), STATE_KEY_POSITIONS) or []
+
+
+@router.get("/risk")
+async def risk_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Risk usage snapshot: daily/weekly PnL vs caps, position counts."""
+
+    return await get_json(_streams_redis(request), STATE_KEY_RISK) or {}
+
+
+class EmergencyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    engaged: bool = Field(description="Engage (True) or clear (False) the kill-switch.")
+
+
+@router.get("/emergency")
+async def emergency_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, bool]:
+    """Whether the operator kill-switch is currently engaged."""
+
+    return {"engaged": await get_emergency_stop(_streams_redis(request))}
+
+
+@router.post("/emergency")
+async def emergency_toggle(
+    request: Request,
+    body: EmergencyRequest,
+    session: UserSession = Depends(require_role("operator")),
+) -> dict[str, bool]:
+    """Engage/clear the kill-switch (operator+). The execution-engine acts on it."""
+
+    await set_emergency_stop(_streams_redis(request), body.engaged)
+    log.warning(
+        "emergency_stop_toggled", engaged=body.engaged, operator=session.username, role=session.role
+    )
+    return {"engaged": body.engaged}
 
 
 # ============================================================ helpers
