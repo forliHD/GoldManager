@@ -92,13 +92,26 @@ class Publisher:
     redis_url:
         Connection URL, e.g. ``redis://localhost:6379/0``.
     maxlen:
-        Approximate cap on stream length (XADD ``MAXLEN ~``). Defaults
-        to 1M messages. Set higher for hot streams; lower for cold ones.
+        Default approximate cap on stream length (XADD ``MAXLEN ~``) for
+        topics without an override. Set higher for hot streams; lower for
+        cold ones.
+    maxlen_overrides:
+        Per-topic cap overriding ``maxlen``. Essential because payload
+        sizes differ by ~1000×: a ``market_ticks`` bar is ~350 bytes while
+        a ``features``/``decisions`` event carries the full
+        ``FeatureSnapshotBundle`` (~800 KB). A single global cap therefore
+        cannot bound Redis memory for both — see ``make_publisher``.
     """
 
-    def __init__(self, redis_url: str, maxlen: int = 1_000_000) -> None:
+    def __init__(
+        self,
+        redis_url: str,
+        maxlen: int = 1_000_000,
+        maxlen_overrides: dict[str, int] | None = None,
+    ) -> None:
         self._url = redis_url
         self._maxlen = maxlen
+        self._maxlen_overrides = dict(maxlen_overrides or {})
         self._client: Redis | None = None
 
     async def connect(self) -> None:
@@ -123,7 +136,7 @@ class Publisher:
         msg_id = await self._client.xadd(
             topic.value,
             data,
-            maxlen=self._maxlen,
+            maxlen=self._maxlen_overrides.get(topic.value, self._maxlen),
             approximate=True,
         )
         log.debug("stream_published", topic=topic.value, id=msg_id, kind=getattr(model, "kind", "?"))

@@ -168,9 +168,18 @@ class Settings(BaseSettings):
         default=50_000,
         ge=1,
         description=(
-            "Approximate MAXLEN cap (XADD ~) per Redis stream. Bounds Redis memory: "
-            "the features/decisions events carry full bundles (several KB each), so a "
-            "1M cap can blow past available RAM. 50k keeps total well under ~2GB."
+            "Approximate MAXLEN cap (XADD ~) for small-payload streams "
+            "(market_ticks ~350 bytes each). 50k ≈ 17 MB."
+        ),
+    )
+    stream_maxlen_large: int = Field(
+        default=1_500,
+        ge=1,
+        description=(
+            "Approximate MAXLEN cap (XADD ~) for bundle-carrying streams "
+            "(features/decisions). Each event embeds the full FeatureSnapshotBundle "
+            "(~800 KB), so the cap must be ~1000× smaller than stream_maxlen or Redis "
+            "OOMs: at 1.5k this is ~1.3 GB/stream, keeping features+decisions under ~2.5 GB."
         ),
     )
 

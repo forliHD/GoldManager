@@ -137,11 +137,18 @@ async def service_runtime(
 def make_publisher(settings: Settings, *, maxlen: int | None = None) -> Publisher:
     """Construct a :class:`Publisher` bound to ``settings.redis_url``.
 
-    ``maxlen`` defaults to ``settings.stream_maxlen`` so stream memory stays
-    bounded (the features/decisions payloads are large — see Settings).
+    ``maxlen`` defaults to ``settings.stream_maxlen`` (small-payload streams).
+    The bundle-carrying streams (features/decisions, ~800 KB each) get the much
+    smaller ``settings.stream_maxlen_large`` cap so Redis memory stays bounded —
+    a single global cap cannot serve both (see Settings.stream_maxlen_large).
     """
 
-    return Publisher(settings.redis_url, maxlen=maxlen if maxlen is not None else settings.stream_maxlen)
+    base = maxlen if maxlen is not None else settings.stream_maxlen
+    overrides = {
+        StreamTopic.FEATURES.value: settings.stream_maxlen_large,
+        StreamTopic.DECISIONS.value: settings.stream_maxlen_large,
+    }
+    return Publisher(settings.redis_url, maxlen=base, maxlen_overrides=overrides)
 
 
 def make_consumer(
