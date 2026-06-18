@@ -47,6 +47,10 @@ services:
       - "127.0.0.1:8001:8001"
     volumes:
       - mt5-config:/config
+      # Bridge self-healing: the helper + a cont-init supervisor that (re)starts
+      # the mt5linux bridge whenever port 8001 is down (boot, crash, reboot).
+      - ./scripts/mt5_bridge_up.sh:/usr/local/bin/mt5_bridge_up.sh:ro
+      - ./docker/mt5-terminal/custom-cont-init.d:/custom-cont-init.d:ro
     shm_size: "1gb"
     security_opt:
       - seccomp:unconfined
