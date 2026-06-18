@@ -58,6 +58,13 @@
     const cls = n > 0 ? 'pos' : n < 0 ? 'neg' : 'muted';
     return `<span class="${cls}">${n > 0 ? '+' : ''}${Number(n).toFixed(2)}R</span>`;
   }
+  // Realized P/L in account currency (EUR), signed + coloured.
+  function fmtEur(n) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    const cls = n > 0 ? 'pos' : n < 0 ? 'neg' : 'muted';
+    const v = Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `<span class="${cls}">${n > 0 ? '+' : ''}${v} €</span>`;
+  }
   function fmtTs(s) {
     if (!s) return '—';
     const d = new Date(s);
@@ -454,7 +461,7 @@
       tbody.innerHTML = '';
       for (const t of trades) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${escapeHtml(fmtTs(t.timestamp_open))}</td><td>${escapeHtml(t.side || '—')}</td><td class="num">${fmtNum(t.entry)}</td><td class="num">${fmtNum(t.exit)}</td><td class="num">${fmtPnl(t.pnl_r)}</td><td>${escapeHtml(t.decision_kind || '—')}</td><td class="num">${fmtNum(t.score, 1)}</td>`;
+        tr.innerHTML = `<td>${escapeHtml(fmtTs(t.timestamp_open))}</td><td>${escapeHtml(t.side || '—')}</td><td class="num">${fmtNum(t.entry)}</td><td class="num">${fmtNum(t.exit)}</td><td class="num">${fmtEur(t.pnl_realized)}</td><td class="num">${fmtPnl(t.pnl_r)}</td><td>${escapeHtml(t.decision_kind || '—')}</td><td class="num">${fmtNum(t.score, 1)}</td>`;
         tr.addEventListener('click', () => alert(`Trade ${t.id}\n\nObservation: ${t.comment || '—'}`));
         tbody.appendChild(tr);
       }
@@ -908,11 +915,12 @@
     const cards = [
       ['Trades', d.n_trades ?? 0], ['Closed', d.n_closed ?? 0],
       ['Win-Rate', pct(d.winrate)], ['Profit-Factor', fmtNum(d.profit_factor)],
-      ['Expectancy (R)', fmtNum(d.expectancy)], ['Total PnL', fmtNum(d.total_pnl)],
+      ['Expectancy (R)', fmtNum(d.expectancy)], ['Gewinn/Verlust (€)', fmtEur(d.total_pnl)],
       ['Sharpe', fmtNum(d.sharpe)], ['Max Drawdown', fmtNum(d.max_drawdown)],
     ];
+    // Values may carry HTML (coloured €); render trusted formatter output directly.
     grid.innerHTML = cards.map(([l, v]) =>
-      `<div class="metric"><div class="label">${l}</div><div class="value">${escapeHtml(String(v))}</div></div>`).join('');
+      `<div class="metric"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
   }
   function renderEquity(ec) {
     const host = $('#perf-equity'); if (!host) return;
