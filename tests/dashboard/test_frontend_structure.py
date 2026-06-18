@@ -9,6 +9,7 @@ contract drift.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -32,8 +33,10 @@ def test_index_html_exists() -> None:
 
 def test_index_html_has_lightweight_charts_cdn() -> None:
     text = INDEX_HTML.read_text()
+    # Vendored locally (v4) instead of a CDN: the unpinned unpkg URL drifted
+    # to a breaking v5 and a content blocker could block a 3rd-party CDN.
     assert "lightweight-charts" in text
-    assert "unpkg.com" in text
+    assert "lightweight-charts.v4.standalone.js" in text
 
 
 def test_index_html_has_login_form_with_password_field() -> None:
@@ -272,17 +275,24 @@ def test_dashboard_js_parses_as_valid_javascript_structure() -> None:
     only check brace balance as a coarse structural sanity test.
     """
     text = DASHBOARD_JS.read_text()
-    # Strip strings and comments for balance check
-    no_strings = re.sub(r'"(?:[^"\\]|\\.)*"', '""', text)
-    no_strings = re.sub(r"'(?:[^'\\]|\\.)*'", "''", no_strings)
-    no_strings = re.sub(r"`(?:[^`\\]|\\.)*`", "``", no_strings)
-    no_strings = re.sub(r"//[^\n]*", "", no_strings)
-    no_strings = re.sub(r"/\*.*?\*/", "", no_strings, flags=re.DOTALL)
-    opens = no_strings.count("{")
-    closes = no_strings.count("}")
-    assert opens == closes, f"Brace mismatch: {opens} open vs {closes} close"
-    # Paren balance check is unreliable via regex because of nested
-    # template literals, regex patterns, etc. Skip strict check; the
-    # brace balance + the fact that Node.js/browser successfully
-    # parses dashboard.js (manual smoke + the structural tests above)
-    # is sufficient.
+    # Regex brace-counting is unreliable for this template-literal-heavy file
+    # (quotes/${} inside `...` confuse naive stripping). Prefer a real parser:
+    # if Node is available, let it validate the syntax authoritatively;
+    # otherwise fall back to coarse structural-presence checks.
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node:
+        # `new Function(body)` parses the file as a function body (the IIFE is
+        # valid there) and throws on a syntax error → non-zero exit.
+        script = f"new Function(require('fs').readFileSync({json.dumps(str(DASHBOARD_JS))}, 'utf8'))"
+        proc = subprocess.run(  # noqa: S603
+            [node, "-e", script], capture_output=True, text=True
+        )
+        assert proc.returncode == 0, f"dashboard.js failed to parse:\n{proc.stderr[:500]}"
+    else:
+        # No Node in this environment — coarse structural sanity instead.
+        assert text.strip().startswith("(") or "function" in text
+        for marker in ("function api(", "function connectWebSocket(", "function loadLive("):
+            assert marker in text, f"missing expected structure: {marker}"

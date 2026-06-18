@@ -25,7 +25,7 @@ from xauusd_bot.common.logging import setup_logging
 from xauusd_bot.common.messaging.events import ENVELOPE_SCHEMA_VERSION, JournalEvent
 from xauusd_bot.common.messaging.streams import StreamMessage, StreamTopic
 from xauusd_bot.common.service import run_consumer_service
-from xauusd_bot.journal import InMemoryJournalStore, get_journal_store
+from xauusd_bot.journal import InMemoryJournalStore, get_journal_store_with_fallback
 
 log = structlog.get_logger(__name__)
 
@@ -52,13 +52,11 @@ def _make_handler(store):
 
 
 async def _run(settings: Settings) -> int:
-    store = get_journal_store(settings)
-    if not isinstance(store, InMemoryJournalStore):
-        # TimescaleJournalStore is a stub today — never block the
-        # pipeline on it. Records are process-local until point 3 lands.
-        log.warning("journal_writer_forcing_in_memory", note="TimescaleDB persistence not yet implemented")
-        store = InMemoryJournalStore()
-    log.info("journal_writer_store_ready", store="in_memory")
+    # TimescaleJournalStore when a DSN is set and reachable; otherwise the
+    # fallback degrades to InMemory so the pipeline never blocks on the DB.
+    store = await get_journal_store_with_fallback(settings)
+    kind = "in_memory" if isinstance(store, InMemoryJournalStore) else "timescale"
+    log.info("journal_writer_store_ready", store=kind)
 
     handler = _make_handler(store)
     return await run_consumer_service(

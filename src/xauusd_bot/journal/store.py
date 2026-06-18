@@ -40,6 +40,7 @@ Invariants
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime
@@ -522,16 +523,43 @@ class InMemoryJournalStore:
             self._trades_by_symbol.clear()
 
 
-# ----------------------------------------------------------------- TimescaleJournalStore (stub)
+# ----------------------------------------------------------------- TimescaleJournalStore
+
+# JSONB-per-record schema: a thin indexed column set for filtering plus the
+# full Pydantic model in ``data`` (round-trips losslessly). Plain tables, not
+# hypertables — adequate for the journal's volume; hypertable conversion is a
+# later optimisation. ``IF NOT EXISTS`` makes init idempotent.
+_TIMESCALE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS journal_trades (
+  id TEXT PRIMARY KEY, timestamp_open TIMESTAMPTZ NOT NULL,
+  timestamp_close TIMESTAMPTZ, symbol TEXT NOT NULL, data JSONB NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_trades_open ON journal_trades (timestamp_open);
+CREATE INDEX IF NOT EXISTS ix_trades_symbol ON journal_trades (symbol);
+CREATE TABLE IF NOT EXISTS journal_orders (
+  id TEXT PRIMARY KEY, ts TIMESTAMPTZ NOT NULL, symbol TEXT NOT NULL,
+  status TEXT, data JSONB NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_orders_ts ON journal_orders (ts);
+CREATE TABLE IF NOT EXISTS journal_snapshots (
+  id TEXT PRIMARY KEY, bar_time TIMESTAMPTZ NOT NULL, written_at TIMESTAMPTZ NOT NULL,
+  symbol TEXT NOT NULL, data JSONB NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_snap_bartime ON journal_snapshots (bar_time);
+CREATE TABLE IF NOT EXISTS journal_discrepancies (
+  id TEXT PRIMARY KEY, ts TIMESTAMPTZ, version INT NOT NULL, data JSONB NOT NULL);
+CREATE TABLE IF NOT EXISTS journal_fitting_proposals (
+  id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, status TEXT NOT NULL,
+  category TEXT, data JSONB NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_fp_created ON journal_fitting_proposals (created_at);
+"""
 
 
 class TimescaleJournalStore:
-    """Async TimescaleDB-backed journal store. **STUB in Block 5a.**
+    """Async TimescaleDB/Postgres-backed journal store (asyncpg).
 
-    Block 5b (BacktestEngine) will implement this class against a
-    real TimescaleDB instance. The interface MUST stay identical to
-    :class:`InMemoryJournalStore` so the factory and the Block-5
-    call-sites do not need to change.
+    Same Protocol as :class:`InMemoryJournalStore`; records are stored as
+    JSONB (with a few indexed columns) so the Pydantic models round-trip
+    losslessly. The connection pool + schema are created lazily on first
+    use; :func:`get_journal_store_with_fallback` degrades to in-memory if
+    the DB is unreachable.
 
     Hypertables (planned schema)
     -----------------------------
@@ -563,96 +591,239 @@ class TimescaleJournalStore:
     """
 
     def __init__(self, dsn: str, *, connect_timeout_seconds: float = 5.0) -> None:
-        self._dsn = dsn
+        # Accept SQLAlchemy-style DSNs (postgresql+asyncpg://…) and normalise
+        # to plain postgresql:// for asyncpg.
+        self._dsn = dsn.replace("postgresql+asyncpg://", "postgresql://").replace(
+            "postgres+asyncpg://", "postgresql://"
+        )
         self._connect_timeout = connect_timeout_seconds
-        self._pool: Any = None  # asyncpg.Pool | None (typed at runtime in Block 5b)
+        self._pool: Any = None  # asyncpg.Pool | None
         self._lock = asyncio.Lock()
 
-    async def _ensure_pool(self) -> Any:  # pragma: no cover - stub
-        raise NotImplementedError(
-            "TimescaleJournalStore is a Block-5a stub. "
-            "Block 5b (BacktestEngine) will implement asyncpg.Pool bootstrap here."
-        )
+    async def _ensure_pool(self) -> Any:
+        if self._pool is not None:
+            return self._pool
+        async with self._lock:
+            if self._pool is not None:
+                return self._pool
+            import asyncpg  # lazy — only imported when a Timescale store is actually used
 
-    # All Protocol methods raise NotImplementedError. They are
-    # listed verbatim so a static type-checker can verify the shape
-    # stays in lock-step with the Protocol.
+            pool = await asyncpg.create_pool(
+                self._dsn, min_size=1, max_size=5, timeout=self._connect_timeout
+            )
+            async with pool.acquire() as con:
+                await con.execute(_TIMESCALE_SCHEMA)
+            self._pool = pool
+            log.info("timescale_store_ready")
+            return self._pool
 
-    async def write_trade(self, trade: TradeRecord) -> UUID:  # pragma: no cover - stub
-        raise NotImplementedError("TimescaleJournalStore.write_trade is a Block-5b deliverable.")
+    async def close(self) -> None:
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
 
-    async def update_trade(self, trade_id: UUID, updates: dict[str, Any]) -> None:  # pragma: no cover - stub
-        raise NotImplementedError("TimescaleJournalStore.update_trade is a Block-5b deliverable.")
+    @staticmethod
+    def _dump(model: Any) -> str:
+        return json.dumps(model.model_dump(mode="json"), default=str)
 
-    async def write_feature_snapshot(self, snapshot: FeatureSnapshotRecord) -> UUID:  # pragma: no cover - stub
-        raise NotImplementedError("TimescaleJournalStore.write_feature_snapshot is a Block-5b deliverable.")
+    # ---------------------------------------------------------------- writes
 
-    async def write_order(self, order: OrderRecord) -> UUID:  # pragma: no cover - stub
-        raise NotImplementedError("TimescaleJournalStore.write_order is a Block-5b deliverable.")
+    async def write_trade(self, trade: TradeRecord) -> UUID:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            await con.execute(
+                "INSERT INTO journal_trades (id, timestamp_open, timestamp_close, symbol, data) "
+                "VALUES ($1,$2,$3,$4,$5::jsonb) "
+                "ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, timestamp_close=EXCLUDED.timestamp_close",
+                str(trade.id), trade.timestamp_open, trade.timestamp_close, trade.symbol, self._dump(trade),
+            )
+        return trade.id
 
-    async def write_discrepancy(self, d: LLMFallbackDiscrepancy) -> UUID:  # pragma: no cover - stub
-        raise NotImplementedError("TimescaleJournalStore.write_discrepancy is a Block-5b deliverable.")
+    async def update_trade(self, trade_id: UUID, updates: dict[str, Any]) -> None:
+        bad = set(updates) - _ALLOWED_TRADE_UPDATES
+        if bad:
+            raise PITViolationError(f"update_trade rejected non-close fields: {sorted(bad)}")
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            row = await con.fetchrow("SELECT data FROM journal_trades WHERE id=$1", str(trade_id))
+            if row is None:
+                raise TradeNotFoundError(str(trade_id))
+            rec = TradeRecord.model_validate(json.loads(row["data"]))
+            patch = dict(updates)
+            if "tags" in patch and rec.tags:
+                patch["tags"] = {**rec.tags, **(patch["tags"] or {})}
+            if "order_ids" in patch:
+                existing = list(rec.order_ids or [])
+                patch["order_ids"] = existing + [o for o in patch["order_ids"] if o not in existing]
+            merged = rec.model_copy(update=patch)
+            await con.execute(
+                "UPDATE journal_trades SET data=$2::jsonb, timestamp_close=$3 WHERE id=$1",
+                str(trade_id), self._dump(merged), merged.timestamp_close,
+            )
 
-    async def write_discrepancy_v2(self, d: LLMFallbackDiscrepancyV2) -> UUID:  # pragma: no cover - stub
-        raise NotImplementedError(
-            "TimescaleJournalStore.write_discrepancy_v2 is a Block-5b deliverable."
-        )
+    async def write_feature_snapshot(self, snapshot: FeatureSnapshotRecord) -> UUID:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            await con.execute(
+                "INSERT INTO journal_snapshots (id, bar_time, written_at, symbol, data) "
+                "VALUES ($1,$2,$3,$4,$5::jsonb) ON CONFLICT (id) DO NOTHING",
+                str(snapshot.id), snapshot.bar_time, snapshot.timestamp, snapshot.symbol, self._dump(snapshot),
+            )
+        return snapshot.id
 
-    async def list_trades(  # pragma: no cover - stub
+    async def write_order(self, order: OrderRecord) -> UUID:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            await con.execute(
+                "INSERT INTO journal_orders (id, ts, symbol, status, data) "
+                "VALUES ($1,$2,$3,$4,$5::jsonb) ON CONFLICT (id) DO NOTHING",
+                str(order.id), order.timestamp, order.symbol,
+                getattr(order.status, "value", str(order.status)), self._dump(order),
+            )
+        return order.id
+
+    async def _write_discrepancy(self, d: Any, version: int) -> UUID:
+        pool = await self._ensure_pool()
+        did = getattr(d, "id", None) or uuid4()
+        ts = getattr(d, "timestamp", None) or getattr(d, "ts", None)
+        async with pool.acquire() as con:
+            await con.execute(
+                "INSERT INTO journal_discrepancies (id, ts, version, data) "
+                "VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (id) DO NOTHING",
+                str(did), ts, version, self._dump(d),
+            )
+        return did if isinstance(did, UUID) else uuid4()
+
+    async def write_discrepancy(self, d: LLMFallbackDiscrepancy) -> UUID:
+        return await self._write_discrepancy(d, 1)
+
+    async def write_discrepancy_v2(self, d: LLMFallbackDiscrepancyV2) -> UUID:
+        return await self._write_discrepancy(d, 2)
+
+    # ---------------------------------------------------------------- reads
+
+    async def list_trades(
         self,
         symbol: str | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
         limit: int = 1000,
     ) -> list[TradeRecord]:
-        raise NotImplementedError("TimescaleJournalStore.list_trades is a Block-5b deliverable.")
+        clauses, args = [], []
+        if symbol is not None:
+            args.append(symbol); clauses.append(f"symbol=${len(args)}")
+        if start is not None:
+            args.append(start); clauses.append(f"timestamp_open>=${len(args)}")
+        if end is not None:
+            args.append(end); clauses.append(f"timestamp_open<${len(args)}")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        args.append(limit)
+        q = f"SELECT data FROM journal_trades{where} ORDER BY timestamp_open ASC LIMIT ${len(args)}"
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            rows = await con.fetch(q, *args)
+        return [TradeRecord.model_validate(json.loads(r["data"])) for r in rows]
 
-    async def get_trade(self, trade_id: UUID) -> TradeRecord | None:  # pragma: no cover - stub
-        raise NotImplementedError("TimescaleJournalStore.get_trade is a Block-5b deliverable.")
+    async def get_trade(self, trade_id: UUID) -> TradeRecord | None:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            row = await con.fetchrow("SELECT data FROM journal_trades WHERE id=$1", str(trade_id))
+        return TradeRecord.model_validate(json.loads(row["data"])) if row else None
 
-    async def get_snapshot(self, snapshot_id: UUID) -> FeatureSnapshotRecord | None:  # pragma: no cover - stub
-        raise NotImplementedError("TimescaleJournalStore.get_snapshot is a Block-5b deliverable.")
+    async def get_snapshot(self, snapshot_id: UUID) -> FeatureSnapshotRecord | None:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            row = await con.fetchrow("SELECT data FROM journal_snapshots WHERE id=$1", str(snapshot_id))
+        return FeatureSnapshotRecord.model_validate(json.loads(row["data"])) if row else None
 
-    async def list_snapshots(  # pragma: no cover - stub
+    async def list_snapshots(
         self,
         start: datetime,
         end: datetime,
         symbol: str | None = None,
         limit: int = 1000,
     ) -> list[FeatureSnapshotRecord]:
-        raise NotImplementedError("TimescaleJournalStore.list_snapshots is a Block-5b deliverable.")
+        args = [start, end]
+        where = "bar_time>=$1 AND bar_time<$2"
+        if symbol is not None:
+            args.append(symbol); where += f" AND symbol=${len(args)}"
+        args.append(limit)
+        q = f"SELECT data FROM journal_snapshots WHERE {where} ORDER BY bar_time ASC LIMIT ${len(args)}"
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            rows = await con.fetch(q, *args)
+        return [FeatureSnapshotRecord.model_validate(json.loads(r["data"])) for r in rows]
 
-    # ---- Block 5c — FittingProposal CRUD stubs ----
+    async def count(self) -> dict[str, int]:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            return {
+                "trades": await con.fetchval("SELECT count(*) FROM journal_trades"),
+                "snapshots": await con.fetchval("SELECT count(*) FROM journal_snapshots"),
+                "orders": await con.fetchval("SELECT count(*) FROM journal_orders"),
+                "discrepancies": await con.fetchval("SELECT count(*) FROM journal_discrepancies"),
+                "fitting_proposals": await con.fetchval("SELECT count(*) FROM journal_fitting_proposals"),
+            }
 
-    async def add_fitting_proposal(  # pragma: no cover - stub
-        self, proposal: FittingProposal
-    ) -> UUID:
-        raise NotImplementedError(
-            "TimescaleJournalStore.add_fitting_proposal is a Block-5c follow-up deliverable "
-            "(asyncpg integration comes with Block 8 / 10)."
-        )
+    # ---------------------------------------------------------------- fitting proposals
 
-    async def get_fitting_proposal(  # pragma: no cover - stub
-        self, proposal_id: UUID
-    ) -> FittingProposal | None:
-        raise NotImplementedError(
-            "TimescaleJournalStore.get_fitting_proposal is a Block-5c follow-up deliverable."
-        )
+    async def add_fitting_proposal(self, proposal: FittingProposal) -> UUID:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            await con.execute(
+                "INSERT INTO journal_fitting_proposals (id, created_at, status, category, data) "
+                "VALUES ($1,$2,$3,$4,$5::jsonb) ON CONFLICT (id) DO NOTHING",
+                str(proposal.id), proposal.created_at,
+                getattr(proposal.status, "value", str(proposal.status)),
+                getattr(proposal.category, "value", str(proposal.category)), self._dump(proposal),
+            )
+        return proposal.id
 
-    async def update_fitting_proposal(  # pragma: no cover - stub
-        self, proposal: FittingProposal
-    ) -> None:
-        raise NotImplementedError(
-            "TimescaleJournalStore.update_fitting_proposal is a Block-5c follow-up deliverable."
-        )
+    async def get_fitting_proposal(self, proposal_id: UUID) -> FittingProposal | None:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            row = await con.fetchrow(
+                "SELECT data FROM journal_fitting_proposals WHERE id=$1", str(proposal_id)
+            )
+        return FittingProposal.model_validate(json.loads(row["data"])) if row else None
 
-    async def list_fitting_proposals(  # pragma: no cover - stub
+    async def update_fitting_proposal(self, proposal: FittingProposal) -> None:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            row = await con.fetchrow(
+                "SELECT data FROM journal_fitting_proposals WHERE id=$1", str(proposal.id)
+            )
+            if row is None:
+                raise FittingProposalNotFoundError(str(proposal.id))
+            existing = FittingProposal.model_validate(json.loads(row["data"]))
+            allowed = _FITTING_PROPOSAL_VALID_TRANSITIONS[existing.status]
+            if proposal.status not in allowed:
+                raise InvalidStatusTransitionError(
+                    f"{existing.status} → {proposal.status} is not a valid transition"
+                )
+            await con.execute(
+                "UPDATE journal_fitting_proposals SET status=$2, category=$3, data=$4::jsonb WHERE id=$1",
+                str(proposal.id), getattr(proposal.status, "value", str(proposal.status)),
+                getattr(proposal.category, "value", str(proposal.category)), self._dump(proposal),
+            )
+
+    async def list_fitting_proposals(
         self,
         filter: FittingProposalFilter | None = None,
     ) -> list[FittingProposal]:
-        raise NotImplementedError(
-            "TimescaleJournalStore.list_fitting_proposals is a Block-5c follow-up deliverable."
-        )
+        clauses, args = [], []
+        if filter and filter.status:
+            args.append([getattr(s, "value", str(s)) for s in filter.status])
+            clauses.append(f"status = ANY(${len(args)})")
+        if filter and filter.category:
+            args.append([getattr(c, "value", str(c)) for c in filter.category])
+            clauses.append(f"category = ANY(${len(args)})")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        q = f"SELECT data FROM journal_fitting_proposals{where} ORDER BY created_at DESC"
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            rows = await con.fetch(q, *args)
+        return [FittingProposal.model_validate(json.loads(r["data"])) for r in rows]
 
 
 # ----------------------------------------------------------------- factory

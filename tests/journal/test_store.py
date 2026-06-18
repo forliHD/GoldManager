@@ -441,13 +441,20 @@ def test_in_memory_store_implements_protocol() -> None:
 # ----------------------------------------------------------------- TimescaleJournalStore stub
 
 
-def test_timescale_store_raises_on_write() -> None:
-    """Block-5a stub: every Protocol method raises NotImplementedError."""
+def test_timescale_store_raises_when_db_unreachable() -> None:
+    """Real asyncpg store: a write against an unreachable DB raises (not NotImplemented)."""
 
-    store = TimescaleJournalStore(dsn="postgresql+asyncpg://xauusd:xauusd@localhost:5432/xauusd")
-    coro = store.write_trade(make_trade())
-    with pytest.raises(NotImplementedError):
-        asyncio.run(coro)
+    # Port 1 is never a Postgres — connection fails fast.
+    store = TimescaleJournalStore(
+        dsn="postgresql+asyncpg://x:x@127.0.0.1:1/x", connect_timeout_seconds=1.0
+    )
+    with pytest.raises(Exception):  # noqa: B017,PT011 - any connection error is fine
+        asyncio.run(store.write_trade(make_trade()))
+
+
+def test_timescale_store_normalises_sqlalchemy_dsn() -> None:
+    store = TimescaleJournalStore(dsn="postgresql+asyncpg://u:p@h:5432/db")
+    assert store._dsn == "postgresql://u:p@h:5432/db"  # noqa: SLF001
 
 
 def test_timescale_store_factory_returns_timescale_for_prod() -> None:

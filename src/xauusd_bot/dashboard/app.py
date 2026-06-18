@@ -140,7 +140,9 @@ def create_app(
     async def lifespan(app: FastAPI):
         # Wire app.state dependencies.
         app.state.settings = settings
-        app.state.journal_store = journal_store or InMemoryJournalStore()
+        # Same store the journal-writer uses: Timescale when reachable,
+        # else InMemory. So the dashboard reads the durable journal.
+        app.state.journal_store = journal_store or await get_journal_store_with_fallback(settings)
         app.state.review_engine = review_engine
         app.state.fitting_proposal_engine = fitting_proposal_engine
         app.state.replay_connector_factory = replay_connector_factory
