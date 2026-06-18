@@ -401,6 +401,19 @@ async def chart_overlays(
 # ============================================================ Journal
 
 
+def _same_instrument(a: str, b: str) -> bool:
+    """Broker-suffix-tolerant symbol match (e.g. "XAUUSD" == "XAUUSD+").
+
+    The market-data path carries the broker's tradable symbol ("XAUUSD+")
+    while older/journalled trades may sit under the canonical base ("XAUUSD").
+    A strict equality filter then hides them. Treat one as a prefix of the
+    other (case-insensitive) so all variants of the same instrument match.
+    """
+
+    x, y = a.upper(), b.upper()
+    return x.startswith(y) or y.startswith(x)
+
+
 @router.get("/journal/trades")
 async def journal_trades(
     limit: int = Query(default=20, ge=1, le=1000),
@@ -410,8 +423,14 @@ async def journal_trades(
     """List the most recent trades for the dashboard table."""
 
     store = _get_journal_store()
-    trades = await store.list_trades(symbol=symbol, limit=limit)
+    # Don't push the (broker-suffixed) symbol into the SQL equality filter —
+    # match suffix-tolerantly so trades under "XAUUSD" show when the live
+    # symbol is "XAUUSD+" (and vice-versa). Single-instrument bot, so the
+    # over-fetch is bounded.
+    trades = await store.list_trades(limit=max(limit * 4, 200))
+    trades = [t for t in trades if _same_instrument(t.symbol, symbol)]
     trades.sort(key=lambda t: t.timestamp_open, reverse=True)
+    trades = trades[:limit]
     out: list[dict[str, Any]] = []
     for t in trades:
         out.append(
