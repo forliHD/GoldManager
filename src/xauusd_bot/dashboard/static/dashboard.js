@@ -198,6 +198,7 @@
         api(`/api/chart/overlays?symbol=XAUUSD`),
       ]);
       state.candleSeries.setData(candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: c.open, high: c.high, low: c.low, close: c.close })));
+      try { state.chart.timeScale().fitContent(); } catch (e) {}
       applyOverlays(overlays);
     } catch (e) {
       console.error('chart load failed', e);
