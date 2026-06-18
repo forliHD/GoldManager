@@ -714,7 +714,9 @@
     if (tot) tot.textContent = d.score != null ? `(${Math.round(d.score)}/100 · ${escapeHtml(d.band || '')})` : '';
     el.innerHTML = Object.entries(d.subscores).map(([k, v]) => {
       const val = Math.round(v || 0), w = Math.max(2, Math.min(100, val));
-      const col = val >= 65 ? 'var(--ok)' : val >= 45 ? 'var(--warn)' : 'var(--border)';
+      // Low scores must NOT use var(--border) — that's the track background, so
+      // the bar would be invisible. Use a visible muted grey instead.
+      const col = val >= 65 ? 'var(--ok)' : val >= 45 ? 'var(--warn)' : '#8b949e';
       return `<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:11px">
         <span style="width:68px;color:var(--muted)">${escapeHtml(_ENGINE_LABELS[k] || k)}</span>
         <span style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><span style="display:block;height:100%;width:${w}%;background:${col}"></span></span>
