@@ -115,7 +115,9 @@ async def _publish_overlay_snapshot(
 
 
 async def _run(settings: Settings) -> int:
-    pipeline = FeaturePipeline()
+    from xauusd_bot.features.news import make_news_provider
+
+    pipeline = FeaturePipeline(news_provider=make_news_provider(settings))
     publisher = make_publisher(settings)
     await publisher.connect()
     buffer: list[Bar] = []
@@ -131,6 +133,15 @@ async def _run(settings: Settings) -> int:
             warm = connector.get_rates(settings.symbol, "M1", count=settings.warmup_bars)
             buffer.extend(warm)
             log.info("feature_engine_warmup_loaded", bars=len(warm))
+            # Detect the broker→UTC clock offset from the freshest bar so the
+            # news blackout aligns broker-time bars with UTC calendar events.
+            if warm:
+                latest = warm[-1].time
+                if latest.tzinfo is None:
+                    latest = latest.replace(tzinfo=UTC)
+                offset_min = round((latest - datetime.now(UTC)).total_seconds() / 3600.0) * 60
+                pipeline.news.set_clock_offset(offset_min)
+                log.info("feature_engine_broker_clock_offset", offset_minutes=offset_min)
         except Exception as exc:  # noqa: BLE001 - warmup is best-effort
             log.warning("feature_engine_warmup_failed", error=str(exc))
         finally:

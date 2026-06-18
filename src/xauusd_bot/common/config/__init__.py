@@ -25,6 +25,7 @@ class ConnectorMode(str, Enum):
 class NewsProvider(str, Enum):
     """News / macro calendar provider."""
 
+    FOREX_FACTORY = "forexfactory"  # free weekly JSON calendar, no API key
     TRADING_ECONOMICS = "tradingeconomics"
     FXSTREET = "fxstreet"
     STUB = "stub"
@@ -120,6 +121,10 @@ class Settings(BaseSettings):
     # --- News
     news_api_provider: NewsProvider = Field(default=NewsProvider.STUB)
     news_api_key: SecretStr | None = Field(default=None)
+    news_currencies: list[str] = Field(
+        default_factory=lambda: ["USD"],
+        description="Currencies whose calendar events drive the news blackout. USD is the dominant XAUUSD driver (NFP/FOMC/CPI).",
+    )
 
     # --- MT5 (prod only)
     mt5_login: str | None = None
