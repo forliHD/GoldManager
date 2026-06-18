@@ -669,7 +669,7 @@
         api('/api/news').catch(() => null), api('/api/ai/last').catch(() => null),
       ]);
       renderAccount(acc); renderRisk(risk); renderPositions(positions); renderTradeLevels(positions);
-      renderDecisionFeed(decisions); renderOrders(orders); renderServiceHealth(health);
+      renderDecisionFeed(decisions); renderOrders(orders); renderServiceHealth(health); renderMarketStatus(health);
       renderUsage(usage); renderNews(news); renderScores(decisions && decisions[0]); renderAILast(aiLast);
       const ts = acc && acc.ts ? new Date(acc.ts) : null;
       const stale = !ts || (Date.now() - ts.getTime() > 20000);
@@ -734,11 +734,29 @@
         // 15s green window flickered to yellow between bars. Widen to the bar
         // cadence: green < 90s (a bar every 60s stays green), yellow < 180s.
         cls = age == null ? '' : age < 90 ? 'ok' : age < 180 ? 'warn' : '';
+        // When the market is closed these streams legitimately go stale — don't
+        // alarm the user with red; show amber + a note instead.
+        if (h.market_status === 'closed' && cls === '') { cls = 'warn'; note = ' · Markt geschlossen'; }
       }
       parts.push(`<span class="svc" title="${escapeHtml(s.service)} · ${topic} · len ${s.len} · ${age==null?'?':age+'s'}${note}"><span class="sdot ${cls}"></span>${escapeHtml(s.service.replace('-engine','').replace('-',''))}</span>`);
     }
     parts.push(`<span class="svc" title="execution-engine state"><span class="sdot ${h.execution_alive?'ok':''}"></span>exec</span>`);
     el.innerHTML = parts.join('');
+  }
+  // Show a prominent "market closed" / "feed down" pill so a quiet chart and the
+  // amber status dots are self-explanatory instead of looking broken.
+  function renderMarketStatus(h) {
+    const el = $('#market-banner'); if (!el) return;
+    const st = h && h.market_status;
+    if (st === 'closed') {
+      el.className = 'market-pill closed';
+      el.textContent = '🌙 Markt geschlossen — aktuell keine neuen Candles';
+    } else if (st === 'feed_down') {
+      el.className = 'market-pill down';
+      el.textContent = '⚠ Daten-Feed offline — Bridge / data-collector prüfen';
+    } else {
+      el.className = 'market-pill hidden';
+    }
   }
   function renderUsage(u) {
     const el = $('#llm-usage'); if (!el) return;

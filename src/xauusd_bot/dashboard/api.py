@@ -1372,6 +1372,28 @@ async def health_services(
         }
     # execution-engine liveness: it publishes state:account every 3s (TTL 15s).
     result["execution_alive"] = bool(await get_json(rc, STATE_KEY_ACCOUNT))
+
+    # Market open/closed inference. The data-collector republishes the forming
+    # bar to ``market_live`` ~1/s even when the market is closed (frozen bar),
+    # but only emits ``market_ticks`` (closed bars) while bars actually form.
+    # So: live fresh + ticks stale = market CLOSED; live stale = the feed/bridge
+    # is DOWN. This lets the UI explain a quiet chart instead of alarming red.
+    try:
+        live_last = await rc.xrevrange("market_live", count=1)
+        live_age = _stream_age_seconds(live_last[0][0] if live_last else None)
+    except Exception:  # noqa: BLE001
+        live_age = None
+    tick_age = (result["streams"].get("market_ticks") or {}).get("last_age_s")
+    _FORMING_FRESH = 30.0   # market_live should refresh roughly once a second
+    _TICKS_STALE = 180.0    # a closed M1 bar lands ~every 60s while open
+    if live_age is None or live_age > _FORMING_FRESH:
+        market_status = "feed_down"
+    elif tick_age is None or tick_age > _TICKS_STALE:
+        market_status = "closed"
+    else:
+        market_status = "open"
+    result["market_status"] = market_status
+    result["market_live_age_s"] = round(live_age, 1) if live_age is not None else None
     return result
 
 
