@@ -40,7 +40,19 @@ services:
   redis:
     image: redis:7-alpine
     container_name: xauusd-redis
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    # maxmemory bounds RAM; noeviction protects trading data (writes fail
+    # rather than silently dropping). Streams are MAXLEN-capped
+    # (settings.stream_maxlen) — but the features bundles are several KB
+    # each, so the cap must comfortably exceed the sum of stream plateaus.
+    # 4 GB suits the dev VM; override via REDIS_MAXMEMORY.
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-4gb}"
     volumes:
       - redis_data:/data
     healthcheck:
