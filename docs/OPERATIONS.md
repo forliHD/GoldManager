@@ -95,6 +95,15 @@ um die Domain-Schemas (`Bar`, `FeatureSnapshotBundle`, `Decision`+`Score`, …).
 **Runtime-Konfig (DB 0):**
 - `runtime:ai_layer_enabled` — `"true"`/`"false"`. Vom Dashboard geschrieben
   (`POST /api/ai/toggle`), von der `decision-engine` alle ~2 s gelesen.
+- `runtime:emergency_stop` — Kill-Switch. Dashboard (`POST /api/emergency`)
+  schreibt, `execution-engine` spiegelt ihn auf den `EmergencyStopManager`
+  (engaged = flatten + cancel + Halt; clear = Freigabe).
+
+**Live-Ops-State (DB 0, TTL ~15 s):** Von der `execution-engine` alle 3 s
+publiziert, vom Dashboard gelesen.
+- `state:account` — Balance/Equity/Margin/PnL.
+- `state:positions` — offene Positionen.
+- `state:risk` — Tages-/Wochen-PnL gegen Caps, Positions-Counts.
 
 **Dashboard (DB 1):** Session-Keys (Cookie-Sessions, bcrypt-Login).
 - `dashboard:connector_mode` — vom Mode-Toggle geschrieben (Block-10-Vorbereitung).
@@ -115,8 +124,12 @@ Rollen-Hierarchie: `viewer < operator < admin`.
 | `POST /api/auth/login` | — | Login (`username`,`password` form-encoded) |
 | `POST /api/auth/logout` | auth | Logout |
 | `GET /api/auth/me` | auth | Aktuelle Session/Rolle |
-| `GET /api/chart/candles`,`/api/chart/overlays` | viewer | Chart-Daten |
-| `GET /api/journal/trades`,`/api/journal/aggregate` | viewer | Journal/KPIs |
+| `GET /api/chart/candles`,`/api/chart/overlays` | viewer | Chart-Daten (Candles M1→M5/M15/H1 aggregiert) |
+| `GET /api/journal/trades`,`/api/journal/aggregate` | viewer | Journal/KPIs (aus TimescaleDB) |
+| **`GET /api/account` · `/api/positions` · `/api/risk`** | viewer | Live-Ops-State (Account/Positionen/Risk) |
+| **`GET /api/decisions/recent` · `/api/orders/recent`** | viewer | Decision-Feed (Score-Breakdown) + Order-Blotter |
+| **`GET /api/health/services`** | viewer | Service-Health (Stream-Aktivität, exec-Liveness) |
+| **`GET /api/emergency` · `POST /api/emergency`** | viewer/operator | Kill-Switch lesen/schalten (`{"engaged":bool}`) |
 | `GET /api/backtest/list`, `POST /api/backtest/run`, `GET /api/backtest/status` | operator | Backtests |
 | `GET /api/review/daily`,`/api/review/weekly` | viewer | Reviews |
 | `POST /api/fitting-proposal/{list,approve,reject,validate}` | operator | Vorschläge |
@@ -124,7 +137,10 @@ Rollen-Hierarchie: `viewer < operator < admin`.
 | **`POST /api/ai/toggle`** | operator | AI-Layer an/aus (`{"enabled":bool}`) → schreibt `runtime:ai_layer_enabled` |
 | `POST /api/mode/toggle` | admin | Connector-Mode (replay↔live), zusätzlich `DASHBOARD_LIVE_MODE_ENABLED` nötig |
 
-UI: oben rechts **AI**-Pille + Toggle (operator/admin), **Mode**-Pille (admin).
+UI: oben rechts **AI**-Pille + Toggle (operator/admin), **Mode**-Pille (admin),
+**⛔ STOP** (Kill-Switch, operator/admin). Default-Tab **„Live"** = Ops-Cockpit:
+Account, Risk-Gauges (Tages-/Wochen-PnL vs Caps), Positions-Blotter,
+Decision-Feed (Score-Breakdown), Recent-Orders; Service-Health-Dots im Footer.
 
 ---
 
@@ -262,11 +278,22 @@ docker exec xauusd-redis redis-cli SET runtime:ai_layer_enabled false
 - Redis/TimescaleDB-Ports sind published — in Prod via Firewall/Netz absichern.
 - Invariante I-1: `import MetaTrader5` nur im Bridge-Server, nie in den Services.
 
+**Persistenz (TimescaleDB)**
+- **`TimescaleJournalStore` ist implementiert** (asyncpg, JSONB-pro-Record).
+  `journal-writer` + Dashboard nutzen `get_journal_store_with_fallback` →
+  TimescaleDB wenn erreichbar, sonst InMemory. Schema wird lazy angelegt.
+- Tabellen (DB `xauusd`): `journal_trades`, `journal_orders`,
+  `journal_snapshots`, `journal_discrepancies`, `journal_fitting_proposals`.
+  Inspektion: `docker exec xauusd-timescaledb psql -U xauusd -d xauusd -c "SELECT count(*) FROM journal_trades"`.
+
 **Bekannte Grenzen**
-- **TimescaleJournalStore ist ein Stub** (`NotImplementedError`) — `journal-writer`
-  nutzt aktuell `InMemoryJournalStore` (prozess-lokal, nicht durable). Echte
-  DB-Persistenz ist offen.
 - **feature-engine ist O(history)** pro Bar — bei `REPLAY_LOOP=true` wächst der
   Puffer und der Durchsatz sinkt mit der Zeit.
 - **Demo-Forward → Live (Block 10)** noch offen; LiveMT5Connector ist code-complete,
   aber nie gegen ein echtes Terminal gelaufen.
+- **VM-Disk:** Der `mt5-terminal`-Image-Build (Wine + MT5, mehrere GB) sprengt
+  die aktuellen **15 GB** der VM. Für MT5-im-Dev die VM-Disk vergrößern
+  (Proxmox/LVM) — sonst `no space left on device` beim Build.
+- **Position-Lifecycle:** Die `execution-engine` treibt Trade-*Entry*; Trailing/
+  TP-Teilschließung über Folge-Bars ist noch nicht verdrahtet (Kill-Switch +
+  Risk-Halt funktionieren).

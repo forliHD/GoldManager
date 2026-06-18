@@ -2,7 +2,7 @@
 
 Vantage-MT5 → Python Feature-Engine → AI-Decision-Layer (OpenRouter / MiniMax BYOK) → Risk/Execution → Journal/Review → MT5-Overlay-Visualisierung.
 
-**Aktueller Stand (2026-06-18):** Blöcke 1–8 + 5c + 9 ship-ready auf `dev`, plus **Service-Runtime** (die 5 Compose-Services laufen als echte Redis-Stream-Daemons) und **Dashboard-gesteuerter AI-Layer** (MiniMax M3 via OpenRouter BYOK, zur Laufzeit per Dashboard-Toggle an/aus). 1214 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur, **`docs/OPERATIONS.md` für die Systembetreuer-/Betriebsdoku** (Dienste, Ports, Endpunkte, Zugangsdaten, Runbook) und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
+**Aktueller Stand (2026-06-18):** Blöcke 1–8 + 5c + 9 ship-ready auf `dev`, plus **Service-Runtime** (die 5 Compose-Services laufen als echte Redis-Stream-Daemons) und **Dashboard-gesteuerter AI-Layer** (MiniMax M3 via OpenRouter BYOK, zur Laufzeit per Dashboard-Toggle an/aus), ein **Live-Ops-Cockpit** im Dashboard (Account/Risk/Positionen, Decision-Feed, Kill-Switch, Service-Health) und **durable TimescaleDB-Persistenz** (`TimescaleJournalStore`). ~1218 Tests grün, alle Architektur-Invarianten I-1..I-5 verifiziert (I-1 in Block 8 verschärft: `import MetaTrader5` ist nur noch im Windows-Python-Bridge-Server erlaubt). Siehe `00_FINAL_PLAN.md` für die volle Architektur, **`docs/OPERATIONS.md` für die Systembetreuer-/Betriebsdoku** (Dienste, Ports, Endpunkte, Zugangsdaten, Runbook) und `AGENTS.md` für operative Details (Caveats, Live-Bugs, Memory).
 
 ---
 
