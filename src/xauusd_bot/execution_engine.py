@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import structlog
 
@@ -35,11 +36,16 @@ from xauusd_bot.common.runtime_config import (
     STATE_KEY_POSITIONS,
     STATE_KEY_RISK,
     get_emergency_stop,
+    get_json,
     set_json,
 )
 from xauusd_bot.common.service import make_consumer, make_publisher, service_runtime
 from xauusd_bot.connectors.factory import make_connector
 from xauusd_bot.execution.pipeline import ExecutionPipeline
+from xauusd_bot.execution.position_manager import ManagedPosition, PositionManager
+
+# Redis key prefix for per-position management plans (TP/SL/trailing state).
+_MGMT_KEY_PREFIX = "mgmt:pos:"
 
 log = structlog.get_logger(__name__)
 
@@ -152,13 +158,92 @@ async def _publish_state(
             await asyncio.wait_for(stop_event.wait(), timeout=_STATE_INTERVAL_SECONDS)
 
 
-def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher):
+async def _store_managed(redis_client, mp: ManagedPosition) -> None:
+    # Long TTL — the plan must outlive the position (deleted explicitly when the
+    # position closes), unlike the 15s state snapshots set_json defaults to.
+    await set_json(redis_client, _MGMT_KEY_PREFIX + mp.ticket, mp.model_dump(mode="json"), ttl=2_592_000)
+
+
+async def _delete_managed(redis_client, ticket: str) -> None:
+    with contextlib.suppress(Exception):
+        await redis_client.delete(_MGMT_KEY_PREFIX + ticket)
+
+
+async def _load_managed_all(redis_client) -> dict[str, ManagedPosition]:
+    out: dict[str, ManagedPosition] = {}
+    async for key in redis_client.scan_iter(match=_MGMT_KEY_PREFIX + "*"):
+        data = await get_json(redis_client, key)
+        if not data:
+            continue
+        try:
+            mp = ManagedPosition.model_validate(data)
+            out[mp.ticket] = mp
+        except Exception as exc:  # noqa: BLE001 - drop a corrupt plan, keep going
+            log.warning("execution_managed_plan_invalid", key=key, error=str(exc))
+    return out
+
+
+async def _apply_action(connector, ticket: str, action) -> None:
+    if action.kind == "modify_sl":
+        await asyncio.to_thread(connector.order_modify, ticket, sl=float(action.price))
+    elif action.kind in ("partial_close", "close_all"):
+        fn = getattr(connector, "close_position", None)
+        if fn is None:
+            log.warning("execution_close_not_supported", ticket=ticket)
+            return
+        await asyncio.to_thread(fn, ticket, action.volume if action.kind == "partial_close" else None)
+
+
+async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, current_price) -> None:
+    """Drive each tracked open position forward one bar (TP partials / SL trail)."""
+    stored = await _load_managed_all(redis_client)
+    if not stored:
+        return
+    connector = pipeline.connector
+    positions = await asyncio.to_thread(connector.positions_get, settings.symbol)
+    open_tickets = {p.position_id for p in (positions or [])}
+    price = Decimal(str(current_price))
+    for ticket, mp in stored.items():
+        if ticket not in open_tickets:
+            await _delete_managed(redis_client, ticket)  # position closed → drop plan
+            continue
+        actions, mp2 = pos_mgr.plan(mp, bundle, price)
+        for a in actions:
+            try:
+                await _apply_action(connector, ticket, a)
+                log.info(
+                    "execution_manage_action",
+                    ticket=ticket,
+                    kind=a.kind,
+                    reason=a.reason,
+                    price=(str(a.price) if a.price is not None else None),
+                    volume=(str(a.volume) if a.volume is not None else None),
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad action must not stall the loop
+                log.warning("execution_manage_apply_failed", ticket=ticket, kind=a.kind, error=str(exc))
+        if actions:
+            await _store_managed(redis_client, mp2)
+
+
+def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_client, settings: Settings):
+    pos_mgr = PositionManager(pipeline.stop_mgr, pipeline.tp_mgr, pipeline.spec)
+
     async def handle(msg: StreamMessage) -> None:
         ev = msg.payload
         assert isinstance(ev, DecisionEvent)
         if ev.schema_version != ENVELOPE_SCHEMA_VERSION:
             log.warning("execution_engine_dropping_unknown_version", version=ev.schema_version)
             return
+
+        # 1. Manage open positions EVERY bar (trailing / TP partials), even on
+        #    no_trade — the bundle + ref_price ride on every decision event.
+        if ev.bundle is not None and ev.ref_price is not None:
+            try:
+                await _manage_positions(pipeline, pos_mgr, redis_client, settings, ev.bundle, ev.ref_price)
+            except Exception as exc:  # noqa: BLE001 - management must never kill the service
+                log.warning("execution_manage_failed", error=str(exc))
+
+        # 2. Entry — only for a qualified setup.
         qual = ev.qualification
         if qual is None or not qual.qualified:
             return
@@ -173,6 +258,8 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher):
         if not outcome.submitted:
             log.info("execution_engine_blocked", reason=outcome.blocked_reason)
             return
+        if outcome.managed is not None:
+            await _store_managed(redis_client, outcome.managed)
 
         # Idempotency: the consumer is at-least-once. The order's
         # client_order_id (set by OrderManager) is the dedupe key the
@@ -207,7 +294,7 @@ async def _run(settings: Settings) -> int:
         block_ms=settings.stream_block_ms,
         batch_size=settings.stream_batch_size,
     )
-    handler = _make_handler(pipeline, publisher)
+    handler = _make_handler(pipeline, publisher, state_redis, settings)
 
     # service_runtime gives us the shared stop_event so the consumer loop
     # and the state-publisher task shut down together.

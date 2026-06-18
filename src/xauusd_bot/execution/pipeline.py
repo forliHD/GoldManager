@@ -59,6 +59,8 @@ from xauusd_bot.execution import (
     StopManager,
     TakeProfitManager,
 )
+from xauusd_bot.execution.position_manager import ManagedPosition
+from xauusd_bot.execution.take_profit import DEFAULT_TP1_PCT, DEFAULT_TP2_PCT
 
 log = structlog.get_logger(__name__)
 
@@ -71,6 +73,9 @@ class ExecutionOutcome:
     blocked_reason: str | None = None
     trade: TradeRecord | None = None
     order: OrderRecord | None = None
+    # Per-position management plan (TP1/2/3 + trailing state) the
+    # execution-engine persists and drives forward on subsequent bars.
+    managed: ManagedPosition | None = None
 
 
 class ExecutionPipeline:
@@ -252,7 +257,21 @@ class ExecutionPipeline:
             entry=str(fill_price),
             sl=str(stops.sl_price),
         )
-        return ExecutionOutcome(submitted=True, trade=trade, order=order)
+        managed = None
+        if order_env.order_id:
+            managed = ManagedPosition(
+                ticket=str(order_env.order_id),
+                side=side,
+                entry_price=fill_price,
+                initial_volume=sizing.volume_lots,
+                sl_price=stops.sl_price,
+                tp1_price=stops.tp1_price,
+                tp2_price=stops.tp2_price,
+                tp3_price=stops.tp3_price,
+                tp1_pct=DEFAULT_TP1_PCT,
+                tp2_pct=DEFAULT_TP2_PCT,
+            )
+        return ExecutionOutcome(submitted=True, trade=trade, order=order, managed=managed)
 
 
 __all__ = ["ExecutionOutcome", "ExecutionPipeline"]

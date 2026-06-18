@@ -413,6 +413,63 @@ class Mt5LinuxConnector(IMarketConnector):
             )
         return out
 
+    def close_position(self, ticket: str, volume: Decimal | None = None) -> OrderResult:
+        """Close a position (fully, or ``volume`` lots partially) at market.
+
+        Used by the per-bar position-management loop for TP1/TP2 partial closes
+        and runner exits. Closing = a market DEAL in the opposite direction with
+        the ``position`` field set to the ticket.
+        """
+        try:
+            mt5 = self._ensure()
+        except Exception as exc:  # noqa: BLE001
+            return OrderResult(accepted=False, error_code="BRIDGE_DOWN", error_message=str(exc))
+        try:
+            found = mt5.positions_get(ticket=int(ticket))
+            found = list(found) if found else []
+            if not found:
+                return OrderResult(accepted=False, error_code="NO_POSITION", error_message=f"position {ticket} not open")
+            p = found[0]
+            ptype = int(getattr(p, "type", 0))
+            sym = str(getattr(p, "symbol", self._symbol))
+            pos_vol = float(getattr(p, "volume", 0))
+            close_vol = min(float(volume), pos_vol) if volume is not None else pos_vol
+            if close_vol <= 0:
+                return OrderResult(accepted=False, error_code="ZERO_VOLUME")
+            tick = mt5.symbol_info_tick(sym)
+            if ptype == 0:  # long → close with a SELL at bid
+                otype = getattr(mt5, "ORDER_TYPE_SELL")
+                price = float(tick.bid)
+            else:  # short → close with a BUY at ask
+                otype = getattr(mt5, "ORDER_TYPE_BUY")
+                price = float(tick.ask)
+            req = {
+                "action": int(getattr(mt5, "TRADE_ACTION_DEAL")),
+                "symbol": sym,
+                "volume": close_vol,
+                "type": int(otype),
+                "position": int(ticket),
+                "price": price,
+                "deviation": 20,
+                "type_time": int(getattr(mt5, "ORDER_TIME_GTC", 0)),
+                "type_filling": int(getattr(mt5, "ORDER_FILLING_IOC", 1)),
+                "comment": "mgmt_close",
+            }
+            result = mt5.order_send(req)
+        except Exception as exc:  # noqa: BLE001
+            self._reset()
+            return OrderResult(accepted=False, error_code="BRIDGE_ERROR", error_message=str(exc))
+        retcode = int(getattr(result, "retcode", -1))
+        accepted = retcode == int(getattr(mt5, "TRADE_RETCODE_DONE", 10009))
+        return OrderResult(
+            accepted=accepted,
+            order_id=str(ticket),
+            filled_volume=(Decimal(str(close_vol)) if accepted else Decimal("0")),
+            error_code=(None if accepted else str(retcode)),
+            error_message=(None if accepted else str(getattr(result, "comment", "") or "close rejected")),
+            raw={"retcode": retcode},
+        )
+
     def pending_get(self, symbol: str | None = None) -> list[OrderRequest]:
         mt5 = self._ensure()
         items = mt5.orders_get(symbol=symbol) if symbol else mt5.orders_get()
