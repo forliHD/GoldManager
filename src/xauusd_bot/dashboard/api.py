@@ -358,8 +358,12 @@ async def chart_overlays(
     """
 
     store = _get_journal_store()
-    end = datetime.now(tz=UTC)
-    start = end - timedelta(days=2)
+    # Snapshot bar_time is in BROKER-server time (e.g. UTC+3), so the freshest
+    # live snapshot sits "in the future" vs real UTC. Extend the upper bound by
+    # 24h so those are NOT filtered out — otherwise the overlay falls back to a
+    # snapshot hours old (stale levels far above the current price).
+    end = datetime.now(tz=UTC) + timedelta(hours=24)
+    start = datetime.now(tz=UTC) - timedelta(days=2)
     snaps = await store.list_snapshots(start=start, end=end, symbol=symbol, limit=200)
     overlays = [s for s in snaps if isinstance(s.features.get("overlays"), dict)]
     overlays.sort(key=lambda s: s.bar_time, reverse=True)
