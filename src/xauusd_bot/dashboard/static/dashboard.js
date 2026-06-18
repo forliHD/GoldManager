@@ -594,6 +594,11 @@
       const ts = acc && acc.ts ? new Date(acc.ts) : null;
       const stale = !ts || (Date.now() - ts.getTime() > 20000);
       setText('#live-stale', stale ? '⚠ keine aktuellen Daten — läuft die execution-engine?' : '');
+      // Overlay fallback: normally indicators refresh on each `features` WS event,
+      // but if the WebSocket is down they'd freeze — so re-fetch them here too.
+      if (!state.wsOk) {
+        api(`/api/chart/overlays?symbol=${encodeURIComponent(state.symbol)}`).then(applyOverlays).catch(e => {});
+      }
     } catch (e) { setText('#live-stale', 'Fehler beim Laden der Live-Daten'); }
   }
   function scoreBadge(score, band) {
@@ -923,7 +928,7 @@
       state.reconnectTimer = setTimeout(connectWebSocket, delay);
     };
   }
-  function setWsDot(ok) { const d = $('#ws-dot'); d.classList.toggle('ok', ok); d.classList.toggle('err', !ok); }
+  function setWsDot(ok) { state.wsOk = ok; const d = $('#ws-dot'); d.classList.toggle('ok', ok); d.classList.toggle('err', !ok); }
 
   function handleWsEvent(msg) {
     if (!msg || !msg.topic) return;
