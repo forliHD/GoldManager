@@ -67,6 +67,18 @@
     .risk-bar > span.crit { background: #f85149; }
     .pos-long { color: var(--ok); } .pos-short { color: #f85149; }
     .pnl-pos { color: var(--ok); } .pnl-neg { color: #f85149; }
+    .feed { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+    .feed .frow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .feed .frow:last-child { border-bottom: none; }
+    .feed .sbadge { min-width: 34px; text-align: center; padding: 1px 5px; border-radius: 4px; font-weight: 700; font-size: 11px; }
+    .feed .act { font-weight: 600; }
+    .feed .act.enter { color: var(--ok); } .feed .act.no_trade { color: var(--muted); } .feed .act.prepare, .feed .act.observe { color: var(--warn); }
+    .feed .ai { font-size: 10px; padding: 0 4px; border-radius: 3px; background: var(--accent); color: #0e1116; }
+    .feed .why { color: var(--muted); margin-left: auto; font-size: 11px; }
+    .svc-health { display: flex; gap: 10px; align-items: center; font-size: 11px; }
+    .svc-health .svc { display: flex; align-items: center; gap: 3px; }
+    .svc-health .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
+    .svc-health .sdot.ok { background: var(--ok); } .svc-health .sdot.warn { background: var(--warn); }
 
     .main { display: grid; grid-template-columns: 1.4fr 1fr; flex: 1; overflow: hidden; }
     .chart-pane { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
@@ -214,6 +226,13 @@
               <tbody></tbody>
             </table>
             <div class="muted" id="live-stale" style="margin-top:8px;"></div>
+            <h4 style="margin:14px 0 6px;">Decision Feed</h4>
+            <div id="decision-feed" class="feed"><span class="muted">—</span></div>
+            <h4 style="margin:14px 0 6px;">Recent Orders</h4>
+            <table id="orders-table">
+              <thead><tr><th>Time</th><th>Side</th><th class="num">Vol</th><th class="num">Fill</th><th class="num">Slip</th><th>Status</th></tr></thead>
+              <tbody></tbody>
+            </table>
           </div>
           <!-- Indicators -->
           <div id="tab-indicators" class="hidden">
@@ -287,7 +306,8 @@
       <div class="ws-status"><span class="dot" id="ws-dot"></span><span id="ws-text">WS: connecting…</span></div>
       <div class="muted" id="ws-topics"></div>
       <div class="spacer" style="flex:1"></div>
-      <div class="muted" id="ws-last">last event: —</div>
+      <div class="svc-health" id="svc-health"></div>
+      <div class="muted" id="ws-last" style="margin-left:12px;">last event: —</div>
     </footer>
   </div>
 

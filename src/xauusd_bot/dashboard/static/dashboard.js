@@ -498,14 +498,64 @@
   }
   async function loadLive() {
     try {
-      const [acc, risk, positions] = await Promise.all([
+      const [acc, risk, positions, decisions, orders, health] = await Promise.all([
         api('/api/account'), api('/api/risk'), api('/api/positions'),
+        api('/api/decisions/recent?count=40'), api('/api/orders/recent?count=30'),
+        api('/api/health/services'),
       ]);
       renderAccount(acc); renderRisk(risk); renderPositions(positions);
+      renderDecisionFeed(decisions); renderOrders(orders); renderServiceHealth(health);
       const ts = acc && acc.ts ? new Date(acc.ts) : null;
       const stale = !ts || (Date.now() - ts.getTime() > 20000);
       setText('#live-stale', stale ? '⚠ keine aktuellen Daten — läuft die execution-engine?' : '');
     } catch (e) { setText('#live-stale', 'Fehler beim Laden der Live-Daten'); }
+  }
+  function scoreBadge(score, band) {
+    const s = (score == null) ? '—' : Math.round(score);
+    const bg = (band && band.startsWith('a_plus')) || score >= 85 ? 'var(--ok)'
+      : score >= 65 ? 'var(--warn)' : 'var(--border)';
+    const fg = score >= 65 ? '#0e1116' : 'var(--text)';
+    return `<span class="sbadge" style="background:${bg};color:${fg}">${s}</span>`;
+  }
+  function decisionRow(d) {
+    const act = (d.action || '—');
+    const ai = d.source_ai ? '<span class="ai">AI</span>' : '';
+    const why = d.qualified ? `<span class="why">✓ ${escapeHtml(d.entry_type || 'qualified')}</span>`
+      : (d.block_reason ? `<span class="why">${escapeHtml(d.block_reason)}</span>` : '');
+    return `<div class="frow">${scoreBadge(d.score, d.band)}<span class="act ${act}">${escapeHtml(act)}</span>${ai}
+      <span class="muted">${escapeHtml(d.direction || '')}</span>${why}
+      <span class="muted" style="font-size:10px">${escapeHtml(fmtTs(d.ts))}</span></div>`;
+  }
+  function renderDecisionFeed(items) {
+    const el = $('#decision-feed'); if (!el) return;
+    if (!items || !items.length) { el.innerHTML = '<span class="muted">noch keine Decisions</span>'; return; }
+    el.innerHTML = items.map(decisionRow).join('');
+  }
+  function renderOrders(orders) {
+    const tb = $('#orders-table tbody'); if (!tb) return;
+    if (!orders || !orders.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">noch keine Orders</td></tr>'; return; }
+    tb.innerHTML = '';
+    for (const o of orders) {
+      const tr = document.createElement('tr');
+      const sideCls = o.side === 'buy' ? 'pos-long' : 'pos-short';
+      tr.innerHTML = `<td>${escapeHtml(fmtTs(o.ts))}</td><td class="${sideCls}">${escapeHtml((o.side||'').toUpperCase())}</td>
+        <td class="num">${fmtNum(o.volume,2)}</td><td class="num">${o.fill_price!=null?fmtNum(o.fill_price):'—'}</td>
+        <td class="num">${o.slippage_pips!=null?fmtNum(o.slippage_pips,1):'—'}</td><td>${escapeHtml(o.status||'—')}</td>`;
+      tb.appendChild(tr);
+    }
+  }
+  function renderServiceHealth(h) {
+    const el = $('#svc-health'); if (!el) return;
+    if (!h || !h.redis) { el.innerHTML = '<span class="svc"><span class="sdot"></span>redis down</span>'; return; }
+    const parts = [];
+    const streams = h.streams || {};
+    for (const [topic, s] of Object.entries(streams)) {
+      const age = s.last_age_s;
+      const cls = age == null ? '' : age < 15 ? 'ok' : age < 60 ? 'warn' : '';
+      parts.push(`<span class="svc" title="${escapeHtml(s.service)} · ${topic} · len ${s.len} · ${age==null?'?':age+'s'}"><span class="sdot ${cls}"></span>${escapeHtml(s.service.replace('-engine','').replace('-',''))}</span>`);
+    }
+    parts.push(`<span class="svc" title="execution-engine state"><span class="sdot ${h.execution_alive?'ok':''}"></span>exec</span>`);
+    el.innerHTML = parts.join('');
   }
   function renderAccount(a) {
     if (!a || a.equity === undefined) { setHtml('#live-account', '<span class="muted">keine Daten</span>'); return; }

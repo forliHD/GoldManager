@@ -1052,6 +1052,145 @@ async def emergency_toggle(
     return {"engaged": body.engaged}
 
 
+# ---------------------------------------------------------------- decision / order feeds
+
+
+async def _read_stream(redis_client, topic: str, count: int) -> list[dict[str, Any]]:
+    """Return up to ``count`` most-recent decoded payloads from a stream (newest first)."""
+
+    try:
+        entries = await redis_client.xrevrange(topic, count=count)
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    for entry_id, fields in entries:
+        raw = fields.get("payload")
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+            obj["_id"] = entry_id
+            out.append(obj)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+@router.get("/decisions/recent")
+async def decisions_recent(
+    request: Request,
+    count: int = Query(default=40, ge=1, le=200),
+    session: UserSession = Depends(require_role("viewer")),
+) -> list[dict[str, Any]]:
+    """Recent decisions (newest first) with score breakdown for the live feed."""
+
+    events = await _read_stream(_streams_redis(request), "decisions", count)
+    feed: list[dict[str, Any]] = []
+    for ev in events:
+        dec = ev.get("decision") or {}
+        score = ev.get("score") or {}
+        qual = ev.get("qualification") or {}
+        feed.append(
+            {
+                "ts": dec.get("timestamp") or ev.get("produced_at"),
+                "action": dec.get("action"),
+                "block_reason": dec.get("block_reason"),
+                "direction": dec.get("source_direction"),
+                "score": score.get("total_score"),
+                "band": score.get("band"),
+                "subscores": score.get("subscores") or {},
+                "source_ai": dec.get("source_ai", False),
+                "qualified": bool(qual.get("qualified")) if qual else False,
+                "entry_type": qual.get("final_entry_type") if qual else None,
+            }
+        )
+    return feed
+
+
+@router.get("/orders/recent")
+async def orders_recent(
+    request: Request,
+    count: int = Query(default=40, ge=1, le=200),
+    session: UserSession = Depends(require_role("viewer")),
+) -> list[dict[str, Any]]:
+    """Recent submitted orders (newest first) for the blotter."""
+
+    events = await _read_stream(_streams_redis(request), "orders", count)
+    out: list[dict[str, Any]] = []
+    for ev in events:
+        o = ev.get("order") or {}
+        out.append(
+            {
+                "ts": o.get("timestamp") or ev.get("produced_at"),
+                "symbol": o.get("symbol"),
+                "side": o.get("side"),
+                "type": o.get("type"),
+                "volume": o.get("volume"),
+                "fill_price": o.get("fill_price"),
+                "requested_price": o.get("requested_price"),
+                "slippage_pips": o.get("slippage_pips"),
+                "status": o.get("status"),
+                "error": o.get("error"),
+            }
+        )
+    return out
+
+
+# ---------------------------------------------------------------- service health
+
+
+def _stream_age_seconds(last_id: str | None) -> float | None:
+    """Age in seconds of a Redis stream id (``<ms>-<seq>``)."""
+
+    if not last_id:
+        return None
+    try:
+        ms = int(str(last_id).split("-", 1)[0])
+    except (ValueError, IndexError):
+        return None
+    return max(0.0, (datetime.now(tz=UTC).timestamp() * 1000 - ms) / 1000.0)
+
+
+@router.get("/health/services")
+async def health_services(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Infer service health from Redis: stream activity + execution-engine state freshness."""
+
+    rc = _streams_redis(request)
+    result: dict[str, Any] = {"redis": False, "streams": {}, "execution_alive": False}
+    try:
+        await rc.ping()
+        result["redis"] = True
+    except Exception:  # noqa: BLE001
+        return result
+
+    # Each stream maps to the producing service; "fresh" = recent activity.
+    topic_service = {
+        "market_ticks": "data-collector",
+        "features": "feature-engine",
+        "decisions": "decision-engine",
+        "orders": "execution-engine",
+    }
+    for topic, svc in topic_service.items():
+        try:
+            length = await rc.xlen(topic)
+            last = await rc.xrevrange(topic, count=1)
+            last_id = last[0][0] if last else None
+        except Exception:  # noqa: BLE001
+            length, last_id = 0, None
+        age = _stream_age_seconds(last_id)
+        result["streams"][topic] = {
+            "service": svc,
+            "len": length,
+            "last_age_s": round(age, 1) if age is not None else None,
+        }
+    # execution-engine liveness: it publishes state:account every 3s (TTL 15s).
+    result["execution_alive"] = bool(await get_json(rc, STATE_KEY_ACCOUNT))
+    return result
+
+
 # ============================================================ helpers
 
 
