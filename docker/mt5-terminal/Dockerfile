@@ -88,9 +88,12 @@ RUN mkdir -p /opt/mt5-bridge \
     && echo "Downloading MT5 from ${MT5_INSTALLER_URL} ..." \
     && curl -fsSL --retry 3 --retry-delay 5 -o mt5setup.exe "${MT5_INSTALLER_URL}" \
     && echo "Installing MT5 via Wine (silent) ..." \
-    && WINEPREFIX=/root/.wine WINEARCH=win64 xvfb-run -a \
-        wine mt5setup.exe /S \
-    && echo "MT5 install done. Verifying ..." \
+    # MT5's installer uses /auto for unattended install (NOT the Inno /S
+    # flag — /S pops a hidden dialog under xvfb and hangs forever).
+    # timeout guards against any remaining hang instead of stalling the build.
+    && WINEPREFIX=/root/.wine WINEARCH=win64 timeout 600 xvfb-run -a \
+        wine mt5setup.exe /auto \
+    ; echo "MT5 install step exit=$? — verifying ..." \
     && ls -la /root/.wine/drive_c/Program\ Files/MetaTrader\ 5/terminal64.exe \
     && rm mt5setup.exe
 

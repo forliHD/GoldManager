@@ -43,8 +43,10 @@ class DecisionPipeline:
         *,
         journal_store: object | None = None,
         prompt_path: Path = DEFAULT_PROMPT_PATH,
+        usage_redis: object | None = None,
     ) -> None:
         self.settings = settings
+        self._usage_redis = usage_redis
         self.aggregator = FeatureAggregator()
         self.scoring = ScoringEngine()
         self.fallback = RuleBasedFallback(settings=settings)
@@ -77,7 +79,9 @@ class DecisionPipeline:
             log.warning("decision_pipeline_ai_prompt_missing", path=str(prompt_path))
             return None
         try:
-            client = OpenRouterClient(settings=self.settings, prompt_path=prompt_path)
+            client = OpenRouterClient(
+                settings=self.settings, prompt_path=prompt_path, usage_redis=self._usage_redis
+            )
             ai_layer = AIDecisionLayer(
                 openrouter_client=client,
                 snapshot_zones_provider=default_zones_provider,

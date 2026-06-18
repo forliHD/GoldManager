@@ -55,6 +55,7 @@ from xauusd_bot.common.runtime_config import (
     get_ai_enabled,
     get_emergency_stop,
     get_json,
+    get_llm_usage,
     set_ai_enabled,
     set_emergency_stop,
 )
@@ -1070,6 +1071,29 @@ async def emergency_toggle(
         "emergency_stop_toggled", engaged=body.engaged, operator=session.username, role=session.role
     )
     return {"engaged": body.engaged}
+
+
+# ---------------------------------------------------------------- LLM usage / cost
+
+# Approximate MiniMax M3 pricing on OpenRouter (USD per 1M tokens). Rough —
+# adjust if OpenRouter's rate changes; used only for a cost *estimate*.
+_M3_PRICE_IN_PER_MTOK = 0.30
+_M3_PRICE_OUT_PER_MTOK = 1.20
+
+
+@router.get("/usage")
+async def llm_usage(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Cumulative OpenRouter usage + a rough cost estimate."""
+
+    u = await get_llm_usage(_streams_redis(request))
+    cost = (
+        u["prompt_tokens"] / 1_000_000 * _M3_PRICE_IN_PER_MTOK
+        + u["completion_tokens"] / 1_000_000 * _M3_PRICE_OUT_PER_MTOK
+    )
+    return {**u, "est_cost_usd": round(cost, 4)}
 
 
 # ---------------------------------------------------------------- decision / order feeds

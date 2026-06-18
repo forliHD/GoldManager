@@ -143,11 +143,14 @@ class OpenRouterClient:
         *,
         base_url: str = DEFAULT_BASE_URL,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        usage_redis: Any = None,
     ) -> None:
         self._settings = settings
         self._prompt_path = Path(prompt_path)
         self._base_url = base_url
         self._default_timeout = float(timeout_seconds)
+        # Optional Redis client for cumulative token-usage accounting.
+        self._usage_redis = usage_redis
         # Cached system prompt (extracted from the Markdown file).
         self._system_prompt: str = self._load_system_prompt(self._prompt_path)
 
@@ -223,6 +226,17 @@ class OpenRouterClient:
             raise LLMCallError(
                 f"OpenRouter HTTP error: {type(exc).__name__}: {exc}"
             ) from exc
+
+        # Token-usage accounting (best-effort, before parsing; httpx caches
+        # response.json() so this does not double-parse).
+        if self._usage_redis is not None and 200 <= response.status_code < 300:
+            try:
+                from xauusd_bot.common.runtime_config import record_llm_usage
+
+                usage = (response.json() or {}).get("usage") or {}
+                await record_llm_usage(self._usage_redis, usage)
+            except Exception as exc:  # noqa: BLE001 - accounting must never break a decision
+                log.debug("openrouter_usage_record_failed", error=str(exc))
 
         # Status-code dispatch.
         return self._parse_response(response)

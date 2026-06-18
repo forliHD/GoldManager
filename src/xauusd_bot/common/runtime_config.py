@@ -75,6 +75,36 @@ async def set_emergency_stop(redis_client: Any, engaged: bool) -> None:
     await redis_client.set(RUNTIME_KEY_EMERGENCY_STOP, "true" if engaged else "false")
 
 
+# Cumulative OpenRouter usage (a Redis hash: calls / prompt_tokens /
+# completion_tokens). The decision-engine increments; the dashboard reads.
+USAGE_KEY_OPENROUTER = "usage:openrouter"
+
+
+async def record_llm_usage(redis_client: Any, usage: dict[str, Any]) -> None:
+    """Increment the cumulative OpenRouter usage counters (best-effort)."""
+
+    pt = int(usage.get("prompt_tokens", 0) or 0)
+    ct = int(usage.get("completion_tokens", 0) or 0)
+    await redis_client.hincrby(USAGE_KEY_OPENROUTER, "calls", 1)
+    if pt:
+        await redis_client.hincrby(USAGE_KEY_OPENROUTER, "prompt_tokens", pt)
+    if ct:
+        await redis_client.hincrby(USAGE_KEY_OPENROUTER, "completion_tokens", ct)
+
+
+async def get_llm_usage(redis_client: Any) -> dict[str, int]:
+    """Return cumulative OpenRouter usage counters (zeros when unset)."""
+
+    h = await redis_client.hgetall(USAGE_KEY_OPENROUTER)
+    out = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    for k, v in (h or {}).items():
+        try:
+            out[k] = int(v)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 async def set_json(redis_client: Any, key: str, obj: Any, *, ttl: int = STATE_TTL_SECONDS) -> None:
     """Write a JSON snapshot to ``key`` with a TTL (stale state self-expires)."""
 
@@ -100,10 +130,13 @@ __all__ = [
     "STATE_KEY_POSITIONS",
     "STATE_KEY_RISK",
     "STATE_TTL_SECONDS",
+    "USAGE_KEY_OPENROUTER",
     "coerce_bool",
     "get_ai_enabled",
     "get_emergency_stop",
     "get_json",
+    "get_llm_usage",
+    "record_llm_usage",
     "set_ai_enabled",
     "set_emergency_stop",
     "set_json",

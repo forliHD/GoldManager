@@ -499,13 +499,14 @@
   }
   async function loadLive() {
     try {
-      const [acc, risk, positions, decisions, orders, health] = await Promise.all([
+      const [acc, risk, positions, decisions, orders, health, usage] = await Promise.all([
         api('/api/account'), api('/api/risk'), api('/api/positions'),
         api('/api/decisions/recent?count=40'), api('/api/orders/recent?count=30'),
-        api('/api/health/services'),
+        api('/api/health/services'), api('/api/usage'),
       ]);
       renderAccount(acc); renderRisk(risk); renderPositions(positions);
       renderDecisionFeed(decisions); renderOrders(orders); renderServiceHealth(health);
+      renderUsage(usage);
       const ts = acc && acc.ts ? new Date(acc.ts) : null;
       const stale = !ts || (Date.now() - ts.getTime() > 20000);
       setText('#live-stale', stale ? '⚠ keine aktuellen Daten — läuft die execution-engine?' : '');
@@ -557,6 +558,12 @@
     }
     parts.push(`<span class="svc" title="execution-engine state"><span class="sdot ${h.execution_alive?'ok':''}"></span>exec</span>`);
     el.innerHTML = parts.join('');
+  }
+  function renderUsage(u) {
+    const el = $('#llm-usage'); if (!el) return;
+    if (!u || !u.calls) { el.textContent = 'OpenRouter/M3: noch keine Calls'; return; }
+    const tok = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
+    el.textContent = `OpenRouter/M3: ${u.calls} Calls · ${tok.toLocaleString('en-US')} Tokens · ~$${(u.est_cost_usd || 0).toFixed(4)}`;
   }
   function renderAccount(a) {
     if (!a || a.equity === undefined) { setHtml('#live-account', '<span class="muted">keine Daten</span>'); return; }

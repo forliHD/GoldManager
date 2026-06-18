@@ -100,12 +100,12 @@ def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _Ru
 async def _run(settings: Settings) -> int:
     import redis.asyncio as aioredis
 
-    pipeline = DecisionPipeline(settings)
+    # Runtime AI toggle + token-usage accounting live on the trading Redis
+    # (same instance as the streams), so the dashboard sees both.
+    flag_redis = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+    pipeline = DecisionPipeline(settings, usage_redis=flag_redis)
     publisher = make_publisher(settings)
     await publisher.connect()
-    # Runtime AI toggle lives on the trading Redis (same instance as the
-    # streams), so the dashboard's write is visible here.
-    flag_redis = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
     ai_flag = _RuntimeAIFlag(flag_redis, default=settings.ai_layer_enabled)
     log.info(
         "decision_engine_ai_config",
