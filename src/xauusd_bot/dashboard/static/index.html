@@ -79,6 +79,16 @@
     .svc-health .svc { display: flex; align-items: center; gap: 3px; }
     .svc-health .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
     .svc-health .sdot.ok { background: var(--ok); } .svc-health .sdot.warn { background: var(--warn); }
+    /* Performance tab */
+    .perf-period { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .perf-period select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; }
+    .rbar { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; }
+    .rbar .lbl { width: 56px; text-align: right; color: var(--muted); }
+    .rbar .track { flex: 1; height: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+    .rbar .track > span { display: block; height: 100%; }
+    .rbar .track > span.win { background: var(--ok); } .rbar .track > span.loss { background: #f85149; }
+    .rbar .cnt { width: 30px; }
+    .equity-svg { width: 100%; height: 90px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; }
 
     .main { display: grid; grid-template-columns: 1.4fr 1fr; flex: 1; overflow: hidden; }
     .chart-pane { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
@@ -208,6 +218,7 @@
       <aside class="right-pane">
         <nav class="tabs" id="tabs">
           <div class="tab active" data-tab="live">Live</div>
+          <div class="tab" data-tab="performance">Performance</div>
           <div class="tab" data-tab="indicators">Indicators</div>
           <div class="tab" data-tab="trades">Trades</div>
           <div class="tab" data-tab="backtest">Backtest</div>
@@ -233,6 +244,26 @@
               <thead><tr><th>Time</th><th>Side</th><th class="num">Vol</th><th class="num">Fill</th><th class="num">Slip</th><th>Status</th></tr></thead>
               <tbody></tbody>
             </table>
+          </div>
+          <!-- Performance analytics -->
+          <div id="tab-performance" class="hidden">
+            <div class="perf-period">
+              <label class="muted">Zeitraum</label>
+              <select id="perf-period">
+                <option value="today">Heute</option>
+                <option value="last_week" selected>7 Tage</option>
+                <option value="last_month">30 Tage</option>
+                <option value="ytd">YTD</option>
+                <option value="all">Alle</option>
+              </select>
+            </div>
+            <div class="kpi-grid" id="perf-kpis"></div>
+            <h4 style="margin:14px 0 6px;">Equity-Kurve</h4>
+            <div id="perf-equity"><span class="muted">—</span></div>
+            <h4 style="margin:14px 0 6px;">R-Distribution</h4>
+            <div id="perf-rdist"><span class="muted">—</span></div>
+            <h4 style="margin:14px 0 6px;">Nach Setup</h4>
+            <div id="perf-setup"><span class="muted">—</span></div>
           </div>
           <!-- Indicators -->
           <div id="tab-indicators" class="hidden">

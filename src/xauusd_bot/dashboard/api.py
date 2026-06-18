@@ -460,6 +460,8 @@ async def journal_aggregate(
         compute_equity_curve,
         compute_max_drawdown,
         compute_r_distribution,
+        compute_session_stats,
+        compute_setup_breakdown,
         compute_sharpe,
         compute_sortino,
     )
@@ -469,6 +471,21 @@ async def journal_aggregate(
     sortino = compute_sortino(equity_curve)
     max_dd, _, _ = compute_max_drawdown(equity_curve)
     r_dist = compute_r_distribution(trades)
+
+    # Sample the equity curve to ~60 points for a compact sparkline.
+    ec = [(t.isoformat(), float(eq)) for t, eq in equity_curve]
+    if len(ec) > 60:
+        step = max(1, len(ec) // 60)
+        ec = ec[::step][:60]
+
+    def _safe(fn):
+        try:
+            return fn(trades)
+        except Exception:  # noqa: BLE001 - breakdowns are best-effort enrichment
+            return {}
+
+    setup_breakdown = _safe(compute_setup_breakdown)
+    session_stats = _safe(compute_session_stats)
 
     closed = [t for t in trades if t.r_multiple is not None and t.pnl_realized is not None]
     wins = sum(1 for t in closed if (t.pnl_realized or Decimal("0")) > 0)
@@ -499,6 +516,9 @@ async def journal_aggregate(
         "sortino": sortino,
         "max_drawdown": max_dd,
         "r_distribution": r_dist,
+        "equity_curve": ec,
+        "setup_breakdown": setup_breakdown,
+        "session_stats": session_stats,
     }
 
 

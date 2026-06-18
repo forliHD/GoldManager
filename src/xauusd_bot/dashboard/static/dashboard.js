@@ -164,13 +164,14 @@
   });
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-    const tabs = ['live', 'indicators', 'trades', 'backtest', 'reviews', 'proposals'];
+    const tabs = ['live', 'performance', 'indicators', 'trades', 'backtest', 'reviews', 'proposals'];
     tabs.forEach(n => {
       const el = $('#tab-' + n);
       if (el) el.classList.toggle('hidden', n !== name);
     });
     state.activeTab = name;
     if (name === 'live') loadLive();
+    if (name === 'performance') loadPerformance();
     if (name === 'trades') loadTrades();
     if (name === 'backtest') loadBacktestList();
     if (name === 'reviews') setDefaultDates();
@@ -633,6 +634,72 @@
   }
   async function loadEmergencyState() {
     try { const r = await api('/api/emergency'); state.emergencyEngaged = r.engaged; renderEmergency(); } catch (e) {}
+  }
+
+  // ----- Performance analytics -----
+  const _perfSel = $('#perf-period');
+  if (_perfSel) _perfSel.addEventListener('change', loadPerformance);
+  async function loadPerformance() {
+    const period = (_perfSel && _perfSel.value) || 'last_week';
+    try {
+      const d = await api(`/api/journal/aggregate?period=${encodeURIComponent(period)}`);
+      renderPerfKpis(d); renderEquity(d.equity_curve || []); renderRDist(d.r_distribution || {}); renderSetup(d.setup_breakdown || {});
+    } catch (e) {
+      setHtml('#perf-kpis', '<span class="muted">keine Daten</span>');
+    }
+  }
+  function renderPerfKpis(d) {
+    const grid = $('#perf-kpis'); if (!grid) return;
+    const pct = (x) => (x == null ? '—' : (x * 100).toFixed(1) + '%');
+    const cards = [
+      ['Trades', d.n_trades ?? 0], ['Closed', d.n_closed ?? 0],
+      ['Win-Rate', pct(d.winrate)], ['Profit-Factor', fmtNum(d.profit_factor)],
+      ['Expectancy (R)', fmtNum(d.expectancy)], ['Total PnL', fmtNum(d.total_pnl)],
+      ['Sharpe', fmtNum(d.sharpe)], ['Max Drawdown', fmtNum(d.max_drawdown)],
+    ];
+    grid.innerHTML = cards.map(([l, v]) =>
+      `<div class="metric"><div class="label">${l}</div><div class="value">${escapeHtml(String(v))}</div></div>`).join('');
+  }
+  function renderEquity(ec) {
+    const host = $('#perf-equity'); if (!host) return;
+    if (!ec || ec.length < 2) { host.innerHTML = '<span class="muted">noch zu wenig Trades</span>'; return; }
+    const vals = ec.map(p => p[1]);
+    const min = Math.min(...vals), max = Math.max(...vals), rng = (max - min) || 1;
+    const W = 600, H = 90, pad = 4;
+    const pts = vals.map((v, i) => {
+      const x = pad + (i / (vals.length - 1)) * (W - 2 * pad);
+      const y = pad + (1 - (v - min) / rng) * (H - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const up = vals[vals.length - 1] >= vals[0];
+    host.innerHTML = `<svg class="equity-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <polyline fill="none" stroke="${up ? '#3fb950' : '#f85149'}" stroke-width="1.5" points="${pts}"/></svg>`;
+  }
+  function renderRDist(rd) {
+    const host = $('#perf-rdist'); if (!host) return;
+    const entries = Object.entries(rd || {});
+    if (!entries.length) { host.innerHTML = '<span class="muted">keine geschlossenen Trades</span>'; return; }
+    const max = Math.max(1, ...entries.map(([, c]) => Number(c) || 0));
+    host.innerHTML = entries.map(([bucket, cnt]) => {
+      const c = Number(cnt) || 0;
+      const loss = bucket.trim().startsWith('-') || bucket.toLowerCase().includes('loss');
+      return `<div class="rbar"><span class="lbl">${escapeHtml(bucket)}</span>
+        <span class="track"><span class="${loss ? 'loss' : 'win'}" style="width:${(c / max * 100).toFixed(0)}%"></span></span>
+        <span class="cnt">${c}</span></div>`;
+    }).join('');
+  }
+  function renderSetup(bd) {
+    const host = $('#perf-setup'); if (!host) return;
+    const entries = Object.entries(bd || {});
+    if (!entries.length) { host.innerHTML = '<span class="muted">keine Daten</span>'; return; }
+    const rows = entries.map(([name, s]) => {
+      const o = (s && typeof s === 'object') ? s : {};
+      const n = o.n ?? o.count ?? o.n_trades ?? '';
+      const wr = o.winrate != null ? (o.winrate * 100).toFixed(0) + '%' : '';
+      return `<div class="rbar"><span class="lbl" style="width:auto;text-align:left;flex:1">${escapeHtml(name)}</span>
+        <span class="cnt" style="width:auto">${n}</span><span class="muted">${wr}</span></div>`;
+    }).join('');
+    host.innerHTML = rows;
   }
 
   // ----- Modal -----
