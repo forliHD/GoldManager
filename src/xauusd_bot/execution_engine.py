@@ -48,6 +48,11 @@ from xauusd_bot.execution.position_manager import ManagedPosition, PositionManag
 # Redis key prefix for per-position management plans (TP/SL/trailing state).
 _MGMT_KEY_PREFIX = "mgmt:pos:"
 
+# Never open a NEW entry on a decision older than this (real wall-clock). Guards
+# against a consumer backlog / any stale data replaying through the engine — a
+# live decision is produced within a second of now.
+_MAX_DECISION_AGE_SECONDS = 120.0
+
 log = structlog.get_logger(__name__)
 
 GROUP = "execution-engine-v1"
@@ -259,6 +264,18 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_clien
             return
         if ev.ref_price is None:
             log.warning("execution_engine_no_ref_price", setup=qual.qualification_id)
+            return
+
+        # SAFETY (defense in depth, independent of the RiskManager):
+        # (a) hard-stop the kill-switch at entry time, and
+        # (b) never enter on a stale decision (backlog / replay / backfill) —
+        #     a live decision is produced within ~1s of now.
+        if await get_emergency_stop(redis_client):
+            log.warning("execution_entry_skipped_emergency_stop", setup=qual.qualification_id)
+            return
+        age = (datetime.now(tz=UTC) - (ev.produced_at or datetime.now(tz=UTC))).total_seconds()
+        if age > _MAX_DECISION_AGE_SECONDS:
+            log.warning("execution_entry_skipped_stale_decision", age_seconds=round(age), setup=qual.qualification_id)
             return
 
         now = ev.decision.timestamp or ev.produced_at or datetime.now(tz=UTC)

@@ -232,6 +232,12 @@ class RiskManager:
     def pause_active(self, now: datetime) -> bool:
         """True if any active pause (emergency, daily-limit, weekly-limit) is in effect."""
 
+        # The attached EmergencyStopManager covers the operator kill-switch
+        # (dashboard STOP → manual_trigger). It is a SEPARATE state from this
+        # manager's internal daily/weekly pause, so we MUST consult it here —
+        # otherwise the kill-switch flattens the book but new entries still pass.
+        if self._emergency is not None and self._emergency.is_active(now):
+            return True
         if self._state.paused_until is None:
             return False
         if now.astimezone(UTC) >= self._state.paused_until:

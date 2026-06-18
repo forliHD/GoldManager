@@ -93,6 +93,46 @@ def test_approve_qualified_full_trade() -> None:
     assert v.open_positions == 0
 
 
+class _FakeEmergency:
+    """Minimal EmergencyStopManager stand-in — only is_active() is consulted."""
+
+    def __init__(self, active: bool) -> None:
+        self._active = active
+
+    def is_active(self, now=None) -> bool:  # noqa: ANN001
+        return self._active
+
+
+def test_emergency_stop_vetoes_qualified_entry() -> None:
+    """REGRESSION: the operator kill-switch must block NEW entries, not just flatten.
+
+    The dashboard STOP triggers the attached EmergencyStopManager; RiskManager.
+    approve() must consult it (it used to check only its own internal pause, so
+    a kill-switched bot still opened trades).
+    """
+    rm = RiskManager(
+        settings=make_settings(),
+        get_account=lambda: make_account(equity=Decimal("10000")),
+        get_positions=_empty_positions,
+        emergency=_FakeEmergency(active=True),
+    )
+    qual = make_qualification(entry_type=EntryType.FULL, score=88.0, band=ScoreBand.FULL_85_PLUS)
+    v = rm.approve(qual, now=_now())
+    assert not v.approved
+    assert v.blocked_reason == "risk_pause_active"
+
+
+def test_no_emergency_allows_qualified_entry() -> None:
+    rm = RiskManager(
+        settings=make_settings(),
+        get_account=lambda: make_account(equity=Decimal("10000")),
+        get_positions=_empty_positions,
+        emergency=_FakeEmergency(active=False),
+    )
+    qual = make_qualification(entry_type=EntryType.FULL, score=88.0, band=ScoreBand.FULL_85_PLUS)
+    assert rm.approve(qual, now=_now()).approved
+
+
 def test_approve_qualified_scout_trade_uses_half_pct() -> None:
     rm = RiskManager(
         settings=make_settings(),
