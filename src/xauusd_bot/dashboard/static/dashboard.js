@@ -130,6 +130,7 @@
     activateTab('live');
     loadIndicators();
     startLivePolling();
+    setupAlerts();
     loadTrades();
     loadBacktestList();
     loadProposals();
@@ -735,6 +736,23 @@
     if (a.invalidations && a.invalidations.length) html += `<div class="muted" style="font-size:10px;margin-top:3px">✗ ${a.invalidations.map(escapeHtml).join(' · ')}</div>`;
     html += `<div class="muted" style="font-size:10px;margin-top:2px">${escapeHtml(fmtTs(a.ts))}</div>`;
     el.innerHTML = html;
+  }
+
+  function setupAlerts() {
+    api('/api/alerts/state').then(s => {
+      setText('#live-alerts-state', s && s.configured ? (s.enabled ? '· aktiv' : '· konfiguriert (aus)') : '· nicht konfiguriert');
+    }).catch(() => {});
+    const btn = $('#alerts-test-btn');
+    if (btn && !btn._wired) {
+      btn._wired = true;
+      btn.addEventListener('click', async () => {
+        setText('#alerts-test-result', '…');
+        try {
+          const r = await api('/api/alerts/test', { method: 'POST' });
+          setText('#alerts-test-result', r.ok ? '✓ gesendet' : ('✗ ' + (r.reason || 'Fehler')));
+        } catch (e) { setText('#alerts-test-result', '✗ ' + (e.message || 'Fehler')); }
+      });
+    }
   }
   function startLivePolling() {
     if (state.liveTimer) clearInterval(state.liveTimer);

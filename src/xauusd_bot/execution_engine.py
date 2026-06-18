@@ -39,6 +39,7 @@ from xauusd_bot.common.runtime_config import (
     get_json,
     set_json,
 )
+from xauusd_bot.common.notify import TelegramNotifier
 from xauusd_bot.common.service import make_consumer, make_publisher, service_runtime
 from xauusd_bot.connectors.factory import make_connector
 from xauusd_bot.execution.pipeline import ExecutionPipeline
@@ -97,7 +98,7 @@ def _risk_snapshot(acc, settings: Settings, n_positions: int) -> dict:
     }
 
 
-async def _sync_emergency(pipeline: ExecutionPipeline, redis_client) -> None:
+async def _sync_emergency(pipeline: ExecutionPipeline, redis_client, notifier=None) -> None:
     """Mirror the dashboard kill-switch onto the EmergencyStopManager.
 
     Engaging flattens + cancels the book and halts new entries (the
@@ -109,9 +110,13 @@ async def _sync_emergency(pipeline: ExecutionPipeline, redis_client) -> None:
     if engaged and not active:
         await asyncio.to_thread(pipeline.emergency.manual_trigger, "dashboard")
         log.warning("execution_emergency_engaged_from_dashboard")
+        if notifier is not None and notifier.enabled:
+            await notifier.send("⛔ <b>EMERGENCY STOP engaged</b> — trading halted, book flattened.")
     elif not engaged and active:
         await asyncio.to_thread(pipeline.emergency.clear)
         log.info("execution_emergency_cleared_from_dashboard")
+        if notifier is not None and notifier.enabled:
+            await notifier.send("✅ <b>Emergency stop cleared</b> — trading re-enabled.")
 
 
 async def _publish_state(
@@ -120,6 +125,7 @@ async def _publish_state(
     settings: Settings,
     redis_client,
     stop_event: asyncio.Event,
+    notifier=None,
 ) -> None:
     """Snapshot account / positions / risk to Redis on a timer for the dashboard.
 
@@ -128,7 +134,7 @@ async def _publish_state(
 
     while not stop_event.is_set():
         try:
-            await _sync_emergency(pipeline, redis_client)
+            await _sync_emergency(pipeline, redis_client, notifier)
         except Exception as exc:  # noqa: BLE001 - never let the kill-switch sync crash the loop
             log.warning("execution_emergency_sync_failed", error=str(exc))
         try:
@@ -194,7 +200,7 @@ async def _apply_action(connector, ticket: str, action) -> None:
         await asyncio.to_thread(fn, ticket, action.volume if action.kind == "partial_close" else None)
 
 
-async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, current_price) -> None:
+async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, current_price, notifier=None) -> None:
     """Drive each tracked open position forward one bar (TP partials / SL trail)."""
     stored = await _load_managed_all(redis_client)
     if not stored:
@@ -219,13 +225,17 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
                     price=(str(a.price) if a.price is not None else None),
                     volume=(str(a.volume) if a.volume is not None else None),
                 )
+                if notifier is not None and notifier.enabled:
+                    icon = {"partial_close": "📊", "modify_sl": "🛡", "close_all": "🏁"}.get(a.kind, "•")
+                    detail = (f"{a.volume} lots" if a.volume is not None else (str(a.price) if a.price is not None else ""))
+                    await notifier.send(f"{icon} <b>MANAGE</b> {a.kind} ({a.reason}) · {settings.symbol} #{ticket} {detail}")
             except Exception as exc:  # noqa: BLE001 - one bad action must not stall the loop
                 log.warning("execution_manage_apply_failed", ticket=ticket, kind=a.kind, error=str(exc))
         if actions:
             await _store_managed(redis_client, mp2)
 
 
-def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_client, settings: Settings):
+def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_client, settings: Settings, notifier=None):
     pos_mgr = PositionManager(pipeline.stop_mgr, pipeline.tp_mgr, pipeline.spec)
 
     async def handle(msg: StreamMessage) -> None:
@@ -239,7 +249,7 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_clien
         #    no_trade — the bundle + ref_price ride on every decision event.
         if ev.bundle is not None and ev.ref_price is not None:
             try:
-                await _manage_positions(pipeline, pos_mgr, redis_client, settings, ev.bundle, ev.ref_price)
+                await _manage_positions(pipeline, pos_mgr, redis_client, settings, ev.bundle, ev.ref_price, notifier)
             except Exception as exc:  # noqa: BLE001 - management must never kill the service
                 log.warning("execution_manage_failed", error=str(exc))
 
@@ -257,9 +267,17 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_clien
         )
         if not outcome.submitted:
             log.info("execution_engine_blocked", reason=outcome.blocked_reason)
+            if notifier is not None and notifier.enabled and (outcome.blocked_reason or "").startswith("order_rejected"):
+                await notifier.send(f"🔴 <b>ORDER REJECTED</b> · {ev.symbol} · {outcome.blocked_reason}")
             return
         if outcome.managed is not None:
             await _store_managed(redis_client, outcome.managed)
+        if notifier is not None and notifier.enabled and outcome.order is not None:
+            o = outcome.order
+            await notifier.send(
+                f"🟢 <b>ENTRY</b> {str(getattr(o, 'side', '')).upper()} {getattr(o, 'volume', '')} {ev.symbol}"
+                f" @ {getattr(o, 'fill_price', None) or '?'} · score {round(ev.score.total_score)}"
+            )
 
         # Idempotency: the consumer is at-least-once. The order's
         # client_order_id (set by OrderManager) is the dedupe key the
@@ -294,13 +312,15 @@ async def _run(settings: Settings) -> int:
         block_ms=settings.stream_block_ms,
         batch_size=settings.stream_batch_size,
     )
-    handler = _make_handler(pipeline, publisher, state_redis, settings)
+    notifier = TelegramNotifier.from_settings(settings)
+    log.info("execution_engine_alerts", telegram_enabled=notifier.enabled)
+    handler = _make_handler(pipeline, publisher, state_redis, settings, notifier)
 
     # service_runtime gives us the shared stop_event so the consumer loop
     # and the state-publisher task shut down together.
     async with service_runtime(ServiceRole.EXECUTION_ENGINE) as stop:
         state_task = asyncio.create_task(
-            _publish_state(pipeline, connector, settings, state_redis, stop),
+            _publish_state(pipeline, connector, settings, state_redis, stop, notifier),
             name="execution-state-publisher",
         )
         log.info("execution_engine_consuming", topic=StreamTopic.DECISIONS.value, group=GROUP)

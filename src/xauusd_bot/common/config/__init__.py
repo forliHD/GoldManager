@@ -126,6 +126,17 @@ class Settings(BaseSettings):
         description="Currencies whose calendar events drive the news blackout. USD is the dominant XAUUSD driver (NFP/FOMC/CPI).",
     )
 
+    # --- Alerting (Telegram) — live push notifications for orders/management/emergency
+    telegram_bot_token: SecretStr | None = Field(
+        default=None, description="Telegram bot token (@BotFather). Alerts disabled when unset."
+    )
+    telegram_chat_id: str | None = Field(
+        default=None, description="Telegram chat id to send alerts to."
+    )
+    telegram_alerts_enabled: bool = Field(
+        default=True, description="Master switch for Telegram alerts (effective only if token+chat set)."
+    )
+
     # --- MT5 (prod only)
     mt5_login: str | None = None
     mt5_password: SecretStr | None = None

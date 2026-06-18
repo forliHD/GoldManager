@@ -47,6 +47,17 @@ Browser-Zugang (MT5-Desktop): `http://192.168.178.192:3000` (User/PW aus `.env`)
   hinter SSH-Tunnel/TLS statt LAN (`DASHBOARD_BIND_HOST=127.0.0.1`,
   `MT5_VNC_BIND_HOST=127.0.0.1` + Tunnel), `OPENROUTER_API_KEY` + Dashboard-Passwort rotieren.
 
+## Alerts (Telegram)
+Live-Push bei Order (Entry/Reject), Management-Aktionen (TP/Trailing/Runner) und
+Emergency-Stop. Einrichten:
+1. Bot via **@BotFather** anlegen → Token. Bot anschreiben, dann
+   `https://api.telegram.org/bot<token>/getUpdates` → `chat.id` ablesen.
+2. In `.env`: `TELEGRAM_BOT_TOKEN=...` und `TELEGRAM_CHAT_ID=...`
+   (optional `TELEGRAM_ALERTS_ENABLED=false` zum Stummschalten).
+3. execution-engine neu starten: `docker restart xauusd-execution-engine`.
+4. Im Dashboard (Live-Tab → **Alerts → „Telegram testen"**) prüfen, oder
+   `curl -XPOST .../api/alerts/test` (admin). Ohne Token sind Alerts inaktiv.
+
 ## Runtime-Schalter (ohne Redeploy)
 ```bash
 docker exec xauusd-redis redis-cli SET runtime:emergency_stop true|false   # Kill-Switch

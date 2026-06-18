@@ -1126,6 +1126,35 @@ async def ai_last(
     return await get_json(_streams_redis(request), "state:last_ai") or {}
 
 
+@router.get("/alerts/state")
+async def alerts_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, bool]:
+    """Whether Telegram alerting is configured + enabled."""
+    settings = getattr(request.app.state, "settings", None)
+    tok = getattr(settings, "telegram_bot_token", None) if settings else None
+    configured = bool(tok and getattr(settings, "telegram_chat_id", None))
+    enabled = configured and bool(getattr(settings, "telegram_alerts_enabled", True))
+    return {"configured": configured, "enabled": enabled}
+
+
+@router.post("/alerts/test")
+async def alerts_test(
+    request: Request,
+    session: UserSession = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Send a Telegram test message (admin) to verify the bot token + chat id."""
+    settings = getattr(request.app.state, "settings", None)
+    from xauusd_bot.common.notify import TelegramNotifier
+
+    notifier = TelegramNotifier.from_settings(settings) if settings else TelegramNotifier(None, None)
+    if not notifier.enabled:
+        return {"ok": False, "reason": "Telegram nicht konfiguriert (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID setzen)."}
+    ok = await notifier.send("✅ <b>GoldManager</b>: Telegram-Alerts sind aktiv.")
+    return {"ok": ok}
+
+
 class EmergencyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
