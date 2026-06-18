@@ -54,6 +54,7 @@ def _settings_with_users(**users: tuple[str, str]) -> Settings:
             "role": role,
         }
     return Settings(
+        _env_file=None,  # hermetic: ignore any ambient .env (e.g. a deployed DASHBOARD_USERS)
         redis_url="redis://localhost:6379/0",
         timescaledb_url="postgresql://xauusd:xauusd@localhost:5432/xauusd",
         dashboard_users=dashboard_users,
