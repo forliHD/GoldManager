@@ -283,31 +283,35 @@ async def chart_candles(
     if stream_redis is not None:
         # Pull enough M1 bars to yield ~count candles at the target timeframe.
         fetch_n = min(count * minutes * 2, 50000)
-        try:
-            entries = await stream_redis.xrevrange("market_ticks", count=fetch_n)
-        except Exception as exc:  # noqa: BLE001 - fall through to the journal store
-            log.warning("chart_candles_stream_read_failed", error=str(exc))
-            entries = []
         by_time: dict[Any, CandleDict] = {}
-        for _entry_id, fields in entries:
-            raw = fields.get("payload")
-            if not raw:
-                continue
+        # Read CHART_HISTORY (older context) first, then market_ticks (live) — so
+        # a live bar overrides the historical one at the same timestamp. The
+        # trading pipeline never reads chart_history; it is chart-context only.
+        for stream_name in ("chart_history", "market_ticks"):
             try:
-                bar = (json.loads(raw).get("bar")) or {}
-                if bar.get("symbol") != symbol:
+                entries = await stream_redis.xrevrange(stream_name, count=fetch_n)
+            except Exception as exc:  # noqa: BLE001 - fall through to the journal store
+                log.warning("chart_candles_stream_read_failed", stream=stream_name, error=str(exc))
+                entries = []
+            for _entry_id, fields in entries:
+                raw = fields.get("payload")
+                if not raw:
                     continue
-                candle = CandleDict(
-                    time=bar["time"],
-                    open=float(bar["open"]),
-                    high=float(bar["high"]),
-                    low=float(bar["low"]),
-                    close=float(bar["close"]),
-                    tick_volume=int(bar.get("tick_volume", 0)),
-                )
-                by_time[candle.time] = candle  # last write wins (identical OHLC per loop)
-            except (KeyError, TypeError, ValueError):
-                continue
+                try:
+                    bar = (json.loads(raw).get("bar")) or {}
+                    if bar.get("symbol") != symbol:
+                        continue
+                    candle = CandleDict(
+                        time=bar["time"],
+                        open=float(bar["open"]),
+                        high=float(bar["high"]),
+                        low=float(bar["low"]),
+                        close=float(bar["close"]),
+                        tick_volume=int(bar.get("tick_volume", 0)),
+                    )
+                    by_time[candle.time] = candle  # last write wins (live > history)
+                except (KeyError, TypeError, ValueError):
+                    continue
         if by_time:
             m1 = sorted(by_time.values(), key=lambda c: c.time)
             return _resample_candles(m1, minutes)[-count:]

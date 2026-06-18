@@ -45,6 +45,10 @@ class StreamTopic(str, Enum):
     # animation only. NOT consumed by the trading pipeline (which decides on
     # closed bars from MARKET_TICKS). Tightly capped — only the latest matters.
     MARKET_LIVE = "market_live"
+    # Historical bars for CHART CONTEXT ONLY (dashboard reads it). The trading
+    # pipeline (feature/decision/execution) NEVER consumes this — that is the
+    # whole point: history must not flow through as if it were live.
+    CHART_HISTORY = "chart_history"
     FEATURES = "features"
     DECISIONS = "decisions"
     ORDERS = "orders"

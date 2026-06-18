@@ -150,6 +150,8 @@ def make_publisher(settings: Settings, *, maxlen: int | None = None) -> Publishe
         # Forming-bar animation channel — only the latest entry is ever read
         # (dashboard XREADs with a $ cursor), so keep it tiny.
         StreamTopic.MARKET_LIVE.value: 200,
+        # Chart-only history — a few thousand bars is plenty for the deepest view.
+        StreamTopic.CHART_HISTORY.value: 5000,
     }
     return Publisher(settings.redis_url, maxlen=base, maxlen_overrides=overrides)
 

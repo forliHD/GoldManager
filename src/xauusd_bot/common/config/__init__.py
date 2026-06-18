@@ -183,13 +183,14 @@ class Settings(BaseSettings):
         ge=0,
         description="Bars the feature-engine fetches from the connector at startup to seed its buffer (live mode only; replay fills from the stream).",
     )
-    live_backfill_bars: int = Field(
+    chart_history_bars: int = Field(
         default=1500,
         ge=0,
         description=(
-            "On live start, the data-collector backfills this many historical M1 bars "
-            "into market_ticks (once, gated on stream length) so the dashboard chart has "
-            "context on every timeframe. 0 disables. ~1500 ≈ 25 H1 candles."
+            "On live start, the data-collector backfills this many historical M1 bars into "
+            "the CHART_HISTORY stream (dashboard chart context only — NOT market_ticks, so "
+            "the trading pipeline never sees history). Once, gated on stream length. "
+            "0 disables. ~1500 ≈ 25 H1 candles."
         ),
     )
     max_history_bars: int = Field(

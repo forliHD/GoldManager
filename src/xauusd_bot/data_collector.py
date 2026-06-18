@@ -60,13 +60,45 @@ async def _run_replay(settings: Settings, connector, publisher, stop: asyncio.Ev
     await _idle_until_stop(stop)
 
 
+async def _backfill_chart_history(settings: Settings, connector, publisher) -> None:
+    """One-time historical-bar backfill into CHART_HISTORY — dashboard chart ONLY.
+
+    Published to a separate stream the trading pipeline never consumes, so the
+    chart gets context without history flowing through feature/decision/execution.
+    Gated on the chart_history stream length so a restart is a no-op.
+    """
+    n = settings.chart_history_bars
+    if n <= 0:
+        return
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+    try:
+        existing = await r.xlen(StreamTopic.CHART_HISTORY.value)
+    except Exception:  # noqa: BLE001
+        existing = 0
+    finally:
+        await r.aclose()
+    if existing >= n // 2:
+        log.info("chart_history_backfill_skipped", existing=existing)
+        return
+    try:
+        history = await asyncio.to_thread(connector.get_rates, settings.symbol, "M1", n)
+    except Exception as exc:  # noqa: BLE001 - chart history is best-effort
+        log.warning("chart_history_backfill_failed", error=str(exc))
+        return
+    for bar in history:
+        await publisher.publish(StreamTopic.CHART_HISTORY, BarClosedEvent(symbol=settings.symbol, bar=bar))
+    log.info("chart_history_backfill_published", bars=len(history))
+
+
 async def _run_live(settings: Settings, connector, publisher, stop: asyncio.Event) -> None:
     symbol = settings.symbol
     log.info("live_collector_starting", symbol=symbol)
-    # NO history backfill into market_ticks: that fed historical bars through the
-    # feature/decision/execution pipeline as if live (polluting the feed and, with
-    # the kill-switch bug, opening trades on stale signals). The trading pipeline
-    # must see ONLY live, just-closed bars. (Chart history accumulates live.)
+    # Chart history goes to a SEPARATE chart-only stream (not market_ticks): the
+    # trading pipeline must see ONLY live, just-closed bars — history must never
+    # flow through feature/decision/execution as if it were live.
+    await _backfill_chart_history(settings, connector, publisher)
     last_time = None
     while not stop.is_set():
         try:
