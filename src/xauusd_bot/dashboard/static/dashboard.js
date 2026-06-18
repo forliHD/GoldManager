@@ -19,7 +19,9 @@
     user: null,           // UserSession
     chart: null,          // Lightweight-Charts IChartApi
     candleSeries: null,   // candlestick series
-    overlaySeries: [],    // [{name, line, kind, color, style}]
+    overlaySeries: [],    // legacy (unused after price-line refactor)
+    overlayLines: [],     // VWAP / value-area priceLine handles
+    tradeLines: [],       // open-position entry/SL/TP priceLine handles
     timeframe: 'M5',
     symbol: 'XAUUSD',     // configured trading symbol, fetched from /api/health
     lastCandle: null,     // active-timeframe candle being live-updated
@@ -260,48 +262,75 @@
     try { state.candleSeries.update(candle); } catch (e) {}
   }
 
+  // Draw a labelled horizontal price line on the candle series (right-axis
+  // label + an on-line title). Returns the priceLine handle for later removal.
+  function priceLine(price, { color, style, width = 1, title }) {
+    if (price == null || isNaN(Number(price)) || !state.candleSeries) return null;
+    try {
+      return state.candleSeries.createPriceLine({
+        price: Number(price), color, lineWidth: width,
+        lineStyle: style, axisLabelVisible: true, title,
+      });
+    } catch (e) { return null; }
+  }
+
   function clearOverlays() {
-    for (const o of state.overlaySeries) {
-      try { state.chart.removeSeries(o.line); } catch (e) {}
-    }
-    state.overlaySeries = [];
+    for (const pl of (state.overlayLines || [])) { try { state.candleSeries.removePriceLine(pl); } catch (e) {} }
+    state.overlayLines = [];
   }
 
   function applyOverlays(o) {
     clearOverlays();
-    if (!o) return;
-    // Horizontal levels span the actual loaded candle time range (broker time),
-    // NOT wall-clock — otherwise the lines land hours away and off-screen.
-    const from = state.chartFrom, to = state.chartTo;
-    if (from == null || to == null) return;
-    const hline = (val, opts) => {
-      const s = state.chart.addLineSeries({ priceLineVisible: false, lastValueVisible: false, ...opts });
-      s.setData([{ time: from, value: Number(val) }, { time: to, value: Number(val) }]);
-      return s;
+    if (!o || !state.candleSeries) return;
+    const S = LightweightCharts.LineStyle;
+    const lines = [];
+    const add = (...a) => { const pl = priceLine(...a); if (pl) lines.push(pl); };
+    // VWAPs — distinct colours, solid, labelled (e.g. "VWAP 12").
+    const vwaps = o.vwaps || o.vwap || {};
+    const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
+    for (const k of ['utc00', 'utc07', 'utc12']) {
+      if (vwaps[k] != null) add(vwaps[k], { color: vwCol[k], style: S.Solid, width: 1, title: 'VWAP ' + k.slice(3) });
+    }
+    // Value areas — keep the chart readable: weekly (developing, dotted) +
+    // previous week (locked, dashed). VAH red / VPOC yellow / VAL green.
+    const vp = o.volume_profile || {};
+    const drawVA = (key, label, style, width) => {
+      const p = vp[key]; if (!p) return;
+      add(p.vah, { color: '#ef4444', style, width, title: label + ' VAH' });
+      add(p.vpoc, { color: '#eab308', style, width, title: label + ' VPOC' });
+      add(p.val, { color: '#22c55e', style, width, title: label + ' VAL' });
     };
-    // VWAPs — the API response field is `vwaps` (fall back to `vwap` for safety).
-    const vwaps = o.vwaps || o.vwap;
-    if (vwaps) {
-      const colors = { utc00: '#1f77b4', utc07: '#ff7f0e', utc12: '#e377c2' };
-      for (const [k, v] of Object.entries(vwaps)) {
-        if (v === null || v === undefined) continue;
-        state.overlaySeries.push({ name: 'vwap_' + k, line: hline(v, { color: colors[k] || '#fff', lineWidth: 1 }) });
+    drawVA('weekly', 'W', S.Dotted, 1);
+    drawVA('prev_week', 'pW', S.Dashed, 2);
+    state.overlayLines = lines;
+  }
+
+  // Draw the open position(s) on the chart: entry + SL + TP1/2/3, labelled.
+  function clearTradeLines() {
+    for (const pl of (state.tradeLines || [])) { try { state.candleSeries.removePriceLine(pl); } catch (e) {} }
+    state.tradeLines = [];
+  }
+
+  function renderTradeLevels(positions) {
+    clearTradeLines();
+    if (!positions || !positions.length || !state.candleSeries) return;
+    const S = LightweightCharts.LineStyle;
+    const lines = [];
+    const add = (...a) => { const pl = priceLine(...a); if (pl) lines.push(pl); };
+    for (const p of positions) {
+      const long = p.side === 'buy';
+      add(p.open_price, { color: long ? '#22c55e' : '#ef4444', style: S.Solid, width: 2, title: `${long ? '▲ LONG' : '▼ SHORT'} ${fmtNum(p.open_price)}` });
+      add(p.sl, { color: '#ef4444', style: S.Dashed, width: 1, title: 'SL' });
+      const pl = p.plan;
+      if (pl) {
+        add(pl.tp1, { color: '#16a34a', style: S.Dotted, width: 1, title: 'TP1' + (pl.tp1_taken ? ' ✓' : '') });
+        add(pl.tp2, { color: '#16a34a', style: S.Dotted, width: 1, title: 'TP2' + (pl.tp2_taken ? ' ✓' : '') });
+        add(pl.tp3, { color: '#15803d', style: S.Dotted, width: 1, title: 'TP3' });
+      } else if (p.tp != null) {
+        add(p.tp, { color: '#16a34a', style: S.Dotted, width: 1, title: 'TP' });
       }
     }
-    // Volume profile (VAH / VPOC / VAL per period).
-    if (o.volume_profile) {
-      for (const [period, vp] of Object.entries(o.volume_profile)) {
-        if (!vp) continue;
-        const isDeveloping = vp.state === 'developing';
-        const color = period.startsWith('prev_') ? '#ffd700' : (isDeveloping ? '#888' : '#fff');
-        const lineWidth = isDeveloping ? 1 : 2;
-        const lineStyle = isDeveloping ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid;
-        for (const level of ['vah', 'vpoc', 'val']) {
-          if (vp[level] === null || vp[level] === undefined) continue;
-          state.overlaySeries.push({ name: 'vp_' + period + '_' + level, line: hline(vp[level], { color, lineWidth, lineStyle }) });
-        }
-      }
-    }
+    state.tradeLines = lines;
   }
 
   $$('#timeframe-selector button').forEach(btn => {
@@ -559,7 +588,7 @@
         api('/api/health/services'), api('/api/usage'),
         api('/api/news').catch(() => null), api('/api/ai/last').catch(() => null),
       ]);
-      renderAccount(acc); renderRisk(risk); renderPositions(positions);
+      renderAccount(acc); renderRisk(risk); renderPositions(positions); renderTradeLevels(positions);
       renderDecisionFeed(decisions); renderOrders(orders); renderServiceHealth(health);
       renderUsage(usage); renderNews(news); renderScores(decisions && decisions[0]); renderAILast(aiLast);
       const ts = acc && acc.ts ? new Date(acc.ts) : null;
