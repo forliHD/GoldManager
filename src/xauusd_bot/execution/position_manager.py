@@ -1,0 +1,148 @@
+"""PositionManager — per-bar management of an open position (Block 4 Phase 3).
+
+The entry path (``ExecutionPipeline.process``) opens a position and computes
+its SL + TP1/TP2/TP3 plan. This module drives that plan **forward** on every
+subsequent bar:
+
+* **TP1 hit** → close ``tp1_pct`` of the original volume + move the SL to
+  break-even (entry).
+* **TP2 hit** → close ``tp2_pct`` of the original volume.
+* **Trailing** (after break-even) → ratchet the SL behind structure using
+  :meth:`StopManager.trail` (SL only ever moves in the trade's favour).
+* **Runner** → close the remainder when price rejects the TP3 / HTF level
+  (:meth:`TakeProfitManager.should_close_runner`).
+
+Design: :meth:`PositionManager.plan` is a **pure function** — it takes the
+managed-position state + the current bundle/price and returns a list of
+:class:`ManagementAction` plus the updated state. It performs no I/O, so it is
+exhaustively unit-testable. The execution-engine applies the actions through
+the connector (``order_modify`` for SL, position close for partials) and
+persists the updated state.
+"""
+
+from __future__ import annotations
+
+from decimal import ROUND_DOWN, Decimal
+from typing import Literal
+
+import structlog
+from pydantic import BaseModel, ConfigDict, Field
+
+from xauusd_bot.connectors.schemas import OrderSide, SymbolSpec
+from xauusd_bot.common.schemas.features import FeatureSnapshotBundle
+from xauusd_bot.execution.stops import StopManager
+from xauusd_bot.execution.take_profit import TakeProfitManager
+
+log = structlog.get_logger(__name__)
+
+
+class ManagedPosition(BaseModel):
+    """Persisted management state for one open position (keyed by ticket)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticket: str
+    side: OrderSide
+    entry_price: Decimal
+    initial_volume: Decimal
+    sl_price: Decimal
+    tp1_price: Decimal | None = None
+    tp2_price: Decimal | None = None
+    tp3_price: Decimal | None = None
+    tp1_pct: float = 30.0
+    tp2_pct: float = 30.0
+    tp1_taken: bool = False
+    tp2_taken: bool = False
+    breakeven_done: bool = False
+
+
+class ManagementAction(BaseModel):
+    """One management instruction the execution-engine should apply."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["partial_close", "modify_sl", "close_all"]
+    volume: Decimal | None = Field(default=None, description="Lots to close (partial_close).")
+    price: Decimal | None = Field(default=None, description="New SL (modify_sl).")
+    reason: str = ""
+
+
+def _reached(side: OrderSide, current_price: Decimal, level: Decimal) -> bool:
+    """True if ``current_price`` has reached the TP ``level`` for ``side``."""
+    if side == OrderSide.BUY:
+        return current_price >= level
+    return current_price <= level
+
+
+def _tighter(side: OrderSide, new_sl: Decimal, current_sl: Decimal) -> bool:
+    """True if ``new_sl`` is strictly in the trade's favour vs ``current_sl``."""
+    if side == OrderSide.BUY:
+        return new_sl > current_sl
+    return new_sl < current_sl
+
+
+def _round_volume(volume: Decimal, spec: SymbolSpec) -> Decimal:
+    """Floor ``volume`` to the symbol's volume step (never round a partial up)."""
+    step = spec.volume_step if spec.volume_step and spec.volume_step > 0 else Decimal("0.01")
+    steps = (volume / step).to_integral_value(rounding=ROUND_DOWN)
+    return (steps * step).quantize(step)
+
+
+class PositionManager:
+    """Pure per-bar position-management planner."""
+
+    def __init__(self, stop_mgr: StopManager, tp_mgr: TakeProfitManager, spec: SymbolSpec) -> None:
+        self._stop = stop_mgr
+        self._tp = tp_mgr
+        self._spec = spec
+
+    def plan(
+        self,
+        mp: ManagedPosition,
+        bundle: FeatureSnapshotBundle,
+        current_price: Decimal,
+    ) -> tuple[list[ManagementAction], ManagedPosition]:
+        """Return the management actions for this bar + the updated state.
+
+        ``current_price`` is the latest close (or bid/ask) used to test TP hits
+        and runner rejection. The returned state must be persisted by the caller.
+        """
+        actions: list[ManagementAction] = []
+        mp = mp.model_copy(deep=True)
+        vol_min = self._spec.volume_min if self._spec.volume_min else Decimal("0.01")
+
+        # --- TP1: partial close + move SL to break-even.
+        if not mp.tp1_taken and mp.tp1_price is not None and _reached(mp.side, current_price, mp.tp1_price):
+            vol = _round_volume(mp.initial_volume * Decimal(str(mp.tp1_pct / 100.0)), self._spec)
+            if vol >= vol_min:
+                actions.append(ManagementAction(kind="partial_close", volume=vol, reason="tp1_hit"))
+            mp.tp1_taken = True
+            if not mp.breakeven_done and _tighter(mp.side, mp.entry_price, mp.sl_price):
+                actions.append(ManagementAction(kind="modify_sl", price=mp.entry_price, reason="breakeven_after_tp1"))
+                mp.sl_price = mp.entry_price
+            mp.breakeven_done = True
+
+        # --- TP2: partial close.
+        if not mp.tp2_taken and mp.tp2_price is not None and _reached(mp.side, current_price, mp.tp2_price):
+            vol = _round_volume(mp.initial_volume * Decimal(str(mp.tp2_pct / 100.0)), self._spec)
+            if vol >= vol_min:
+                actions.append(ManagementAction(kind="partial_close", volume=vol, reason="tp2_hit"))
+            mp.tp2_taken = True
+
+        # --- Trailing SL behind structure (only after break-even, ratchet only).
+        if mp.breakeven_done:
+            trail = self._stop.trail(mp.side, mp.sl_price, mp.entry_price, bundle)
+            if trail.sl_price is not None and _tighter(mp.side, trail.sl_price, mp.sl_price):
+                actions.append(ManagementAction(kind="modify_sl", price=trail.sl_price, reason="structure_trail"))
+                mp.sl_price = trail.sl_price
+
+        # --- Runner: close the remainder on HTF-level rejection.
+        if mp.tp3_price is not None:
+            should, reason = self._tp.should_close_runner(mp.side, mp.tp3_price, current_price, bundle)
+            if should:
+                actions.append(ManagementAction(kind="close_all", reason=f"runner_{reason}"))
+
+        return actions, mp
+
+
+__all__ = ["ManagedPosition", "ManagementAction", "PositionManager"]
