@@ -289,9 +289,19 @@
       }
     }
     if (s.fvg) {
-      const zones = (o.fvg_zones || o.fvgZones || [])
-        .filter(z => { const tf = String(z.tf || '').toUpperCase(); return (tf in s.fvgTf) ? s.fvgTf[tf] : true; })
-        .slice(0, s.fvgMax);
+      const FVG_TF_SCALE = { H1: 80, M5: 30, M1: 12 };
+      const px = state.lastCandle && Number(state.lastCandle.close);
+      let zones = (o.fvg_zones || o.fvgZones || [])
+        .filter(z => { const tf = String(z.tf || '').toUpperCase(); return (tf in s.fvgTf) ? s.fvgTf[tf] : true; });
+      if (px) {
+        // Rank by relevance = strength / proximity, so the NEAREST actionable gaps
+        // win — not far H1 gaps that draw off-screen (the bug: rank_score alone put
+        // distant zones first, so the visible ones got sliced away).
+        const center = z => (Number(z.top) + Number(z.bottom)) / 2;
+        const relevance = z => (Number(z.rank_score) || 1) / (1 + Math.abs(center(z) - px) / (FVG_TF_SCALE[String(z.tf).toUpperCase()] || 30));
+        zones.sort((a, b) => relevance(b) - relevance(a));
+      }
+      zones = zones.slice(0, s.fvgMax);
       let any = false;
       zones.forEach(z => {
         const bull = String(z.type || '').toLowerCase().includes('bull');
