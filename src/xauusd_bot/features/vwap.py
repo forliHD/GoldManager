@@ -180,9 +180,12 @@ class TripleVWAPEngine:
         states: dict[VWAPLevel, _VwapState] = {}
         for lvl, anchor_ts in anchors.items():
             if anchor_ts is None:
-                # Engine still emits a row, but with 0 bars and value=None.
-                states[lvl] = _VwapState(level=lvl, anchor_ts=current_t)
-                states[lvl].n_bars = 0
+                # Anchor hasn't fired yet today → the level has NO data. Anchor it
+                # STRICTLY AFTER current_t so the accumulation loop (which adds
+                # bars with ``bar.time >= anchor_ts``) matches nothing and value
+                # stays None. Anchoring at current_t (the old behaviour) wrongly
+                # swept in the current bar, reporting a 1-bar "VWAP" = spot price.
+                states[lvl] = _VwapState(level=lvl, anchor_ts=current_t + timedelta(microseconds=1))
             else:
                 states[lvl] = _VwapState(level=lvl, anchor_ts=anchor_ts)
 

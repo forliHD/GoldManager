@@ -402,3 +402,29 @@ def test_clock_offset_shifts_anchor_to_real_utc() -> None:
     # bars from 10:00 onward — strictly fewer.
     assert n_naive == 121
     assert 0 < n_shifted < n_naive
+
+
+def test_unfired_anchor_is_none_not_spot_price() -> None:
+    """An anchor that has not fired yet today must report value=None.
+
+    Regression: the engine anchored an unfired level at current_t and the
+    accumulation loop (bar.time >= anchor) then swept in the current bar,
+    reporting a 1-bar "VWAP" equal to the latest typical price. Before 07:00
+    and 12:00 UTC those levels have no data and must be None.
+    """
+    # Bars 00:00 → 05:00 UTC; cursor at 05:00 (07:00/12:00 not fired yet).
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    bars = [_bar(start + timedelta(minutes=i), 4100 + i * 0.1, 4100 + i * 0.1 + 0.5,
+                 4100 + i * 0.1 - 0.5, 4100 + i * 0.1, tv=100) for i in range(301)]
+    cursor = bars[-1].time  # 05:00 UTC
+
+    out = TripleVWAPEngine().compute(bars, cursor)
+    # utc00 has fired and must carry a real value.
+    assert out.levels["utc00"].value is not None
+    assert out.levels["utc00"].n_bars_anchored > 1
+    # utc07 / utc12 have NOT fired → no data, not the spot price.
+    for k in ("utc07", "utc12"):
+        assert out.levels[k].value is None, f"{k} should be None before its anchor fires"
+        assert out.levels[k].n_bars_anchored == 0
+    # With only one real level, there can be no 3-VWAP cluster.
+    assert out.is_cluster is False
