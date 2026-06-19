@@ -1,0 +1,29 @@
+#!/usr/bin/with-contenv bash
+# mt5 bridge supervisor (linuxserver s6 custom-init hook).
+#
+# The gmag11 image's built-in [7/7] mt5linux start is broken (removed -w flag +
+# numpy 2.x ABI) and the bridge is otherwise unsupervised — a container
+# restart/reboot would leave port 8001 dead until someone ran the helper by
+# hand. This hook backgrounds a tiny watchdog that (re)starts the bridge via
+# the mounted helper whenever it is not listening, so the bridge self-heals.
+#
+# Runs as root at init; the helper itself runs as the 'abc' user (which owns the
+# Wine prefix). We must NOT block here — s6 waits for cont-init to finish before
+# starting the desktop/Wine — so the watchdog is detached.
+
+HELPER=/usr/local/bin/mt5_bridge_up.sh
+LOG=/config/mt5bridge_supervisor.log
+
+nohup bash -c '
+  while true; do
+    if ! ss -tuln 2>/dev/null | grep -q ":8001 "; then
+      if [ -f "'"$HELPER"'" ]; then
+        echo "[supervisor] $(date -u +%H:%M:%S) bridge down → starting" >> "'"$LOG"'"
+        s6-setuidgid abc bash "'"$HELPER"'" >> "'"$LOG"'" 2>&1
+      fi
+    fi
+    sleep 30
+  done
+' >/dev/null 2>&1 &
+
+echo "[cont-init] mt5 bridge supervisor armed"

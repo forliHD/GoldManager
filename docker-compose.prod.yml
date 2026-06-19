@@ -1,0 +1,199 @@
+# Prod overrides — Ubuntu VM, +mt5-terminal (Wine), live connector.
+# Usage:
+#   docker compose -f docker-compose.base.yml -f docker-compose.prod.yml up
+#
+# Block 8 changes: the mt5-terminal service is now production-shaped:
+#   * RPyC bridge (18812) bound to loopback only
+#   * VNC (5900) bound to loopback only — one-time Vantage login only
+#   * noVNC web (6080) bound to loopback only — same purpose
+#   * Healthcheck on the bridge port (start_period 120s — Wine boot
+#     is slow, this is not optional)
+#   * Persistent volume for the Wine prefix + MT5 settings
+#   * ENV-only credentials (no hardcoded passwords in compose)
+#
+# Block 9 changes: added `dashboard` service (Custom Web-Dashboard):
+#   * 127.0.0.1:8080:8080 — loopback only (Cloudflare tunnel in front
+#     for remote access, see AGENTS.md §4j-2)
+#   * DASHBOARD_ENABLED must be true in .env to actually serve traffic
+#   * Uses Redis /0 for trading streams + /1 for sessions
+#   * Depends on redis + timescaledb; restart unless-stopped
+
+services:
+  data-collector:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
+    restart: unless-stopped
+
+  feature-engine:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
+    restart: unless-stopped
+
+  decision-engine:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
+    restart: unless-stopped
+
+  execution-engine:
+    environment:
+      CONNECTOR_MODE: live
+      ENVIRONMENT: production
+      MT5_BRIDGE_HOST: mt5-terminal
+      MT5_BRIDGE_PORT: "18812"
+    restart: unless-stopped
+
+  # journal-writer needs no connector — only Redis + TimescaleDB.
+  journal-writer:
+    environment:
+      ENVIRONMENT: production
+    restart: unless-stopped
+
+  # ------------------------------------------------------------ dashboard
+  #
+  # Custom Web-Dashboard (Block 9). FastAPI + WebSocket + Lightweight-
+  # Charts. Read-only by default; Live-Mode-Toggle is admin-only.
+  #
+  # SECURITY:
+  # - Port 8080 bound to 127.0.0.1 (loopback). Use Cloudflare tunnel
+  #   for remote access.
+  # - DASHBOARD_ENABLED default is false — must be explicitly set in
+  #   .env to actually serve traffic.
+  # - DASHBOARD_USERS is a JSON object with bcrypt-hashed passwords.
+  # - Sessions stored in Redis /1, trading streams stay on /0.
+  # See AGENTS.md §4j for the full list of dashboard caveats.
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/service/Dockerfile
+    image: xauusd-bot/dashboard:0.9.0
+    container_name: xauusd-dashboard
+    # entrypoint (not command): override the SERVICE_ROLE stream-dispatcher
+    # in the shared image. With `command:` alone the Dockerfile ENTRYPOINT
+    # (docker_entrypoint) would run replay_smoke instead of the dashboard.
+    entrypoint: ["python", "-m", "xauusd_bot.dashboard.app"]
+    environment:
+      ENVIRONMENT: production
+      DASHBOARD_ENABLED: ${DASHBOARD_ENABLED:-false}
+      DASHBOARD_HOST: "127.0.0.1"
+      DASHBOARD_PORT: "8080"
+      DASHBOARD_USERS: ${DASHBOARD_USERS:-}
+      DASHBOARD_SESSION_TTL_SECONDS: ${DASHBOARD_SESSION_TTL_SECONDS:-28800}
+      DASHBOARD_REDIS_URL: redis://redis:6379/1
+      DASHBOARD_REDIS_STREAMS_URL: redis://redis:6379/0
+      DASHBOARD_LIVE_MODE_ENABLED: ${DASHBOARD_LIVE_MODE_ENABLED:-false}
+      REDIS_URL: redis://redis:6379/0
+      TIMESCALEDB_URL: postgresql+asyncpg://xauusd:xauusd@timescaledb:5432/xauusd
+    ports:
+      - "127.0.0.1:8080:8080"   # Dashboard (loopback only)
+    depends_on:
+      - redis
+      - timescaledb
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health').read()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ------------------------------------------------------------ mt5-terminal
+  #
+  # Wine + MetaTrader 5 + Windows-Python RPyC bridge.
+  #
+  # SECURITY: every exposed port is bound to 127.0.0.1. VNC is for
+  # the one-time Vantage account login only; in production, prefer
+  # turning it off (and exposing only the RPyC bridge on 18812).
+  # If remote access is needed, put Cloudflare Zero Trust in front.
+  # See AGENTS.md §4h-5.
+  #
+  # PERSISTENCE: the `mt5-data` named volume holds the Wine prefix
+  # and the MT5 account login. Restarting the container keeps the
+  # logged-in session, but trade state (open positions, pending
+  # orders) must be re-queried on first call after restart.
+  # See AGENTS.md §4h-2.
+  #
+  # NETWORK: this service uses the default `xauusd-net` network, so
+  # the other services can reach it as `mt5-terminal:18812`. The
+  # host's loopback is the only way to reach the RPyC / VNC / noVNC
+  # ports from outside Docker — there is no 0.0.0.0 binding.
+  mt5-terminal:
+    build:
+      context: .
+      dockerfile: docker/mt5-terminal/Dockerfile
+    image: xauusd-bot/mt5-terminal:0.8.0
+    container_name: xauusd-mt5-terminal
+    environment:
+      # --- MT5 account (override in .env or via secrets)
+      MT5_LOGIN: ${MT5_LOGIN:?MT5_LOGIN must be set in .env}
+      MT5_PASSWORD: ${MT5_PASSWORD:?MT5_PASSWORD must be set in .env}
+      MT5_SERVER: ${MT5_SERVER:-VantageInternational-Demo}
+      MT5_SYMBOL: ${MT5_SYMBOL:-XAUUSD}
+      # --- RPyC bridge
+      MT5_BRIDGE_HOST: 0.0.0.0
+      MT5_BRIDGE_PORT: "18812"
+      # Optional auth: when set, the LiveMT5Connector must pass the
+      # same key in its RPyC config. Recommended in production.
+      MT5_BRIDGE_AUTH_KEY: ${MT5_BRIDGE_AUTH_KEY:-}
+      MT5_BRIDGE_LOG_LEVEL: ${MT5_BRIDGE_LOG_LEVEL:-INFO}
+      # --- Installer URLs (override if you mirror the binaries)
+      MT5_INSTALLER_URL: ${MT5_INSTALLER_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}
+      PYTHON_WIN_INSTALLER_URL: ${PYTHON_WIN_INSTALLER_URL:-https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe}
+      # --- VNC
+      DISPLAY: ":99"
+    # All ports bound to 127.0.0.1 (host loopback). Compose does NOT
+    # expose them publicly. The 6080 (noVNC) and 5900 (VNC) ports
+    # are for the one-time Vantage login; the 18812 (RPyC) port is
+    # the production data path used by the Python services.
+    ports:
+      - "127.0.0.1:18812:18812"   # RPyC bridge
+      - "127.0.0.1:5900:5900"     # VNC (one-time login)
+      - "127.0.0.1:6080:6080"     # noVNC web
+    volumes:
+      # Wine prefix + MT5 account state persists across restarts.
+      - mt5-data:/root/.wine
+      # Bridge logs (so docker logs doesn't need a journal)
+      - mt5-bridge-logs:/var/log/supervisor
+    networks:
+      - default
+    restart: unless-stopped
+    # Healthcheck: TCP-connect to the bridge port. start_period 120s
+    # covers the Wine + MT5 boot (first time especially). The
+    # production-side ``is_connected()`` does a deeper RPyC ping,
+    # but the docker healthcheck just proves the port is listening.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; s=socket.socket(); s.connect(('127.0.0.1', 18812)); s.close()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  mt5-data:
+  mt5-bridge-logs:

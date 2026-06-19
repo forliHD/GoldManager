@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xauusd-bot"
+version = "0.1.0"
+description = "XAUUSD trading bot with MT5 (live) / replay (dev) connector, Redis Streams, TimescaleDB journal."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Lucas Reiser" }]
+keywords = ["trading", "xauusd", "gold", "mt5", "metatrader", "replay", "backtest"]
+
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "pandas>=2.1",
+    "pyarrow>=14.0",
+    "numpy>=1.26",
+    "redis>=5.0",
+    "asyncpg>=0.29",  # TimescaleJournalStore (durable journal persistence).
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "websockets>=12.0",  # Block 9 — uvicorn needs a WS impl for the /ws endpoint.
+    "httpx>=0.27",
+    "structlog>=24.1",
+    "bcrypt>=4.1",  # Block 9 — Dashboard user password hashing.
+    "python-multipart>=0.0.9",  # Block 9 — FastAPI Form data for /api/auth/login.
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "fakeredis>=2.0",  # Block 9 — tests for DashboardAuth sessions.
+]
+# Live MT5 bridge clients (prod / mt5-terminal layer only). rpyc is pinned to
+# 5.2.3 to match the mt5linux server inside gmag11/metatrader5_vnc — 5.x and 6.x
+# RPyC wire protocols are incompatible. NOTE: install mt5linux with --no-deps
+# (its declared deps include the Windows-only MetaTrader5 package, which cannot
+# install on Linux): `pip install --no-deps mt5linux && pip install -e .[live]`.
+live = [
+    "rpyc==5.2.3",
+    "plumbum>=1.7",
+]
+
+[project.scripts]
+xauusd-replay-smoke = "xauusd_bot.cli.replay_smoke:main"
+xauusd-streams-smoke = "xauusd_bot.cli.streams_smoke:main"
+xauusd-generate-sample = "tools.generate_sample_data:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "data", "logs", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "N",    # pep8-naming
+    "C4",   # flake8-comprehensions
+    "RET",  # flake8-return
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # line length (handled by formatter)
+    "B008",  # function-call-in-default-argument (Pydantic Field idiom)
+    "UP042", # str + Enum is the canonical Pydantic-friendly idiom in 3.11
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N802", "N803"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: long-running tests (>=30s) — opt out with -m 'not slow'",
+]

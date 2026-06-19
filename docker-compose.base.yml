@@ -1,0 +1,133 @@
+# Common base for all Python services + shared infra (redis, timescaledb).
+# This file is the single source of truth for service definitions; dev/prod
+# overrides live in docker-compose.dev.yml and docker-compose.prod.yml.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-service-base: &service-base
+  build:
+    context: .
+    dockerfile: docker/service/Dockerfile
+  image: xauusd-bot/service:0.1.0
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    PYTHONUNBUFFERED: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+  volumes:
+    - vantage_data:/var/lib/xauusd/vantage
+  logging: *default-logging
+  # Liveness via the heartbeat file each service touches (see
+  # common/service.py). A wedged event loop stops touching it → unhealthy.
+  healthcheck:
+    test: ["CMD", "python", "-m", "xauusd_bot.healthcheck"]
+    interval: 15s
+    timeout: 5s
+    retries: 4
+    start_period: 30s
+  depends_on:
+    redis:
+      condition: service_healthy
+    timescaledb:
+      condition: service_healthy
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: xauusd-redis
+    # maxmemory bounds RAM; noeviction protects trading data (writes fail
+    # rather than silently dropping). Streams are MAXLEN-capped
+    # (settings.stream_maxlen) — but the features bundles are several KB
+    # each, so the cap must comfortably exceed the sum of stream plateaus.
+    # 4 GB suits the dev VM; override via REDIS_MAXMEMORY.
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-4gb}"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    # Loopback-only: services reach Redis over the docker network (redis:6379),
+    # never the published host port. Binding to 127.0.0.1 keeps it off the LAN
+    # (it has no auth). Override REDIS_BIND_HOST only for a trusted setup.
+    ports:
+      - "${REDIS_BIND_HOST:-127.0.0.1}:6379:6379"
+    logging: *default-logging
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: xauusd-timescaledb
+    environment:
+      POSTGRES_USER: xauusd
+      POSTGRES_PASSWORD: xauusd
+      POSTGRES_DB: xauusd
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xauusd -d xauusd"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Loopback-only (services use the docker network timescaledb:5432).
+    ports:
+      - "${TIMESCALE_BIND_HOST:-127.0.0.1}:5432:5432"
+    logging: *default-logging
+
+  # Python services — all use the same image. The entrypoint
+  # (xauusd_bot.docker_entrypoint) dispatches on SERVICE_ROLE, so no
+  # per-service `command:` override is needed.
+  data-collector:
+    <<: *service-base
+    container_name: xauusd-data-collector
+    environment:
+      SERVICE_ROLE: data-collector
+
+  feature-engine:
+    <<: *service-base
+    container_name: xauusd-feature-engine
+    environment:
+      SERVICE_ROLE: feature-engine
+
+  decision-engine:
+    <<: *service-base
+    container_name: xauusd-decision-engine
+    environment:
+      SERVICE_ROLE: decision-engine
+
+  execution-engine:
+    <<: *service-base
+    container_name: xauusd-execution-engine
+    environment:
+      SERVICE_ROLE: execution-engine
+
+  journal-writer:
+    <<: *service-base
+    container_name: xauusd-journal-writer
+    environment:
+      SERVICE_ROLE: journal-writer
+
+  # NOTE: review/backtest run on-demand via their CLIs (not as a
+  # streaming daemon), so there is intentionally no `review` service
+  # here. Run e.g. `python -m xauusd_bot.cli.backtest_smoke` ad hoc.
+
+volumes:
+  redis_data:
+  timescale_data:
+  vantage_data:
+
+networks:
+  default:
+    name: xauusd-net

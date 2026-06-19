@@ -1,0 +1,106 @@
+# Dev overrides — Mac, no MT5, replay mode.
+# Usage:
+#   docker compose -f docker-compose.base.yml -f docker-compose.dev.yml up
+
+services:
+  # Dev: cap Redis memory and disable persistence. The fast replay loop +
+  # large feature/decision payloads can otherwise grow Redis past the VM's
+  # RAM (OOM-kill), and AOF persistence makes it crash-loop reloading the
+  # huge dataset on restart. Dev data is regenerable from the replay.
+  redis:
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "2gb"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+
+  # Force replay mode for every Python service in dev.
+  data-collector:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  feature-engine:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  decision-engine:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  execution-engine:
+    environment:
+      CONNECTOR_MODE: replay
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  journal-writer:
+    environment:
+      ENVIRONMENT: development
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+
+  # Custom Web-Dashboard (Block 9) — FastAPI + WebSocket + Lightweight-Charts.
+  # SECURITY: published on 127.0.0.1 by default (loopback only). For LAN
+  # access on a *trusted* network, set DASHBOARD_BIND_HOST=0.0.0.0 in .env.
+  # Requires DASHBOARD_ENABLED=true and DASHBOARD_USERS (bcrypt) in .env;
+  # the AI/mode toggles need an operator/admin user.
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/service/Dockerfile
+    image: xauusd-bot/service:0.1.0
+    container_name: xauusd-dashboard
+    # Override the SERVICE_ROLE stream-dispatcher — the dashboard is a
+    # FastAPI app, not a stream consumer.
+    entrypoint: ["python", "-m", "xauusd_bot.dashboard.app"]
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: development
+      DASHBOARD_ENABLED: "true"
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "8080"
+      DASHBOARD_REDIS_URL: redis://redis:6379/1
+      DASHBOARD_REDIS_STREAMS_URL: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+      TIMESCALEDB_URL: postgresql+asyncpg://xauusd:xauusd@timescaledb:5432/xauusd
+    ports:
+      - "${DASHBOARD_BIND_HOST:-127.0.0.1}:8080:8080"
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Dev deliberately omits the mt5-terminal service — Apple Silicon Wine
+  # is too slow for productive iteration. Use ReplayConnector + PaperBroker.

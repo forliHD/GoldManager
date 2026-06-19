@@ -1,0 +1,124 @@
+# MT5 layer for the DEV stack — runs MetaTrader 5 under Wine with a
+# browser-accessible KasmVNC desktop, using the maintained upstream image
+# gmag11/metatrader5_vnc (https://github.com/gmag11/MetaTrader5-Docker, v2.3).
+#
+# Why this image instead of our own docker/mt5-terminal/Dockerfile: the
+# MetaQuotes web installer (mt5setup.exe /auto) hangs under *headless* Wine.
+# gmag11 runs it under a real X display (KasmVNC + openbox), so the install
+# completes. The image self-installs, on first boot (~10-15 min):
+#   * Wine-Mono, MetaTrader 5, Python 3.9 (Wine), MetaTrader5==5.0.36 + mt5linux
+#   * a `mt5linux` RPyC bridge on port 8001 (mirrors the MetaTrader5 package API)
+#   * the MT5 GUI, served over KasmVNC on port 3000
+#
+# Usage (layer ON TOP of base + dev — bring up ONLY the terminal for now):
+#   docker compose -f docker-compose.base.yml -f docker-compose.dev.yml \
+#                  -f docker-compose.mt5.yml up -d mt5-terminal
+#
+# Browser access (KasmVNC):  http://<vm-ip>:3000
+#   login: MT5_VNC_USER / MT5_VNC_PASSWORD  (see .env)
+# MT5 account login: in the MT5 window use File -> Login to Trade Account and
+#   enter MT5_LOGIN / MT5_PASSWORD / MT5_SERVER. It persists in the
+#   `mt5-config` volume, so you only do it once.
+#
+# NOTE — pipeline is NOT yet flipped to this bridge. The bot's
+# LiveMT5Connector speaks our own RPyC bridge (port 18812); pointing it at
+# gmag11's mt5linux server (port 8001) is a follow-up. Until that lands the
+# trading pipeline stays on the replay connector (dev layer). See the
+# disabled live-flip block at the bottom.
+
+services:
+  mt5-terminal:
+    image: gmag11/metatrader5_vnc:latest
+    container_name: xauusd-mt5-terminal
+    environment:
+      # KasmVNC web auth (linuxserver base).
+      CUSTOM_USER: ${MT5_VNC_USER:-trader}
+      PASSWORD: ${MT5_VNC_PASSWORD:?set MT5_VNC_PASSWORD in .env}
+      TITLE: GoldManager MT5
+      TZ: ${TZ:-Europe/Berlin}
+    ports:
+      # KasmVNC web desktop. Bound LAN-wide by default so you can reach it
+      # from the Mac; it is password-protected. Set MT5_VNC_BIND_HOST=127.0.0.1
+      # in .env to require an SSH tunnel instead (more conservative).
+      - "${MT5_VNC_BIND_HOST:-0.0.0.0}:3000:3000"
+      # mt5linux RPyC bridge — loopback-only on the host. The bot will reach it
+      # over the compose network as `mt5-terminal:8001` (no host publish needed);
+      # the 127.0.0.1 publish is just for debugging from the VM itself.
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - mt5-config:/config
+      # Bridge self-healing: the helper + a cont-init supervisor that (re)starts
+      # the mt5linux bridge whenever port 8001 is down (boot, crash, reboot).
+      - ./scripts/mt5_bridge_up.sh:/usr/local/bin/mt5_bridge_up.sh:ro
+      - ./docker/mt5-terminal/custom-cont-init.d:/custom-cont-init.d:ro
+    shm_size: "1gb"
+    security_opt:
+      - seccomp:unconfined
+    restart: unless-stopped
+    healthcheck:
+      # Ready once the mt5linux bridge is listening on 8001 (after the long
+      # first-boot install). start_period is generous to cover that install.
+      test: ["CMD-SHELL", "ss -tuln 2>/dev/null | grep -q ':8001 ' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 1200s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+# --- STAGE 2 (ACTIVE): pipeline flipped onto the live MT5 bridge (mt5linux) ---
+# The connector-using services run CONNECTOR_MODE=live with mt5_bridge_kind=
+# mt5linux (attach-mode — the operator logs the terminal in once via KasmVNC;
+# no MT5_* creds needed). They use the service-mt5 image, which carries the
+# mt5linux client (see docker/service-mt5/Dockerfile — build it first:
+#   docker build -f docker/service-mt5/Dockerfile -t xauusd-bot/service-mt5:0.1.0 .)
+#
+# SAFETY: the execution-engine still runs, but ORDER placement is gated by the
+# dashboard kill-switch. For data-collection-only, engage it before going live:
+#   docker exec xauusd-redis redis-cli SET runtime:emergency_stop true
+# For live ORDER execution later: click "Algo Trading" in MT5 (trade_allowed)
+# AND clear the emergency stop from the dashboard.
+#
+# Revert to replay: bring the stack up without -f docker-compose.mt5.yml.
+  data-collector:
+    image: xauusd-bot/service-mt5:0.1.0
+    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+    depends_on: { mt5-terminal: { condition: service_healthy } }
+  feature-engine:
+    image: xauusd-bot/service-mt5:0.1.0
+    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+    depends_on: { mt5-terminal: { condition: service_healthy } }
+  execution-engine:
+    image: xauusd-bot/service-mt5:0.1.0
+    environment: { CONNECTOR_MODE: live, MT5_BRIDGE_KIND: mt5linux, MT5_BRIDGE_HOST: mt5-terminal, MT5_BRIDGE_PORT: "8001" }
+    depends_on: { mt5-terminal: { condition: service_healthy } }
+
+  # Live setup PERSISTS Redis (AOF) — overrides the ephemeral dev redis. The
+  # per-position management plans (mgmt:pos:*) and runtime flags
+  # (emergency_stop / ai_layer_enabled) must survive a Redis restart, or open
+  # positions would silently lose their TP/SL plan. Data is bounded now
+  # (per-topic maxlen + bundle compaction), so AOF reload is fast.
+  redis:
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-4gb}"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+
+  # Connector-free services — no MT5 image needed. They only need the live
+  # SYMBOL (from .env: XAUUSD+) + the live mode badge in the dashboard.
+  decision-engine:
+    environment: { CONNECTOR_MODE: live }
+  dashboard:
+    environment: { CONNECTOR_MODE: live }
+
+volumes:
+  mt5-config:

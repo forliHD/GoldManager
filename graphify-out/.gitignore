@@ -1,0 +1,4 @@
+# graphify: regenerable / machine-local artifacts
+cache/
+.graphify_*
+cost.json
