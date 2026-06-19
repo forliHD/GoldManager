@@ -103,12 +103,15 @@ class Settings(BaseSettings):
         ),
     )
     ai_layer_reasoning_enabled: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Static default for the LLM reasoning toggle. When False the OpenRouter client "
             "sends reasoning:{enabled:false} (no chain-of-thought) — ~halves m3 latency at the "
             "cost of analytical depth. Operators flip this at runtime from the dashboard "
-            "(runtime:llm_reasoning_enabled on the trading Redis); this is only the boot default."
+            "(runtime:llm_reasoning_enabled on the trading Redis); this is only the boot default. "
+            "Default is False: minimax-m3 reasoning-ON runs ~55s (TTFT ~8s + ~3.6k CoT tokens) "
+            "and blows past ai_layer_timeout_seconds. Any client built WITHOUT usage_redis (tools, "
+            "tests, backtest runners) reads this default, so True would silently send reasoning=True."
         ),
     )
     ai_layer_max_attempts: int = Field(
