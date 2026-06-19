@@ -126,17 +126,19 @@ def make_bundle(
     atr: float | None = 0.35,
 ) -> FeatureSnapshotBundle:
     if liquidity is None:
-        # TP zones within 2.0 USD of the structure's BOS close (2376.0):
-        # 2377.0 above (1.0 USD away), 2375.0 below (1.0 USD away).
+        # TP zones at a usable REACH from the structure's BOS close (2376.0):
+        # 2381.0 above (5 USD), 2371.0 below (5 USD) — far enough to be a real
+        # take-profit, within the max-reach cap. (The old fixtures put zones 1 USD
+        # away for the now-removed "TP must hug price" check.)
         liquidity = LiquidityEngineOutput(
             tp_targets_above=[
                 LiquidityZone(
-                    kind="high", price_low=2376.5, price_high=2377.5, center=2377.0, pool_count=2
+                    kind="high", price_low=2380.5, price_high=2381.5, center=2381.0, pool_count=2
                 )
             ],
             tp_targets_below=[
                 LiquidityZone(
-                    kind="low", price_low=2374.5, price_high=2375.5, center=2375.0, pool_count=2
+                    kind="low", price_low=2370.5, price_high=2371.5, center=2371.0, pool_count=2
                 )
             ],
             sl_protection_zones=[],
@@ -265,13 +267,29 @@ class TestTpTargetProximity:
         assert qual.qualified is False
         assert REASON_NO_CLEAR_TP_TARGET in qual.block_reasons
 
-    def test_clear_tp_within_atr_proximity(self) -> None:
-        """TP zone center 1.0 USD above latest close (2376.0). 1.0 < 2.0 floor → OK."""
+    def test_clear_tp_at_reach_qualifies(self) -> None:
+        """A directional TP at usable reach (5 USD above the 2376.0 close) qualifies."""
 
         qe = TradeQualificationEngine(settings=make_settings())
-        decision = make_decision()
-        score = make_score()
-        agg = make_aggregated()
+        decision = make_decision()  # ENTER_LONG
+        liquidity = LiquidityEngineOutput(
+            tp_targets_above=[
+                LiquidityZone(
+                    kind="high", price_low=2380.5, price_high=2381.5, center=2381.0, pool_count=1
+                )
+            ],
+            tp_targets_below=[],
+            sl_protection_zones=[],
+        )
+        bundle = make_bundle(liquidity=liquidity, atr=0.35)
+        qual = qe.qualify(decision, make_score(), make_aggregated(), bundle, account=None)
+        assert qual.qualified is True
+
+    def test_tp_too_close_blocks(self) -> None:
+        """A target glued to price (1 USD < 2 USD min reach) is not a real take-profit."""
+
+        qe = TradeQualificationEngine(settings=make_settings())
+        decision = make_decision()  # ENTER_LONG
         liquidity = LiquidityEngineOutput(
             tp_targets_above=[
                 LiquidityZone(
@@ -282,8 +300,28 @@ class TestTpTargetProximity:
             sl_protection_zones=[],
         )
         bundle = make_bundle(liquidity=liquidity, atr=0.35)
-        qual = qe.qualify(decision, score, agg, bundle, account=None)
-        assert qual.qualified is True
+        qual = qe.qualify(decision, make_score(), make_aggregated(), bundle, account=None)
+        assert qual.qualified is False
+        assert REASON_NO_CLEAR_TP_TARGET in qual.block_reasons
+
+    def test_tp_wrong_direction_blocks(self) -> None:
+        """A LONG with only a BELOW target (nothing to take profit at) is blocked."""
+
+        qe = TradeQualificationEngine(settings=make_settings())
+        decision = make_decision(action=DecisionAction.ENTER_LONG)
+        liquidity = LiquidityEngineOutput(
+            tp_targets_above=[],
+            tp_targets_below=[
+                LiquidityZone(
+                    kind="low", price_low=2370.5, price_high=2371.5, center=2371.0, pool_count=1
+                )
+            ],
+            sl_protection_zones=[],
+        )
+        bundle = make_bundle(liquidity=liquidity, atr=0.35)
+        qual = qe.qualify(decision, make_score(), make_aggregated(), bundle, account=None)
+        assert qual.qualified is False
+        assert REASON_NO_CLEAR_TP_TARGET in qual.block_reasons
 
     def test_no_liquidity_data_warning(self) -> None:
         """If liquidity is None in the bundle AND atr is None → REASON_NO_LIQUIDITY_DATA
@@ -398,8 +436,8 @@ class TestVolatility:
         decision = make_decision()
         score = make_score()
         agg = make_aggregated()
-        # 5.0 USD > 2.0 USD ceiling → block
-        bundle = make_bundle(atr=5.0)
+        # 6.0 USD > 5.0 USD ceiling → block (true gap/chaos territory)
+        bundle = make_bundle(atr=6.0)
         qual = qe.qualify(decision, score, agg, bundle, account=None)
         assert REASON_VOLATILITY_OUT_OF_RANGE in qual.block_reasons
 

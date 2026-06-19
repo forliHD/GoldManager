@@ -61,21 +61,23 @@ REASON_ENGINE_SIGNALS_CONFLICT = "engine_signals_conflict"
 REASON_NO_LIQUIDITY_DATA = "no_liquidity_data"
 
 # ATR (in price-units) floor / ceiling for the volatility check.
-# The bundle's ``atr`` is computed in the same units as the price
-# (USD for XAUUSD), NOT in points. Typical XAUUSD M1 ATR(14) is
-# 0.2–0.6 USD (i.e. 20–60 points at point=0.01). We use 0.05 USD
-# as the floor (very low = skip) and 2.0 USD as the ceiling
-# (chaos / gap = skip).
+# The bundle's ``atr`` is computed in the same units as the price (USD for
+# XAUUSD). The old 2.0 USD ceiling was mis-calibrated: gold routinely runs
+# ATR(14) ≈ 1.5–3 USD in clean trending moves (not chaos), and clipping at 2.0
+# vetoed exactly the volatile setups we want. 5.0 USD only rejects true gaps.
 _ATR_FLOOR_PRICE = 0.05
-_ATR_CEILING_PRICE = 2.0
+_ATR_CEILING_PRICE = 5.0
 
-# How close (in ATR) a TP target must be to the latest close to count.
-# A swing-trade TP target is usually many ATRs away, so we use this
-# as the primary proximity test, with a fallback absolute-distance
-# floor (``_TP_PROXIMITY_ABS_PRICE``) for markets with very small
-# ATR.
-_TP_PROXIMITY_ATR = 1.5
-_TP_PROXIMITY_ABS_PRICE = 2.0  # USD — minimum TP distance even on a tiny-ATR market
+# TP-target REACH (not proximity). A take-profit lives at a *distance* in the
+# trade direction — that distance IS the profit — so the qualification just
+# confirms a directional liquidity target exists at a usable range:
+#   min(reach) = max(_TP_MIN_ATR × ATR, _TP_MIN_ABS_PRICE)   # far enough to be worth it
+#   max(reach) = _TP_MAX_ATR × ATR                            # sanity cap (not the moon)
+# The old check required a target WITHIN ~2 USD of price, which rejected every
+# real swing target (e.g. a pool 8 USD away) → chronic ``no_clear_tp_target``.
+_TP_MIN_ATR = 1.0
+_TP_MIN_ABS_PRICE = 2.0  # USD floor on tiny-ATR markets
+_TP_MAX_ATR = 40.0
 
 # Threshold for "3+ conflicts" → engine_signals_conflict.
 _CONFLICT_FANOUT_THRESHOLD = 3
@@ -89,13 +91,17 @@ class TradeQualificationEngine:
         settings: Settings,
         atr_floor_price: float = _ATR_FLOOR_PRICE,
         atr_ceiling_price: float = _ATR_CEILING_PRICE,
-        tp_proximity_atr: float = _TP_PROXIMITY_ATR,
+        tp_min_atr: float = _TP_MIN_ATR,
+        tp_min_abs_price: float = _TP_MIN_ABS_PRICE,
+        tp_max_atr: float = _TP_MAX_ATR,
         conflict_fanout_threshold: int = _CONFLICT_FANOUT_THRESHOLD,
     ) -> None:
         self._settings = settings
         self._atr_floor = atr_floor_price
         self._atr_ceiling = atr_ceiling_price
-        self._tp_prox = tp_proximity_atr
+        self._tp_min_atr = tp_min_atr
+        self._tp_min_abs = tp_min_abs_price
+        self._tp_max_atr = tp_max_atr
         self._conflict_threshold = conflict_fanout_threshold
 
     def qualify(
@@ -136,9 +142,12 @@ class TradeQualificationEngine:
         latest_close = _latest_close(bundle)
         atr_points = bundle.atr
 
-        # -- 1. Liquidity TP-target check.
+        # -- 1. Liquidity TP-target check (directional reach, not proximity).
         if latest_close is not None and atr_points is not None and atr_points > 0:
-            if not _has_clear_tp_target(bundle, latest_close, atr_points, self._tp_prox):
+            if not _has_clear_tp_target(
+                bundle, latest_close, atr_points, decision.action,
+                min_atr=self._tp_min_atr, min_abs=self._tp_min_abs, max_atr=self._tp_max_atr,
+            ):
                 reasons.append(REASON_NO_CLEAR_TP_TARGET)
         elif latest_close is not None:
             if not _has_any_liquidity_data(agg):
@@ -205,34 +214,37 @@ def _latest_close(bundle: FeatureSnapshotBundle) -> float | None:
 
 def _has_clear_tp_target(
     bundle: FeatureSnapshotBundle,
-    latest_close: float,
+    price: float,
     atr_points: float,
-    proximity_atr: float,
+    action: DecisionAction,
+    *,
+    min_atr: float,
+    min_abs: float,
+    max_atr: float,
 ) -> bool:
-    """Return True if at least one TP target is within proximity_atr × ATR of price.
+    """Return True if a take-profit target exists IN THE TRADE DIRECTION at usable reach.
 
-    "Long TP target" = a zone above current close. "Short TP target"
-    = a zone below. We accept any one of them — the executor will
-    pick the right side based on the action.
+    A TP is the *profit*, so it lives at a distance — not glued to price. For a
+    SHORT we look at liquidity pools BELOW price; for a LONG, pools ABOVE. A
+    target qualifies if its distance is within ``[max(min_atr·ATR, min_abs),
+    max_atr·ATR]`` — far enough to be worth taking, near enough to be reachable.
+    The executor then aims at the nearest qualifying pool.
 
-    The test is ``min(proximity_atr × ATR, _TP_PROXIMITY_ABS_PRICE)``:
-    on a small-ATR market the absolute distance floor takes over, on
-    a large-ATR market the relative test dominates. This is the
-    standard "scale-aware TP check" used by retail swing systems.
+    (The old check required a pool WITHIN ~2 USD of price and ignored direction,
+    which rejected every real swing target — chronic ``no_clear_tp_target``.)
     """
 
     if bundle.liquidity is None:
         return False
-    proximity = max(proximity_atr * atr_points, _TP_PROXIMITY_ABS_PRICE)
-    has_long_tp = any(
-        abs(zone.center - latest_close) <= proximity
-        for zone in bundle.liquidity.tp_targets_above
-    )
-    has_short_tp = any(
-        abs(zone.center - latest_close) <= proximity
-        for zone in bundle.liquidity.tp_targets_below
-    )
-    return has_long_tp or has_short_tp
+    if action == DecisionAction.ENTER_SHORT:
+        targets = bundle.liquidity.tp_targets_below  # take profit below
+    elif action == DecisionAction.ENTER_LONG:
+        targets = bundle.liquidity.tp_targets_above  # take profit above
+    else:
+        return True  # NO_TRADE is handled upstream; nothing to validate
+    min_dist = max(min_atr * atr_points, min_abs)
+    max_dist = max_atr * atr_points
+    return any(min_dist <= abs(zone.center - price) <= max_dist for zone in targets)
 
 
 def _has_any_liquidity_data(agg: AggregatedFeatures) -> bool:
