@@ -19,6 +19,11 @@ from typing import Any
 # Key namespace on the trading Redis. Keep the prefix stable — both the
 # writer (dashboard) and the reader (decision-engine) hard-code it.
 RUNTIME_KEY_AI_ENABLED = "runtime:ai_layer_enabled"
+# LLM reasoning toggle: dashboard sets it, the OpenRouter client reads it and
+# sends ``reasoning: {enabled: false}`` when off. Off ~halves the m3 latency
+# (no chain-of-thought) at the cost of analytical depth — an operator lever for
+# provider-congestion incidents. Unset == use the static Settings default.
+RUNTIME_KEY_REASONING_ENABLED = "runtime:llm_reasoning_enabled"
 # Operator kill-switch: dashboard sets it, execution-engine reads it and
 # flattens + halts new entries.
 RUNTIME_KEY_EMERGENCY_STOP = "runtime:emergency_stop"
@@ -61,6 +66,20 @@ async def set_ai_enabled(redis_client: Any, enabled: bool) -> None:
     """Persist the runtime AI-layer flag on the trading Redis."""
 
     await redis_client.set(RUNTIME_KEY_AI_ENABLED, "true" if enabled else "false")
+
+
+async def get_reasoning_enabled(redis_client: Any, *, default: bool = True) -> bool:
+    """Return the runtime LLM-reasoning flag, falling back to ``default`` when unset."""
+
+    raw = await redis_client.get(RUNTIME_KEY_REASONING_ENABLED)
+    parsed = coerce_bool(raw)
+    return default if parsed is None else parsed
+
+
+async def set_reasoning_enabled(redis_client: Any, enabled: bool) -> None:
+    """Persist the runtime LLM-reasoning flag on the trading Redis."""
+
+    await redis_client.set(RUNTIME_KEY_REASONING_ENABLED, "true" if enabled else "false")
 
 
 async def get_emergency_stop(redis_client: Any) -> bool:
@@ -125,6 +144,7 @@ async def get_json(redis_client: Any, key: str) -> Any | None:
 
 __all__ = [
     "RUNTIME_KEY_AI_ENABLED",
+    "RUNTIME_KEY_REASONING_ENABLED",
     "RUNTIME_KEY_EMERGENCY_STOP",
     "STATE_KEY_ACCOUNT",
     "STATE_KEY_POSITIONS",
@@ -136,8 +156,10 @@ __all__ = [
     "get_emergency_stop",
     "get_json",
     "get_llm_usage",
+    "get_reasoning_enabled",
     "record_llm_usage",
     "set_ai_enabled",
     "set_emergency_stop",
+    "set_reasoning_enabled",
     "set_json",
 ]

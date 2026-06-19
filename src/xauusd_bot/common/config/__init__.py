@@ -91,14 +91,24 @@ class Settings(BaseSettings):
         le=100,
         description="Only call the LLM when score.total >= this threshold. Default 65 = 'prepare' band and above.",
     )
+    ai_layer_reasoning_enabled: bool = Field(
+        default=True,
+        description=(
+            "Static default for the LLM reasoning toggle. When False the OpenRouter client "
+            "sends reasoning:{enabled:false} (no chain-of-thought) — ~halves m3 latency at the "
+            "cost of analytical depth. Operators flip this at runtime from the dashboard "
+            "(runtime:llm_reasoning_enabled on the trading Redis); this is only the boot default."
+        ),
+    )
     ai_layer_max_attempts: int = Field(
-        default=2,
+        default=1,
         ge=1,
         le=6,
         description=(
             "Total LLM attempts per decision before falling back to the rule. Retries cover "
             "transient validation/empty-body/timeout errors (same provider — no ZDR change). "
-            "1 = no retry."
+            "1 = no retry. Kept at 1 so a 30s timeout never compounds to >60s and backs up the "
+            "1-bar/min decision loop."
         ),
     )
     ai_layer_retry_backoff_seconds: float = Field(
@@ -108,7 +118,7 @@ class Settings(BaseSettings):
         description="Base delay between LLM retries (grows linearly: 0.4s, 0.8s, ...).",
     )
     ai_layer_timeout_seconds: float = Field(
-        default=20.0,
+        default=30.0,
         gt=0,
         description="Hard total timeout per OpenRouter HTTP call (seconds, enforced via asyncio.wait_for).",
     )

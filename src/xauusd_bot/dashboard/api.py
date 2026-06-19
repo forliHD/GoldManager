@@ -56,8 +56,10 @@ from xauusd_bot.common.runtime_config import (
     get_emergency_stop,
     get_json,
     get_llm_usage,
+    get_reasoning_enabled,
     set_ai_enabled,
     set_emergency_stop,
+    set_reasoning_enabled,
 )
 from xauusd_bot.common.schemas.review import (
     FittingProposal,
@@ -1036,6 +1038,60 @@ async def ai_toggle(
         model=settings.openrouter_model,
         default=settings.ai_layer_enabled,
     )
+
+
+# ---------------------------------------------------------------- LLM reasoning toggle
+
+
+class ReasoningToggleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(description="Turn LLM chain-of-thought reasoning on (True) or off (False).")
+
+
+class ReasoningStateResult(BaseModel):
+    enabled: bool = Field(description="Current effective runtime reasoning state.")
+    default: bool = Field(description="The static settings default the services start from.")
+
+
+@router.get("/ai/reasoning/state")
+async def ai_reasoning_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> ReasoningStateResult:
+    """Report the live LLM-reasoning toggle state (any authenticated user)."""
+
+    settings: Settings = request.app.state.settings
+    enabled = await get_reasoning_enabled(
+        _streams_redis(request), default=settings.ai_layer_reasoning_enabled
+    )
+    return ReasoningStateResult(enabled=enabled, default=settings.ai_layer_reasoning_enabled)
+
+
+@router.post("/ai/reasoning/toggle")
+async def ai_reasoning_toggle(
+    request: Request,
+    body: ReasoningToggleRequest,
+    session: UserSession = Depends(require_role("operator")),
+) -> ReasoningStateResult:
+    """Flip LLM reasoning on/off at runtime (operator or admin).
+
+    Writes ``runtime:llm_reasoning_enabled`` on the trading Redis; the
+    OpenRouter client reads it on the next call — no restart. Off sends
+    ``reasoning:{enabled:false}`` (no chain-of-thought), ~halving the m3
+    round-trip during provider-congestion incidents, at the cost of the
+    multi-factor analysis behind the AI veto.
+    """
+
+    settings: Settings = request.app.state.settings
+    await set_reasoning_enabled(_streams_redis(request), body.enabled)
+    log.warning(
+        "llm_reasoning_toggled",
+        enabled=body.enabled,
+        operator=session.username,
+        role=session.role,
+    )
+    return ReasoningStateResult(enabled=body.enabled, default=settings.ai_layer_reasoning_enabled)
 
 
 # ---------------------------------------------------------------- live ops state

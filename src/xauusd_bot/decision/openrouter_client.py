@@ -200,12 +200,28 @@ class OpenRouterClient:
                 "or pass openrouter_api_key in Settings before calling the LLM."
             )
 
+        # Runtime reasoning toggle (operator lever, dashboard-controlled).
+        # Read best-effort from the trading Redis (same handle used for usage
+        # accounting); on any error keep the static settings default so a Redis
+        # blip never silently changes decision quality.
+        reasoning_enabled = bool(self._settings.ai_layer_reasoning_enabled)
+        if self._usage_redis is not None:
+            try:
+                from xauusd_bot.common.runtime_config import get_reasoning_enabled
+
+                reasoning_enabled = await get_reasoning_enabled(
+                    self._usage_redis, default=reasoning_enabled
+                )
+            except Exception as exc:  # noqa: BLE001 - toggle read must never break a decision
+                log.debug("openrouter_reasoning_flag_read_failed", error=str(exc))
+
         # Build the request body. The system prompt is sent in the
         # standard "system" role; the user payload is JSON-stringified
         # into the "user" role.
         body = self._build_request_body(
             system_prompt=system_prompt or self._system_prompt,
             user_payload=user_payload,
+            reasoning_enabled=reasoning_enabled,
         )
         headers = self._build_headers(api_key=api_key)
         effective_timeout = float(timeout) if timeout is not None else self._default_timeout
@@ -337,12 +353,20 @@ class OpenRouterClient:
         *,
         system_prompt: str,
         user_payload: dict[str, Any],
+        reasoning_enabled: bool = True,
     ) -> dict[str, Any]:
         """Build the OpenAI-compatible chat-completions request body.
 
         Forces ``stream=False`` (the engine needs a single JSON
         response) and ``response_format={"type": "json_object"}``
         (the LLM is required to emit strict JSON).
+
+        ``reasoning_enabled=False`` sends ``reasoning: {enabled: false}``
+        — the only reasoning control the MiniMax (minimax/fp8) endpoint
+        actually honours (``max_tokens`` / ``effort`` are silently
+        ignored). Disabling it ~halves the m3 round-trip (no
+        chain-of-thought) at the cost of analytical depth. Operators
+        flip this at runtime from the dashboard.
         """
 
         body: dict[str, Any] = {
@@ -354,6 +378,8 @@ class OpenRouterClient:
                 {"role": "user", "content": json.dumps(user_payload, default=str)},
             ],
         }
+        if not reasoning_enabled:
+            body["reasoning"] = {"enabled": False}
         # Provider routing block. Combines two concerns into OpenRouter's
         # single ``provider`` object:
         #   * ZDR (body-level flag per the official docs): restrict to ZDR

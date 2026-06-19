@@ -294,6 +294,75 @@ class TestProviderRouting:
         assert "order" not in provider
 
 
+class _FakeRedis:
+    """Minimal async Redis stand-in: ``get(key)`` returns a preset value."""
+
+    def __init__(self, value: Any = None) -> None:
+        self._value = value
+        self.gets: list[str] = []
+
+    async def get(self, key: str) -> Any:
+        self.gets.append(key)
+        return self._value
+
+
+class TestReasoningToggle:
+    @pytest.mark.asyncio
+    async def test_reasoning_omitted_by_default(self, fake_http, tmp_path):
+        """No usage_redis + default-on settings → no reasoning field (full reasoning)."""
+        fake_http()
+        client = OpenRouterClient(settings=_make_settings(), prompt_path=_prompt_path(tmp_path))
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        assert "reasoning" not in _FakeAsyncClient.calls[0]["json"]
+
+    @pytest.mark.asyncio
+    async def test_static_default_off_disables_reasoning(self, fake_http, tmp_path):
+        """ai_layer_reasoning_enabled=False (no redis) → reasoning:{enabled:false}."""
+        fake_http()
+        client = OpenRouterClient(
+            settings=_make_settings(ai_layer_reasoning_enabled=False),
+            prompt_path=_prompt_path(tmp_path),
+        )
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        assert _FakeAsyncClient.calls[0]["json"]["reasoning"] == {"enabled": False}
+
+    @pytest.mark.asyncio
+    async def test_runtime_flag_off_disables_reasoning(self, fake_http, tmp_path):
+        """Runtime flag 'false' on the trading Redis overrides the on-default."""
+        fake_http()
+        redis = _FakeRedis(value="false")
+        client = OpenRouterClient(
+            settings=_make_settings(), prompt_path=_prompt_path(tmp_path), usage_redis=redis
+        )
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        assert _FakeAsyncClient.calls[0]["json"]["reasoning"] == {"enabled": False}
+        assert "runtime:llm_reasoning_enabled" in redis.gets
+
+    @pytest.mark.asyncio
+    async def test_runtime_flag_on_keeps_reasoning(self, fake_http, tmp_path):
+        """Runtime flag 'true' keeps full reasoning (no field emitted)."""
+        fake_http()
+        client = OpenRouterClient(
+            settings=_make_settings(),
+            prompt_path=_prompt_path(tmp_path),
+            usage_redis=_FakeRedis(value="true"),
+        )
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        assert "reasoning" not in _FakeAsyncClient.calls[0]["json"]
+
+    @pytest.mark.asyncio
+    async def test_unset_flag_falls_back_to_settings_default(self, fake_http, tmp_path):
+        """Flag unset (None) + default-off settings → reasoning disabled."""
+        fake_http()
+        client = OpenRouterClient(
+            settings=_make_settings(ai_layer_reasoning_enabled=False),
+            prompt_path=_prompt_path(tmp_path),
+            usage_redis=_FakeRedis(value=None),
+        )
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        assert _FakeAsyncClient.calls[0]["json"]["reasoning"] == {"enabled": False}
+
+
 class TestClientParsesValid:
     @pytest.mark.asyncio
     async def test_parses_valid_json(self, fake_http, tmp_path):
