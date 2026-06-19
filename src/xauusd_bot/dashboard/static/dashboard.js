@@ -587,10 +587,13 @@
     if (d.ai_reasoning) {
       const inval = (d.ai_invalidations || []).length
         ? `<h4>Invalidierung</h4><div class="dd-sub">${d.ai_invalidations.map(x => `<span>${escapeHtml(x)}</span>`).join('')}</div>` : '';
-      const conf = d.ai_confidence != null ? ` · Konfidenz ${Math.round(d.ai_confidence * 100)}%` : '';
+      const conf = d.ai_confidence != null ? ` · Konfidenz ${Math.round(d.ai_confidence)}%` : '';
       ai = `<h4>🧠 KI-Begründung${conf}</h4><div class="dd-ai">${escapeHtml(d.ai_reasoning)}</div>${inval}`;
     } else {
-      ai = `<h4>🧠 KI-Begründung</h4><div class="dd-ai-none">Keine KI-Begründung — für diese Decision wurde das LLM nicht aufgerufen (z. B. AI aus, oder Score zu niedrig für eine KI-Prüfung).</div>`;
+      const why = (d.score != null && d.score < 65)
+        ? 'Score unter 65 → keine KI-Prüfung (der LLM wird erst ab Score 65 konsultiert).'
+        : 'Keine KI-Begründung trotz Score ≥ 65 — entweder war der AI-Toggle aus, News-Blackout, oder der LLM-Call ist fehlgeschlagen und es wurde fail-safe auf die Regel zurückgefallen.';
+      ai = `<h4>🧠 KI-Begründung</h4><div class="dd-ai-none">${why}</div>`;
     }
     setHtml('#dd-body',
       `<div class="dd-meta">
