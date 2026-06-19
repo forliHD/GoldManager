@@ -53,9 +53,9 @@
     $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === v));
     loadView();
     if (state.timer) clearInterval(state.timer);
-    // chart refreshes itself; others poll
-    const period = v === 'decisions' ? 6000 : 4000;
-    if (v !== 'chart' && v !== 'more') state.timer = setInterval(loadView, period);
+    // auto-refresh the active view (chart included; 'more' is static controls)
+    const period = v === 'chart' ? 5000 : v === 'decisions' ? 6000 : 4000;
+    if (v !== 'more') state.timer = setInterval(loadView, period);
   }
   function loadView() {
     const fn = { status: loadStatus, positions: loadPositions, decisions: loadDecisions, chart: loadChart, more: loadMore }[state.view];
@@ -195,30 +195,70 @@
   async function loadChart() {
     const el = $('#ch-container');
     if (!window.LightweightCharts) { $('#ch-last').textContent = 'Chart-Lib fehlt'; return; }
+    const sz = () => ({ width: el.clientWidth || (window.innerWidth - 24), height: el.clientHeight || 360 });
     if (!state.chart) {
       el.innerHTML = '';
-      const w = el.clientWidth || (window.innerWidth - 44);
+      const d = sz();
       state.chart = LightweightCharts.createChart(el, {
-        width: w, height: 340, layout: { background: { color: 'transparent' }, textColor: '#7d8590' },
+        width: d.width, height: d.height, layout: { background: { color: 'transparent' }, textColor: '#7d8590' },
         grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
-        timeScale: { timeVisible: true, borderColor: '#30363d' }, rightPriceScale: { borderColor: '#30363d' },
-        handleScale: { axisPressedMouseMove: true }, handleScroll: true,
+        timeScale: { timeVisible: true, borderColor: '#30363d', rightOffset: 4 },
+        rightPriceScale: { borderColor: '#30363d' },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        handleScale: true, handleScroll: true,
       });
-      state.series = state.chart.addCandlestickSeries({ upColor: '#3fb950', downColor: '#f85149', borderVisible: false, wickUpColor: '#3fb950', wickDownColor: '#f85149' });
-      window.addEventListener('resize', () => { if (state.chart && el.clientWidth) state.chart.applyOptions({ width: el.clientWidth }); });
-    } else if (el.clientWidth) {
-      state.chart.applyOptions({ width: el.clientWidth }); // view was hidden (width 0) when created
-    }
+      state.series = state.chart.addCandlestickSeries({ upColor: '#3fb950', downColor: '#f85149', borderVisible: false, wickUpColor: '#3fb950', wickDownColor: '#f85149', priceLineColor: '#58a6ff' });
+      window.addEventListener('resize', () => { if (state.chart) { const x = sz(); state.chart.applyOptions(x); } });
+    } else { const x = sz(); if (x.width) state.chart.applyOptions(x); } // re-fit after the view was hidden (size 0) at create time
     try {
       if (!state.symbol) { const h = await api('/api/health').catch(() => null); state.symbol = (h && h.symbol) || 'XAUUSD'; }
       $('#ch-symbol').textContent = state.symbol + ' · M5';
-      const candles = await api(`/api/chart/candles?symbol=${encodeURIComponent(state.symbol)}&timeframe=M5&count=300`);
+      const sym = encodeURIComponent(state.symbol);
+      const [candles, overlays] = await Promise.all([
+        api(`/api/chart/candles?symbol=${sym}&timeframe=M5&count=300`),
+        api(`/api/chart/overlays?symbol=${sym}`).catch(() => null),
+      ]);
       if (Array.isArray(candles) && candles.length) {
+        const first = !state.chartReady;
         state.series.setData(candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: +c.open, high: +c.high, low: +c.low, close: +c.close })));
         const last = candles[candles.length - 1]; $('#ch-last').textContent = num(+last.close);
-        try { const n = candles.length; state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 90), to: n + 3 }); } catch (e) {}
+        applyChartOverlays(overlays);
+        // Only frame the view on first load — don't yank the user's pan/zoom on refresh.
+        if (first) { try { const n = candles.length; state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 80), to: n + 3 }); } catch (e) {} state.chartReady = true; }
       } else { $('#ch-last').textContent = 'keine Daten'; }
     } catch (e) { $('#ch-last').textContent = 'Fehler'; console.error('chart', e); }
+  }
+  function applyChartOverlays(o) {
+    (state.priceLines || []).forEach(pl => { try { state.series.removePriceLine(pl); } catch (e) {} });
+    state.priceLines = [];
+    const legend = [];
+    if (!o || !window.LightweightCharts) { $('#ch-legend').innerHTML = ''; return; }
+    const S = LightweightCharts.LineStyle;
+    const add = (price, color, title, style, w) => {
+      if (price == null || isNaN(+price)) return;
+      try { state.priceLines.push(state.series.createPriceLine({ price: +price, color, lineWidth: w || 1, lineStyle: style, axisLabelVisible: true, title })); } catch (e) {}
+    };
+    const vw = o.vwaps || o.vwap || {};
+    const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
+    let anyVw = false;
+    ['utc00', 'utc07', 'utc12'].forEach(k => { if (vw[k] != null) { add(vw[k], vwCol[k], 'VWAP ' + k.slice(3), S.Solid, 1); anyVw = true; } });
+    if (anyVw) legend.push(`<span><i style="background:#3b82f6"></i>VWAP</span>`);
+    const w = (o.volume_profile || {}).weekly;
+    if (w) {
+      add(w.vah, '#ef4444', 'VAH', S.Dotted); add(w.vpoc, '#eab308', 'VPOC', S.Dotted); add(w.val, '#22c55e', 'VAL', S.Dotted);
+      legend.push(`<span><i style="background:#ef4444"></i>VAH</span><span><i style="background:#eab308"></i>VPOC</span><span><i style="background:#22c55e"></i>VAL</span>`);
+    }
+    // FVG — nearest few zones as colored top/bottom levels (lightweight, robust).
+    const zones = (o.fvg_zones || o.fvgZones || []).slice(0, 5);
+    let anyFvg = false;
+    zones.forEach(z => {
+      const bull = String(z.type || '').toLowerCase().includes('bull');
+      const col = bull ? 'rgba(63,185,80,.55)' : 'rgba(248,81,73,.55)';
+      const top = z.top != null ? z.top : z.price_high, bot = z.bottom != null ? z.bottom : z.price_low;
+      add(top, col, 'FVG', S.Dashed); add(bot, col, '', S.Dashed); anyFvg = anyFvg || top != null;
+    });
+    if (anyFvg) legend.push(`<span><i style="background:#3fb950"></i>FVG↑</span><span><i style="background:#f85149"></i>FVG↓</span>`);
+    $('#ch-legend').innerHTML = legend.join('');
   }
 
   // ---------- MEHR ----------

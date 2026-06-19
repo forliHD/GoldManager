@@ -19,7 +19,7 @@
       --nav-h: 60px;
     }
     * { box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
-    html,body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--text);
+    html,body { margin:0; padding:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--bg); color:var(--text);
       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:15px; }
     .hidden { display:none !important; }
     .muted { color:var(--muted); }
@@ -34,9 +34,10 @@
     .login-box button { width:100%; padding:13px; background:var(--accent); color:#0e1116; border:0; border-radius:8px; font-weight:700; font-size:16px; }
     .login-error { color:var(--err); margin-top:10px; min-height:18px; }
 
-    /* App shell */
-    #app { display:flex; flex-direction:column; min-height:100%; padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
-    .topbar { position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:10px;
+    /* App shell — full-height flex column: topbar (fixed) / content (scrolls) / nav (fixed). */
+    #app { display:flex; flex-direction:column; height:100dvh; height:100vh; }
+    .content { flex:1 1 auto; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+    .topbar { flex:none; display:flex; align-items:center; gap:10px;
       padding: calc(8px + env(safe-area-inset-top)) 16px 8px; background:var(--panel); border-bottom:1px solid var(--border); }
     .topbar .logo { font-weight:800; font-size:16px; letter-spacing:.02em; }
     .topbar .logo span { color:var(--accent); }
@@ -48,6 +49,16 @@
 
     .view { padding:14px 14px 6px; }
     .view.hidden { display:none; }
+    /* chart fills the screen between topbar and nav */
+    #view-chart { padding:8px 8px 4px; }
+    .chart-head { display:flex; justify-content:space-between; align-items:center; padding:2px 4px 8px; }
+    .chart-head strong { font-size:15px; }
+    .ch-price { font-size:17px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); }
+    #ch-container { width:100%; height:calc(100vh - 220px); height:calc(100dvh - 220px); min-height:300px;
+      border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--panel); }
+    .chart-legend { display:flex; flex-wrap:wrap; gap:12px; padding:8px 4px 2px; font-size:11px; color:var(--muted); }
+    .chart-legend span { display:flex; align-items:center; gap:5px; }
+    .chart-legend i { width:14px; height:3px; border-radius:2px; display:inline-block; }
 
     /* Cards */
     .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:12px; }
@@ -112,7 +123,7 @@
     .full-btn { width:100%; padding:13px; border-radius:10px; border:1px solid var(--accent); background:var(--accent); color:#0e1116; font-weight:700; font-size:15px; }
 
     /* bottom nav */
-    .nav { position:fixed; left:0; right:0; bottom:0; height:calc(var(--nav-h) + env(safe-area-inset-bottom));
+    .nav { flex:none; height:calc(var(--nav-h) + env(safe-area-inset-bottom));
       padding-bottom:env(safe-area-inset-bottom); display:flex; background:var(--panel); border-top:1px solid var(--border); z-index:30; }
     .nav button { flex:1; background:none; border:0; color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:10px; }
     .nav button .ic { font-size:20px; line-height:1; }
@@ -150,6 +161,7 @@
       <button class="icon-btn" id="refresh-btn" title="Aktualisieren">⟳</button>
     </div>
 
+    <div class="content" id="content">
     <!-- STATUS / cockpit -->
     <div class="view" id="view-status">
       <div class="banner" id="status-banner">Lade…</div>
@@ -203,13 +215,12 @@
 
     <!-- CHART -->
     <div class="view hidden" id="view-chart">
-      <div class="card" style="padding:8px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <strong id="ch-symbol">XAUUSD</strong>
-          <span class="muted" id="ch-last">—</span>
-        </div>
-        <div id="ch-container" style="height:340px"></div>
+      <div class="chart-head">
+        <strong id="ch-symbol">XAUUSD · M5</strong>
+        <span id="ch-last" class="ch-price">—</span>
       </div>
+      <div id="ch-container"></div>
+      <div class="chart-legend" id="ch-legend"></div>
     </div>
 
     <!-- MEHR / controls -->
@@ -241,6 +252,7 @@
         <button class="link-btn" id="logout-btn">Abmelden</button>
       </div>
     </div>
+    </div><!-- /.content -->
 
     <nav class="nav" id="nav">
       <button data-view="status" class="active"><span class="ic">🏠</span>Status</button>
