@@ -1337,6 +1337,9 @@ async def decisions_history(
                 "qualified": r.qualified,
                 "entry_type": r.entry_type,
                 "ref_price": r.ref_price,
+                "ai_reasoning": r.ai_reasoning,
+                "ai_confidence": r.ai_confidence,
+                "ai_invalidations": r.ai_invalidations or [],
             }
         )
     return out

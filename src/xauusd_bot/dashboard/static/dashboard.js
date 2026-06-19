@@ -553,8 +553,11 @@
       for (const d of rows) {
         const tr = document.createElement('tr');
         if (d.qualified) tr.className = 'qual';
+        tr.style.cursor = 'pointer';
+        tr.addEventListener('click', () => showDecisionDetail(d));
         const sub = Object.entries(d.subscores || {}).map(([k, v]) => `${k} ${Math.round(v)}`).join(' · ');
-        tr.title = sub ? ('Sub-Scores: ' + sub + (d.ref_price ? '  ·  Preis ' + fmtNum(d.ref_price) : '')) : '';
+        const aiHint = d.ai_reasoning ? ' · 🧠 KI-Begründung (klicken)' : '';
+        tr.title = (sub ? ('Sub-Scores: ' + sub) : '') + (d.ref_price ? '  ·  Preis ' + fmtNum(d.ref_price) : '') + aiHint;
         const dirCls = d.direction === 'short' ? 'neg' : d.direction === 'long' ? 'pos' : 'muted';
         tr.innerHTML = `<td>${escapeHtml(fmtTs(d.ts))}</td>`
           + `<td class="${dirCls}">${escapeHtml(d.direction || '—')}</td>`
@@ -572,6 +575,38 @@
     const el = $(sel); if (el) el.addEventListener(sel === '#dh-refresh' ? 'click' : 'change', loadDecisionsHistory);
   });
   { const el = $('#dh-minscore'); if (el) el.addEventListener('change', loadDecisionsHistory); }
+
+  // Decision detail modal — meta, full sub-scores, and the LLM rationale.
+  function showDecisionDetail(d) {
+    const bg = $('#dd-modal-bg'); if (!bg) return;
+    const dirCls = d.direction === 'short' ? 'neg' : d.direction === 'long' ? 'pos' : 'muted';
+    const subs = Object.entries(d.subscores || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `<span>${escapeHtml(k)} <b>${Math.round(v)}</b></span>`).join('');
+    let ai;
+    if (d.ai_reasoning) {
+      const inval = (d.ai_invalidations || []).length
+        ? `<h4>Invalidierung</h4><div class="dd-sub">${d.ai_invalidations.map(x => `<span>${escapeHtml(x)}</span>`).join('')}</div>` : '';
+      const conf = d.ai_confidence != null ? ` · Konfidenz ${Math.round(d.ai_confidence * 100)}%` : '';
+      ai = `<h4>🧠 KI-Begründung${conf}</h4><div class="dd-ai">${escapeHtml(d.ai_reasoning)}</div>${inval}`;
+    } else {
+      ai = `<h4>🧠 KI-Begründung</h4><div class="dd-ai-none">Keine KI-Begründung — für diese Decision wurde das LLM nicht aufgerufen (z. B. AI aus, oder Score zu niedrig für eine KI-Prüfung).</div>`;
+    }
+    setHtml('#dd-body',
+      `<div class="dd-meta">
+        <span class="k">Zeit</span><span>${escapeHtml(fmtTs(d.ts))}</span>
+        <span class="k">Richtung</span><span class="${dirCls}">${escapeHtml(d.direction || '—')}</span>
+        <span class="k">Score / Band</span><span>${fmtNum(d.score, 1)} · ${escapeHtml(d.band || '—')}</span>
+        <span class="k">Aktion</span><span>${d.qualified ? '✓ ' + escapeHtml(d.entry_type || 'qualified') : escapeHtml(d.action || '—')}</span>
+        <span class="k">Grund</span><span>${escapeHtml(d.block_reason || '—')}</span>
+        <span class="k">Referenzpreis</span><span>${d.ref_price != null ? fmtNum(d.ref_price) : '—'}</span>
+      </div>
+      <h4>Sub-Scores</h4><div class="dd-sub">${subs || '<span class="muted">—</span>'}</div>
+      ${ai}`);
+    show('#dd-modal-bg');
+  }
+  { const c = $('#dd-close'); if (c) c.onclick = () => hide('#dd-modal-bg'); }
+  { const bg = $('#dd-modal-bg'); if (bg) bg.addEventListener('click', (e) => { if (e.target === bg) hide('#dd-modal-bg'); }); }
 
   // ----- Backtest tab -----
   $('#bt-wf').addEventListener('change', (e) => {

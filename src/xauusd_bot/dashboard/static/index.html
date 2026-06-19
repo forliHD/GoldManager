@@ -190,6 +190,13 @@
     .modal .actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
     .modal .actions button { padding: 6px 14px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); cursor: pointer; }
     .modal .actions button.primary { background: var(--accent); color: #0e1116; border-color: var(--accent); font-weight: 600; }
+    #dd-body .dd-meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; margin-bottom: 12px; }
+    #dd-body .dd-meta .k { color: var(--muted); }
+    #dd-body h4 { margin: 12px 0 6px; font-size: 12px; }
+    #dd-body .dd-sub { display: flex; flex-wrap: wrap; gap: 6px; }
+    #dd-body .dd-sub span { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; font-size: 11px; }
+    #dd-body .dd-ai { background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 4px; padding: 10px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+    #dd-body .dd-ai-none { color: var(--muted); font-style: italic; }
   </style>
 </head>
 <body>
@@ -437,6 +444,15 @@
         <button id="modal-cancel">Cancel</button>
         <button id="modal-confirm" class="primary">Confirm</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Decision detail (with AI rationale) -->
+  <div id="dd-modal-bg" class="modal-bg hidden">
+    <div class="modal" style="width:540px; max-width:92vw; max-height:82vh; overflow:auto;">
+      <h3 id="dd-title">Decision</h3>
+      <div id="dd-body"></div>
+      <div class="actions"><button id="dd-close" class="primary">Schließen</button></div>
     </div>
   </div>
 

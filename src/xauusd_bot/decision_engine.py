@@ -34,7 +34,7 @@ from xauusd_bot.common.messaging.events import (
 )
 from xauusd_bot.common.messaging.streams import Publisher, StreamMessage, StreamTopic
 from xauusd_bot.common.schemas.journal import DecisionLogRecord
-from xauusd_bot.common.runtime_config import get_ai_enabled
+from xauusd_bot.common.runtime_config import get_ai_enabled, get_json
 from xauusd_bot.common.service import make_publisher, run_consumer_service
 from xauusd_bot.decision.pipeline import DecisionPipeline
 
@@ -76,8 +76,12 @@ class _RuntimeAIFlag:
         return self._value
 
 
-def _decision_log(decision, score, qualification, symbol: str, ref_price) -> DecisionLogRecord:
-    """Build the slim, persistence-shaped decision record (no feature bundle)."""
+def _decision_log(decision, score, qualification, symbol: str, ref_price, ai_info=None) -> DecisionLogRecord:
+    """Build the slim, persistence-shaped decision record (no feature bundle).
+
+    ``ai_info`` is the fresh ``state:last_ai`` payload when the LLM ran for THIS
+    decision (rationale / confidence / invalidations); None otherwise.
+    """
     d = decision.model_dump(mode="json") if decision is not None else {}
     s = score.model_dump(mode="json") if score is not None else {}
     q = qualification.model_dump(mode="json") if qualification is not None else {}
@@ -86,6 +90,8 @@ def _decision_log(decision, score, qualification, symbol: str, ref_price) -> Dec
         ts = datetime.fromisoformat(ts_raw) if ts_raw else datetime.now(tz=UTC)
     except (TypeError, ValueError):
         ts = datetime.now(tz=UTC)
+    ai = ai_info or {}
+    conf = ai.get("confidence")
     return DecisionLogRecord(
         ts=ts,
         written_at=datetime.now(tz=UTC),
@@ -100,10 +106,13 @@ def _decision_log(decision, score, qualification, symbol: str, ref_price) -> Dec
         entry_type=q.get("final_entry_type"),
         source_ai=bool(d.get("source_ai")),
         ref_price=float(ref_price) if ref_price is not None else None,
+        ai_reasoning=ai.get("comment"),
+        ai_confidence=float(conf) if conf is not None else None,
+        ai_invalidations=list(ai.get("invalidations") or []),
     )
 
 
-def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _RuntimeAIFlag):
+def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _RuntimeAIFlag, ai_redis=None):
     async def handle(msg: StreamMessage) -> None:
         ev = msg.payload
         assert isinstance(ev, FeaturesEvent)
@@ -137,12 +146,25 @@ def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _Ru
         # Persist a slim decision record (no bundle) for the dashboard's
         # decision-history tab. Best-effort — never block the decision path.
         try:
+            # Attach the LLM rationale only when the AI ran for THIS decision:
+            # the OpenRouter client writes state:last_ai during decide(), so a
+            # fresh (<20s) payload belongs to this bar; a stale one is a prior call.
+            ai_info = None
+            if ai_redis is not None:
+                try:
+                    last_ai = await get_json(ai_redis, "state:last_ai")
+                    if last_ai and last_ai.get("ts"):
+                        age = (datetime.now(tz=UTC) - datetime.fromisoformat(last_ai["ts"])).total_seconds()
+                        if age <= 20:
+                            ai_info = last_ai
+                except Exception:  # noqa: BLE001
+                    ai_info = None
             await publisher.publish(
                 StreamTopic.JOURNAL,
                 JournalEvent(
                     symbol=ev.symbol,
                     entry_type="decision",
-                    decision=_decision_log(decision, score, qualification, ev.symbol, ev.ref_price),
+                    decision=_decision_log(decision, score, qualification, ev.symbol, ev.ref_price, ai_info),
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - journaling is best-effort
@@ -167,7 +189,7 @@ async def _run(settings: Settings) -> int:
         ai_default=settings.ai_layer_enabled,
         model=settings.openrouter_model,
     )
-    handler = _make_handler(pipeline, publisher, ai_flag)
+    handler = _make_handler(pipeline, publisher, ai_flag, ai_redis=flag_redis)
 
     async def _on_stop() -> None:
         await publisher.close()
