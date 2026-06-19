@@ -116,3 +116,34 @@ async def test_send_keeps_subscription_on_transient_error(redis, stub_pywebpush)
     ok = await wp.send("ping")
     assert ok is False
     assert await wp.subscription_count() == 1  # NOT pruned on 5xx
+
+
+@pytest.mark.asyncio
+async def test_send_to_user_targets_only_that_user(redis, stub_pywebpush):
+    wp = WebPushNotifier(redis, vapid_public_key="pub", vapid_private_key="priv")
+    await wp.add_subscription(_sub("https://push/alice"), username="alice", role="operator")
+    await wp.add_subscription(_sub("https://push/bob"), username="bob", role="viewer")
+    ok = await wp.send_to_user("hi", "alice")
+    assert ok is True
+    assert [c["endpoint"] for c in stub_pywebpush.calls] == ["https://push/alice"]  # bob untouched
+
+
+@pytest.mark.asyncio
+async def test_broadcast_role_filter_excludes_viewer(redis, stub_pywebpush):
+    wp = WebPushNotifier(
+        redis, vapid_public_key="pub", vapid_private_key="priv", broadcast_roles=("operator", "admin")
+    )
+    await wp.add_subscription(_sub("https://push/op"), username="o", role="operator")
+    await wp.add_subscription(_sub("https://push/viewer"), username="v", role="viewer")
+    ok = await wp.send("trade alert")
+    assert ok is True
+    assert {c["endpoint"] for c in stub_pywebpush.calls} == {"https://push/op"}  # viewer excluded
+
+
+@pytest.mark.asyncio
+async def test_send_without_role_filter_hits_all(redis, stub_pywebpush):
+    wp = WebPushNotifier(redis, vapid_public_key="pub", vapid_private_key="priv")  # no role filter
+    await wp.add_subscription(_sub("https://push/a"), username="a", role="viewer")
+    await wp.add_subscription(_sub("https://push/b"), username="b", role="operator")
+    await wp.send("x")
+    assert len(stub_pywebpush.calls) == 2

@@ -51,12 +51,17 @@ class WebPushNotifier:
         vapid_subject: str = "mailto:admin@goldmanager.local",
         enabled: bool = True,
         title: str = "GoldManager",
+        broadcast_roles: tuple[str, ...] | None = None,
     ) -> None:
         self._redis = redis_client
         self._public_key = vapid_public_key
         self._private_key = vapid_private_key
         self._subject = vapid_subject
         self._title = title
+        # When set, ``send()`` (broadcast) only reaches subscriptions whose stored
+        # role is in this set — so e.g. trade alerts go to operators/admins, never
+        # a viewer who happened to install the PWA. None = no filter (all devices).
+        self._broadcast_roles = broadcast_roles
         self._enabled = bool(
             enabled and redis_client is not None and vapid_public_key and vapid_private_key
         )
@@ -70,7 +75,9 @@ class WebPushNotifier:
         return self._public_key
 
     @classmethod
-    def from_settings(cls, settings: Any, redis_client: Any) -> "WebPushNotifier":
+    def from_settings(
+        cls, settings: Any, redis_client: Any, *, broadcast_roles: tuple[str, ...] | None = None
+    ) -> "WebPushNotifier":
         priv = getattr(settings, "vapid_private_key", None)
         priv = priv.get_secret_value() if hasattr(priv, "get_secret_value") else priv
         return cls(
@@ -79,17 +86,25 @@ class WebPushNotifier:
             vapid_private_key=priv,
             vapid_subject=getattr(settings, "vapid_subject", "mailto:admin@goldmanager.local"),
             enabled=bool(getattr(settings, "webpush_enabled", True)),
+            broadcast_roles=broadcast_roles,
         )
 
     # ----------------------------------------------------------- subscriptions
 
-    async def add_subscription(self, subscription: dict[str, Any]) -> bool:
-        """Persist a browser PushSubscription (keyed by its endpoint)."""
+    async def add_subscription(
+        self, subscription: dict[str, Any], *, username: str | None = None, role: str | None = None
+    ) -> bool:
+        """Persist a browser PushSubscription, tagged with its owner (keyed by endpoint).
+
+        ``username``/``role`` let ``send`` target a single user (so a test push
+        never spams other users' devices) and restrict broadcasts by role.
+        """
 
         endpoint = subscription.get("endpoint")
         if not endpoint or self._redis is None:
             return False
-        await self._redis.hset(PUSH_SUBSCRIPTIONS_KEY, endpoint, json.dumps(subscription))
+        record = {**subscription, "username": username, "role": role}
+        await self._redis.hset(PUSH_SUBSCRIPTIONS_KEY, endpoint, json.dumps(record))
         return True
 
     async def remove_subscription(self, endpoint: str) -> None:
@@ -105,7 +120,22 @@ class WebPushNotifier:
     # ----------------------------------------------------------- send
 
     async def send(self, text: str) -> bool:
-        """Push ``text`` to every registered subscription. Returns True if >=1 sent."""
+        """Broadcast ``text`` to registered subscriptions (role-filtered if configured)."""
+
+        roles = self._broadcast_roles
+        return await self._fan_out(text, lambda rec: roles is None or rec.get("role") in roles)
+
+    async def send_to_user(self, text: str, username: str) -> bool:
+        """Push ``text`` only to ``username``'s own devices (e.g. a test push)."""
+
+        return await self._fan_out(text, lambda rec: rec.get("username") == username)
+
+    async def _fan_out(self, text: str, match) -> bool:
+        """Push to every stored subscription matching ``match(record)``, in parallel.
+
+        Sends run concurrently so one slow/dead endpoint (8s timeout each) never
+        delays the others; dead subscriptions (404/410) are pruned afterwards.
+        """
 
         if not self._enabled or self._redis is None:
             return False
@@ -118,15 +148,26 @@ class WebPushNotifier:
             return False
 
         payload = json.dumps({"title": self._title, "body": _strip_html(text)})
-        sent = 0
+        targets: list[tuple[str, dict[str, Any]]] = []
         dead: list[str] = []
         for endpoint, raw in subs.items():
             try:
-                info = json.loads(raw)
+                rec = json.loads(raw)
             except (TypeError, ValueError):
                 dead.append(endpoint)
                 continue
-            ok, gone = await asyncio.to_thread(self._send_one, info, payload)
+            if match(rec):
+                targets.append((endpoint, rec))
+
+        results = await asyncio.gather(
+            *(asyncio.to_thread(self._send_one, rec, payload) for _, rec in targets),
+            return_exceptions=True,
+        )
+        sent = 0
+        for (endpoint, _rec), res in zip(targets, results):
+            if isinstance(res, BaseException):
+                continue
+            ok, gone = res
             if ok:
                 sent += 1
             if gone:

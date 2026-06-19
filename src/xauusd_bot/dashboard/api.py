@@ -1283,7 +1283,7 @@ async def push_subscribe(
     """Register a browser push subscription (any authenticated user)."""
 
     wp = _webpush(request)
-    ok = await wp.add_subscription(body.model_dump())
+    ok = await wp.add_subscription(body.model_dump(), username=session.username, role=session.role)
     return {"ok": ok, "count": await wp.subscription_count()}
 
 
@@ -1310,7 +1310,8 @@ async def push_test(
     wp = _webpush(request)
     if not wp.enabled:
         return {"ok": False, "reason": "Web Push nicht konfiguriert (VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY setzen)."}
-    ok = await wp.send("🔔 <b>GoldManager</b>: Push-Benachrichtigungen sind aktiv.")
+    # Only the caller's own devices — a test must not spam other users.
+    ok = await wp.send_to_user("🔔 <b>GoldManager</b>: Push-Benachrichtigungen sind aktiv.", session.username)
     return {"ok": ok, "count": await wp.subscription_count()}
 
 

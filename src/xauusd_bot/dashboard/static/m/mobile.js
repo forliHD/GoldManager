@@ -52,6 +52,7 @@
     state.view = v;
     $$('.view').forEach(el => el.classList.toggle('hidden', el.id !== 'view-' + v));
     $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+    setTicksSub(v === 'chart'); // stream live ticks only while the chart is visible
     loadView();
     if (state.timer) clearInterval(state.timer);
     // Chart: live candles come over the WebSocket; only slow-refresh overlays as
@@ -248,6 +249,9 @@
         // Re-fit after the legend rendered (it shrinks the flex container a bit),
         // so the canvas matches the available space exactly — no inner scroll.
         try { state.chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }); } catch (e) {}
+        // Nudge box positioning after the first paint (priceToCoordinate is null
+        // pre-paint; without live ticks at market close nothing else retries).
+        setTimeout(positionFvgBoxes, 150);
       } else { $('#ch-last').textContent = 'keine Daten'; }
     } catch (e) { $('#ch-last').textContent = 'Fehler'; console.error('chart', e); }
   }
@@ -390,12 +394,21 @@
     $('#modal').classList.remove('hidden');
   }
   // ----- live WebSocket (forming bar ~1/s -> chart animates; features -> overlays) -----
+  function setTicksSub(on) {
+    const ws = state.ws;
+    if (!ws || ws.readyState !== 1) return;
+    try { ws.send(JSON.stringify({ action: on ? 'subscribe' : 'unsubscribe', topic: 'ticks' })); } catch (e) {}
+  }
   function connectWS() {
     try { if (state.ws) state.ws.close(); } catch (e) {}
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     let ws; try { ws = new WebSocket(`${proto}://${location.host}/ws`); } catch (e) { return; }
     state.ws = ws;
-    ws.onopen = () => { state.wsRetry = 0; ['ticks', 'features'].forEach(t => { try { ws.send(JSON.stringify({ action: 'subscribe', topic: t })); } catch (e) {} }); };
+    ws.onopen = () => {
+      state.wsRetry = 0;
+      try { ws.send(JSON.stringify({ action: 'subscribe', topic: 'features' })); } catch (e) {}
+      setTicksSub(state.view === 'chart'); // only stream ~1/s ticks while the chart is open
+    };
     ws.onmessage = (ev) => {
       try {
         const m = JSON.parse(ev.data);
@@ -453,6 +466,9 @@
       state.pushSub = sub;
       el.className = 'pill ' + (sub ? 'on' : 'off'); el.textContent = sub ? 'an' : 'aus';
       $('#push-enable').textContent = sub ? '🔕 Push deaktivieren' : '🔔 Push aktivieren';
+      // Re-register an existing subscription so it carries the current user/role
+      // tag (heals older untagged records, idempotent — keyed by endpoint).
+      if (sub) api('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()), headers: { 'Content-Type': 'application/json' } }).catch(() => {});
     } catch (e) {}
   }
   $('#push-enable').onclick = async () => {

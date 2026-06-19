@@ -452,7 +452,8 @@ async def _run(settings: Settings) -> int:
         batch_size=settings.stream_batch_size,
     )
     telegram = TelegramNotifier.from_settings(settings)
-    webpush = WebPushNotifier.from_settings(settings, state_redis)
+    # Trade-event pushes go only to operator/admin devices, never a viewer's.
+    webpush = WebPushNotifier.from_settings(settings, state_redis, broadcast_roles=("operator", "admin"))
     notifier = FanoutNotifier(telegram, webpush)
     log.info(
         "execution_engine_alerts",
