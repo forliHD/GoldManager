@@ -65,6 +65,15 @@
     .risk-bar > span { display: block; height: 100%; background: var(--ok); transition: width .3s, background .3s; }
     .risk-bar > span.warn { background: var(--warn); }
     .risk-bar > span.crit { background: #f85149; }
+    /* Compact risk gauges: label · slim bar · value, one line each. */
+    .rk-row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 11px; }
+    .rk-lbl { width: 44px; flex: none; color: var(--muted); }
+    .rk-gauge { flex: 1; height: 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+    .rk-fill { display: block; height: 100%; background: var(--ok); transition: width .3s, background .3s; }
+    .rk-fill.warn { background: var(--warn); } .rk-fill.crit { background: #f85149; }
+    .rk-val { flex: none; text-align: right; white-space: nowrap; }
+    .rk-cap { color: var(--muted); }
+    .rk-pos { display: flex; justify-content: space-between; font-size: 11px; margin-top: 7px; }
     .pos-long { color: var(--ok); } .pos-short { color: #f85149; }
     .pnl-pos { color: var(--ok); } .pnl-neg { color: #f85149; }
     .feed { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }

@@ -787,14 +787,24 @@
   }
   function renderRisk(r) {
     if (!r || r.daily_cap_pct === undefined) { setHtml('#live-risk', '<span class="muted">keine Daten</span>'); return; }
-    const posPct = r.max_open_positions ? (r.open_positions / r.max_open_positions) * 100 : 0;
-    const posCls = posPct >= 100 ? 'crit' : posPct >= 66 ? 'warn' : '';
+    // Compact gauge: short label · slim color bar (visible even at low %) · €/%/cap.
+    const gauge = (label, capPct, pnl, cap) => {
+      const loss = pnl < 0 ? -pnl : 0;
+      const capAbs = Math.abs(cap || 0) || 1;
+      const pct = Math.min(100, (loss / capAbs) * 100);
+      const cls = pct >= 80 ? 'crit' : pct >= 50 ? 'warn' : '';
+      const w = loss > 0 ? Math.max(3, pct) : 0;
+      return `<div class="rk-row" title="${label} (${(capPct * 100).toFixed(0)}% Cap): ${fmtMoney(pnl)} von ${fmtMoney(cap)} €">
+        <span class="rk-lbl">${label}</span>
+        <span class="rk-gauge"><span class="rk-fill ${cls}" style="width:${w}%"></span></span>
+        <span class="rk-val">${fmtEur(pnl)} <span class="rk-cap">· ${pct.toFixed(0)}% v. ${fmtMoney(cap)}€</span></span>
+      </div>`;
+    };
+    const open = (r.unrealized_pnl != null && r.open_positions > 0) ? ` · offen ${fmtEur(r.unrealized_pnl)}` : '';
     setHtml('#live-risk',
-      riskBar(`Tagesverlust (${(r.daily_cap_pct * 100).toFixed(0)}%)`, r.daily_pnl, r.daily_loss_cap) +
-      riskBar(`Wochenverlust (${(r.weekly_cap_pct * 100).toFixed(0)}%)`, r.weekly_pnl, r.weekly_loss_cap) +
-      `<div class="risk-row"><div class="risk-head"><span>Offene Positionen</span>
-        <span>${r.open_positions} / ${r.max_open_positions}</span></div>
-        <div class="risk-bar"><span class="${posCls}" style="width:${Math.min(100, posPct)}%"></span></div></div>`);
+      gauge('Tag', r.daily_cap_pct, r.daily_pnl, r.daily_loss_cap) +
+      gauge('Woche', r.weekly_cap_pct, r.weekly_pnl, r.weekly_loss_cap) +
+      `<div class="rk-pos"><span class="muted">Positionen</span><span>${r.open_positions}/${r.max_open_positions}${open}</span></div>`);
   }
   function renderPositions(positions) {
     const tb = $('#positions-table tbody');

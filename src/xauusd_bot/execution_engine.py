@@ -55,7 +55,26 @@ _MGMT_KEY_PREFIX = "mgmt:pos:"
 # live decision is produced within a second of now.
 _MAX_DECISION_AGE_SECONDS = 120.0
 
+# Persisted RiskManager state (running daily/weekly realized PnL + day/week
+# anchors) so the loss caps survive an execution-engine restart within the day.
+_RISK_TRACKER_KEY = "state:risk_tracker"
+
 log = structlog.get_logger(__name__)
+
+
+async def _persist_risk(redis_client, risk_mgr) -> None:
+    """Best-effort save of the running risk state to Redis."""
+    with contextlib.suppress(Exception):
+        await set_json(redis_client, _RISK_TRACKER_KEY, risk_mgr.state.model_dump(mode="json"))
+
+
+async def _load_risk(redis_client, risk_mgr) -> None:
+    """Restore the running risk state from Redis on startup (best-effort)."""
+    with contextlib.suppress(Exception):
+        data = await get_json(redis_client, _RISK_TRACKER_KEY)
+        if data:
+            risk_mgr.restore_state(data)
+            log.info("execution_risk_state_restored", daily=data.get("daily_pnl"), weekly=data.get("weekly_pnl"))
 
 GROUP = "execution-engine-v1"
 
@@ -84,10 +103,13 @@ def _account_snapshot(acc) -> dict:
     }
 
 
-def _risk_snapshot(acc, settings: Settings, n_positions: int) -> dict:
+def _risk_snapshot(acc, settings: Settings, n_positions: int, risk_mgr, unrealized_pnl: float = 0.0) -> dict:
     balance = float(acc.balance) if acc.balance is not None else 0.0
-    daily_pnl = float(acc.daily_pnl) if acc.daily_pnl is not None else 0.0
-    weekly_pnl = float(acc.weekly_pnl) if acc.weekly_pnl is not None else 0.0
+    # Realized running PnL from the RiskManager (the same numbers the loss caps
+    # gate on) — NOT acc.daily_pnl, which the broker never populates.
+    st = risk_mgr.state
+    daily_pnl = float(st.daily_pnl)
+    weekly_pnl = float(st.weekly_pnl)
     spread = float(acc.current_spread) if acc.current_spread is not None else None
     return {
         "daily_pnl": daily_pnl,
@@ -96,6 +118,8 @@ def _risk_snapshot(acc, settings: Settings, n_positions: int) -> dict:
         "weekly_pnl": weekly_pnl,
         "weekly_loss_cap": -balance * settings.risk_max_weekly,
         "weekly_cap_pct": settings.risk_max_weekly,
+        "trades_today": st.trades_today,
+        "unrealized_pnl": unrealized_pnl,
         "open_positions": n_positions,
         "max_open_positions": settings.risk_max_open_positions,
         "max_trades_per_session": settings.risk_max_trades_per_session,
@@ -162,9 +186,15 @@ async def _publish_state(
                 }
                 for p in positions
             ]
+            # Roll daily/weekly at the UTC boundary even with no trades, then
+            # persist so a restart keeps the running totals. Unrealized = sum of
+            # open-position broker profit (shown alongside the realized caps).
+            pipeline.risk_mgr.roll(datetime.now(tz=UTC))
+            await _persist_risk(redis_client, pipeline.risk_mgr)
+            unrealized = float(sum(p.profit for p in positions)) if positions else 0.0
             await set_json(redis_client, STATE_KEY_ACCOUNT, _account_snapshot(acc))
             await set_json(redis_client, STATE_KEY_POSITIONS, pos_snap)
-            await set_json(redis_client, STATE_KEY_RISK, _risk_snapshot(acc, settings, len(positions)))
+            await set_json(redis_client, STATE_KEY_RISK, _risk_snapshot(acc, settings, len(positions), pipeline.risk_mgr, unrealized))
         except Exception as exc:  # noqa: BLE001 - never let state publishing kill the service
             log.warning("execution_state_publish_failed", error=str(exc))
         with contextlib.suppress(TimeoutError):
@@ -241,7 +271,7 @@ def _exit_reason(mp: ManagedPosition, exit_price: Decimal, reason_code: int | No
     return ExitReasonTag.MANUAL
 
 
-async def _journal_close(publisher, connector, mp: ManagedPosition, ticket, current_price, settings) -> None:
+async def _journal_close(publisher, connector, mp: ManagedPosition, ticket, current_price, settings, risk_mgr=None, redis_client=None) -> None:
     """Finalise a closed position in the journal (best-effort — never raises).
 
     Pulls the broker deal history for exit price + realized PnL when the
@@ -278,6 +308,13 @@ async def _journal_close(publisher, connector, mp: ManagedPosition, ticket, curr
             JournalEvent(symbol=settings.symbol, entry_type="trade_close", trade_close=update),
         )
         log.info("execution_trade_close_journaled", ticket=ticket, exit=str(exit_price), pnl=(str(pnl) if pnl is not None else None))
+        # Book the realized PnL into the running risk totals so the daily/weekly
+        # loss caps actually accumulate (and persist it). Use real wall-clock for
+        # the day/week rollover. Skip when the broker gave no PnL (no deal history).
+        if risk_mgr is not None and pnl is not None:
+            risk_mgr.record_pnl(pnl, datetime.now(tz=UTC))
+            if redis_client is not None:
+                await _persist_risk(redis_client, risk_mgr)
     except Exception as exc:  # noqa: BLE001 - journaling must never disturb management
         log.warning("execution_trade_close_journal_failed", ticket=ticket, error=str(exc))
 
@@ -296,7 +333,7 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
             # Position closed on the broker → finalise the journal trade, then
             # drop the management plan.
             if publisher is not None:
-                await _journal_close(publisher, connector, mp, ticket, current_price, settings)
+                await _journal_close(publisher, connector, mp, ticket, current_price, settings, pipeline.risk_mgr, redis_client)
             await _delete_managed(redis_client, ticket)
             continue
         actions, mp2 = pos_mgr.plan(mp, bundle, price)
@@ -403,6 +440,9 @@ async def _run(settings: Settings) -> int:
     publisher = make_publisher(settings)
     await publisher.connect()
     state_redis = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+    # Restore the running risk totals so the daily/weekly loss caps survive a
+    # restart within the same day/week.
+    await _load_risk(state_redis, pipeline.risk_mgr)
     consumer = make_consumer(
         settings,
         StreamTopic.DECISIONS,

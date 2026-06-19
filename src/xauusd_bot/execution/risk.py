@@ -227,6 +227,30 @@ class RiskManager:
         self._maybe_roll_day(now)
         self._state.trades_today += 1
 
+    def roll(self, now: datetime) -> None:
+        """Apply day/week rollover without recording anything.
+
+        Lets the periodic state publisher reset daily/weekly PnL at the UTC
+        date / ISO-week boundary even when no trade has fired since.
+        """
+
+        self._maybe_roll_day(now)
+        self._maybe_roll_week(now)
+
+    def restore_state(self, state: "_RiskState | dict | None") -> None:
+        """Reload a persisted :class:`_RiskState` (e.g. after a restart).
+
+        Accepts the model or its ``model_dump`` dict; ignores ``None`` /
+        invalid payloads so a corrupt key never blocks startup.
+        """
+
+        if state is None:
+            return
+        try:
+            self._state = state if isinstance(state, _RiskState) else _RiskState.model_validate(state)
+        except Exception as exc:  # noqa: BLE001 - bad persisted state must not block boot
+            log.warning("risk_state_restore_failed", error=str(exc))
+
     # ----------------------------------------------------------- pause state
 
     def pause_active(self, now: datetime) -> bool:

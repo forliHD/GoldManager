@@ -104,3 +104,30 @@ async def test_journal_close_best_effort_without_deal_history() -> None:
     tc = published[0].trade_close
     assert tc.exit_price == Decimal("4226.0")  # fell back to last price
     assert tc.pnl_realized is None             # unknown without deal history
+
+
+@pytest.mark.asyncio
+async def test_journal_close_books_realized_pnl_into_risk() -> None:
+    """Closing a position must feed the realized PnL into the risk caps."""
+    booked = []
+
+    class _Pub:
+        async def publish(self, topic, event): pass
+
+    class _Conn:
+        def closed_position_info(self, ticket):
+            return ClosedPositionInfo(
+                ticket=str(ticket), exit_price=Decimal("4226.50"),
+                pnl_realized=Decimal("-34.87"),
+                close_time=datetime(2026, 6, 18, 21, 5, tzinfo=UTC), reason_code=4,
+            )
+
+    class _Risk:
+        def record_pnl(self, pnl, now): booked.append(pnl)
+
+    class _Redis:
+        async def set(self, *a, **k): pass
+
+    settings = SimpleNamespace(symbol="XAUUSD+")
+    await _journal_close(_Pub(), _Conn(), _mp(), "T1", 4226.0, settings, _Risk(), _Redis())
+    assert booked == [Decimal("-34.87")]  # the loss was booked into the risk totals
