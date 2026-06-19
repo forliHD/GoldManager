@@ -219,16 +219,34 @@ async def websocket_endpoint(
     app: FastAPI = websocket.app
     auth: DashboardAuth | None = getattr(app.state, "dashboard_auth", None)
     broker: WebSocketBroker | None = getattr(app.state, "ws_broker", None)
-    if auth is None or broker is None:
-        # Auth not initialized — accept then close with our custom code.
+    if broker is None:
         await websocket.accept()
         await websocket.close(code=_WS_CLOSE_UNAUTHENTICATED)
         return
-    if not dashboard_sid:
-        await websocket.accept()
-        await websocket.close(code=_WS_CLOSE_UNAUTHENTICATED)
-        return
-    session: UserSession | None = await auth.validate_session(dashboard_sid)
+
+    session: UserSession | None = None
+    # 1. Cloudflare Access SSO — the upgrade request carries the verified Access
+    #    JWT (header / CF_Authorization cookie), same as the REST current_session.
+    #    Without this, SSO users (no dashboard_sid cookie) get closed 4401 and the
+    #    client loops disconnect/reconnect.
+    verifier = getattr(app.state, "cf_access_verifier", None)
+    if verifier is not None:
+        token = websocket.headers.get("cf-access-jwt-assertion") or websocket.cookies.get("CF_Authorization")
+        if token:
+            email = await verifier.verify(token)
+            if email:
+                settings = getattr(app.state, "settings", None)
+                role = getattr(settings, "cf_access_default_role", "admin") if settings else "admin"
+                now = datetime.now(tz=UTC)
+                session = UserSession(
+                    session_id=f"cf-access:{email}", username=email, role=role,  # type: ignore[arg-type]
+                    created_at=now, last_seen=now,
+                )
+
+    # 2. Fallback: local password session via the dashboard_sid cookie.
+    if session is None and auth is not None and dashboard_sid:
+        session = await auth.validate_session(dashboard_sid)
+
     if session is None:
         await websocket.accept()
         await websocket.close(code=_WS_CLOSE_UNAUTHENTICATED)

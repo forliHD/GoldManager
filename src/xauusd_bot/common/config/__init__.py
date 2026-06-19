@@ -91,14 +91,35 @@ class Settings(BaseSettings):
         le=100,
         description="Only call the LLM when score.total >= this threshold. Default 65 = 'prepare' band and above.",
     )
+    ai_layer_max_fvg_zones: int = Field(
+        default=25,
+        ge=3,
+        le=500,
+        description=(
+            "Cap the number of FVG zones sent to the LLM (top-N by rank_score, the same "
+            "metric behind top_zones). The bundle can carry 100+ mostly-stale zones — sending "
+            "all of them is ~85% of the prompt tokens and pure noise. Zone *validation* still "
+            "runs against the full bundle, so a smaller payload never invalidates the LLM's pick."
+        ),
+    )
+    ai_layer_reasoning_enabled: bool = Field(
+        default=True,
+        description=(
+            "Static default for the LLM reasoning toggle. When False the OpenRouter client "
+            "sends reasoning:{enabled:false} (no chain-of-thought) — ~halves m3 latency at the "
+            "cost of analytical depth. Operators flip this at runtime from the dashboard "
+            "(runtime:llm_reasoning_enabled on the trading Redis); this is only the boot default."
+        ),
+    )
     ai_layer_max_attempts: int = Field(
-        default=3,
+        default=1,
         ge=1,
         le=6,
         description=(
             "Total LLM attempts per decision before falling back to the rule. Retries cover "
             "transient validation/empty-body/timeout errors (same provider — no ZDR change). "
-            "1 = no retry."
+            "1 = no retry. Kept at 1 so a 30s timeout never compounds to >60s and backs up the "
+            "1-bar/min decision loop."
         ),
     )
     ai_layer_retry_backoff_seconds: float = Field(
@@ -108,9 +129,9 @@ class Settings(BaseSettings):
         description="Base delay between LLM retries (grows linearly: 0.4s, 0.8s, ...).",
     )
     ai_layer_timeout_seconds: float = Field(
-        default=10.0,
+        default=30.0,
         gt=0,
-        description="Hard timeout per OpenRouter HTTP call (seconds).",
+        description="Hard total timeout per OpenRouter HTTP call (seconds, enforced via asyncio.wait_for).",
     )
     ai_layer_zdr: bool = Field(
         default=False,
@@ -151,6 +172,22 @@ class Settings(BaseSettings):
     )
     telegram_alerts_enabled: bool = Field(
         default=True, description="Master switch for Telegram alerts (effective only if token+chat set)."
+    )
+
+    # --- Web Push (mobile PWA notifications)
+    vapid_public_key: str | None = Field(
+        default=None,
+        description="VAPID public key (base64url) the PWA uses to subscribe. Push disabled when unset.",
+    )
+    vapid_private_key: SecretStr | None = Field(
+        default=None, description="VAPID private key (base64url PEM). Server-side only; never commit."
+    )
+    vapid_subject: str = Field(
+        default="mailto:admin@goldmanager.local",
+        description="VAPID 'sub' claim — a mailto: or https: contact for the push service.",
+    )
+    webpush_enabled: bool = Field(
+        default=True, description="Master switch for Web Push (effective only if VAPID keys set)."
     )
 
     # --- MT5 (prod only)
@@ -308,6 +345,23 @@ class Settings(BaseSettings):
     )
     dashboard_session_ttl_seconds: int = Field(
         default=8 * 3600, ge=60, description="Session TTL in seconds (default 8h)."
+    )
+    # ---- Cloudflare Access SSO (pass-through) --------------------------------
+    cf_access_enabled: bool = Field(
+        default=False,
+        description="Accept a verified Cloudflare Access JWT as login (Google/Azure SSO), bypassing the local password. Off = unchanged.",
+    )
+    cf_access_team_domain: str | None = Field(
+        default=None,
+        description="Cloudflare Access team domain, e.g. 'name.cloudflareaccess.com'. Used for the JWKS URL + issuer.",
+    )
+    cf_access_aud: str | None = Field(
+        default=None,
+        description="Cloudflare Access Application Audience (AUD) tag the JWT must match. Identifier, not a secret.",
+    )
+    cf_access_default_role: Literal["viewer", "operator", "admin"] = Field(
+        default="admin",
+        description="Dashboard role granted to any user who authenticates via Cloudflare Access.",
     )
     dashboard_redis_url: str = Field(
         default="redis://localhost:6379/1",

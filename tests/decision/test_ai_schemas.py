@@ -122,11 +122,17 @@ class TestLLMDecisionRejects:
             LLMDecision.model_validate(_valid_payload(confidence=101))
         assert "confidence" in str(exc_info.value).lower()
 
-    def test_rejects_comment_over_500_chars(self):
-        long_comment = "x" * 501
+    def test_rejects_comment_over_1500_chars(self):
+        # The comment cap was raised 500 -> 1500 so the full LLM rationale is
+        # kept (it was being clipped); the schema still bounds it.
+        long_comment = "x" * 1501
         with pytest.raises(ValidationError) as exc_info:
             LLMDecision.model_validate(_valid_payload(comment=long_comment))
         assert "comment" in str(exc_info.value).lower()
+
+    def test_accepts_comment_up_to_1500_chars(self):
+        ok = LLMDecision.model_validate(_valid_payload(comment="x" * 1500))
+        assert len(ok.comment) == 1500
 
     def test_rejects_tp_rr_negative(self):
         with pytest.raises(ValidationError) as exc_info:

@@ -157,11 +157,14 @@
     // AI toggle + Emergency stop visible for operator + admin
     if (state.user.role === 'admin' || state.user.role === 'operator') {
       show('#ai-toggle-wrap');
+      show('#reasoning-toggle-wrap');
       show('#emergency-btn');
       loadAIState();
+      loadReasoningState();
       loadEmergencyState();
     } else {
       hide('#ai-toggle-wrap');
+      hide('#reasoning-toggle-wrap');
       hide('#emergency-btn');
     }
   }
@@ -822,6 +825,29 @@
       state.aiEnabled = r.enabled;
       state.aiAvailable = r.available;
       renderAIPill();
+    } catch (e) {}
+  }
+
+  // ----- LLM reasoning toggle -----
+  $('#reasoning-toggle-btn').addEventListener('click', () => doReasoningToggle(!state.reasoningEnabled));
+  async function doReasoningToggle(enabled) {
+    try {
+      const r = await api('/api/ai/reasoning/toggle', { method: 'POST', body: JSON.stringify({ enabled }), headers: { 'Content-Type': 'application/json' } });
+      state.reasoningEnabled = r.enabled;
+      renderReasoningPill();
+    } catch (e) { alert('Reasoning toggle failed: ' + e.message); }
+  }
+  function renderReasoningPill() {
+    const pill = $('#reasoning-pill');
+    if (!pill) return;
+    pill.textContent = state.reasoningEnabled ? 'on' : 'off (fast)';
+    pill.className = 'pill ' + (state.reasoningEnabled ? 'on' : 'off');
+  }
+  async function loadReasoningState() {
+    try {
+      const r = await api('/api/ai/reasoning/state');
+      state.reasoningEnabled = r.enabled;
+      renderReasoningPill();
     } catch (e) {}
   }
 

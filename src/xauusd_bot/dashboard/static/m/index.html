@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0e1116" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="GoldManager" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <title>GoldManager Mobile</title>
+  <script src="../lightweight-charts.v4.standalone.js"></script>
+  <style>
+    :root {
+      --bg:#0e1116; --panel:#161b22; --panel-2:#1f242c; --border:#30363d;
+      --text:#e6edf3; --muted:#7d8590; --accent:#58a6ff;
+      --ok:#3fb950; --warn:#d29922; --err:#f85149;
+      --nav-h: 60px;
+    }
+    * { box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+    html,body { margin:0; padding:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--bg); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:15px; }
+    .hidden { display:none !important; }
+    .muted { color:var(--muted); }
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+    button { font-family:inherit; }
+
+    /* Login overlay */
+    #login { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:var(--bg); z-index:100; padding:24px; }
+    .login-box { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:24px; width:100%; max-width:340px; }
+    .login-box h2 { margin:0 0 16px; }
+    .login-box input { width:100%; padding:12px; background:var(--panel-2); border:1px solid var(--border); border-radius:8px; color:var(--text); margin-bottom:12px; font-size:16px; }
+    .login-box button { width:100%; padding:13px; background:var(--accent); color:#0e1116; border:0; border-radius:8px; font-weight:700; font-size:16px; }
+    .login-error { color:var(--err); margin-top:10px; min-height:18px; }
+
+    /* App shell — pinned to the exact viewport (avoids iOS vh/dvh quirks), flex
+       column: topbar (safe-area top) / content (scrolls) / nav (safe-area bottom). */
+    #app { position:fixed; inset:0; display:flex; flex-direction:column; }
+    .content { flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+    .topbar { flex:none; display:flex; align-items:center; gap:10px;
+      padding: calc(8px + env(safe-area-inset-top)) 16px 8px; background:var(--panel); border-bottom:1px solid var(--border); }
+    .topbar .logo { font-weight:800; font-size:16px; letter-spacing:.02em; }
+    .topbar .logo span { color:var(--accent); }
+    .topbar .spacer { flex:1; }
+    .conn { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
+    .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.err{background:var(--err)}
+    .icon-btn { background:var(--panel-2); border:1px solid var(--border); color:var(--text); border-radius:8px; width:38px; height:34px; font-size:16px; }
+
+    .view { padding:14px 14px 6px; }
+    .view.hidden { display:none; }
+    /* chart fills the screen between topbar and nav */
+    /* chart view fills the content area exactly: head + chart(flex) + legend,
+       no inner scroll so the timeframe buttons & legend stay put. */
+    #view-chart { padding:8px 8px 4px; display:flex; flex-direction:column; height:100%; }
+    .chart-head { flex:none; display:flex; justify-content:space-between; align-items:center; gap:8px; padding:2px 2px 8px; }
+    .ch-price { font-size:17px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); margin-left:auto; }
+    .tf-row { display:flex; gap:4px; }
+    .tf-row button { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); border-radius:7px; padding:5px 9px; font-size:12px; font-weight:700; }
+    .tf-row button.active { background:var(--accent); color:#0e1116; border-color:var(--accent); }
+    /* settings sheet */
+    .set-row { display:flex; align-items:center; justify-content:space-between; padding:11px 0; border-bottom:1px solid var(--border); font-size:14px; }
+    .set-row:last-child { border-bottom:none; }
+    .chips { display:flex; gap:6px; }
+    .chip { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); border-radius:14px; padding:5px 12px; font-size:13px; font-weight:600; }
+    .chip.on { background:var(--accent); color:#0e1116; border-color:var(--accent); }
+    .set-row input[type=number] { width:60px; padding:7px; background:var(--panel-2); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:15px; text-align:center; }
+    .switch { width:46px; height:26px; border-radius:14px; background:var(--border); position:relative; transition:background .2s; flex:none; }
+    .switch.on { background:var(--ok); }
+    .switch::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:left .2s; }
+    .switch.on::after { left:23px; }
+    #ch-container { position:relative; width:100%; flex:1 1 auto; min-height:120px;
+      border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--panel); }
+    /* FVG boxes — HTML rectangles over the chart, like the desktop. */
+    .fvg-layer { position:absolute; inset:0; overflow:hidden; pointer-events:none; z-index:2; }
+    .fvg-box { position:absolute; box-sizing:border-box; border-radius:2px; }
+    .fvg-tag { position:absolute; top:1px; left:3px; font-size:9px; line-height:1; padding:1px 3px; border-radius:2px; color:#0e1116; font-weight:800; white-space:nowrap; }
+    .chart-legend { flex:none; display:flex; flex-wrap:wrap; gap:12px; padding:8px 4px 2px; font-size:11px; color:var(--muted); }
+    .chart-legend span { display:flex; align-items:center; gap:5px; }
+    .chart-legend i { width:14px; height:3px; border-radius:2px; display:inline-block; }
+
+    /* Cards */
+    .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:12px; }
+    .card h3 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:700; }
+    .banner { border-radius:12px; padding:16px; margin-bottom:12px; text-align:center; font-weight:700; font-size:17px; border:1px solid var(--border); }
+    .banner.ok { background:rgba(63,185,80,.12); border-color:var(--ok); color:var(--ok); }
+    .banner.warn { background:rgba(210,153,34,.12); border-color:var(--warn); color:var(--warn); }
+    .banner.err { background:rgba(248,81,73,.12); border-color:var(--err); color:var(--err); }
+    .banner small { display:block; font-weight:500; font-size:13px; color:var(--text); margin-top:4px; opacity:.85; }
+
+    .kv { display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--border); font-size:14px; }
+    .kv:last-child { border-bottom:none; }
+    /* score breakdown (subscores), like the desktop cockpit */
+    .score-bd { margin-top:10px; }
+    .sb-row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:12px; }
+    .sb-lbl { width:84px; flex:none; color:var(--muted); }
+    .sb-bar { flex:1; height:7px; background:var(--panel-2); border:1px solid var(--border); border-radius:4px; overflow:hidden; }
+    .sb-fill { display:block; height:100%; }
+    .sb-val { width:26px; flex:none; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; }
+    .kv .k { color:var(--muted); }
+    .kv .v { font-weight:700; font-variant-numeric:tabular-nums; }
+    .big { font-size:26px; font-weight:800; font-variant-numeric:tabular-nums; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .stat { background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+    .stat .lbl { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    .stat .val { font-size:19px; font-weight:800; margin-top:3px; font-variant-numeric:tabular-nums; }
+    .pos{color:var(--ok)} .neg{color:var(--err)}
+
+    .svc-dots { display:flex; flex-wrap:wrap; gap:10px; }
+    .svc { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); }
+
+    /* gauges */
+    .gauge { height:8px; background:var(--panel-2); border:1px solid var(--border); border-radius:5px; overflow:hidden; margin:4px 0 2px; }
+    .gauge > span { display:block; height:100%; background:var(--ok); transition:width .3s,background .3s; }
+    .gauge > span.warn{background:var(--warn)} .gauge > span.crit{background:var(--err)}
+
+    /* feed rows */
+    .row { display:flex; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid var(--border); font-size:13px; }
+    .row:last-child { border-bottom:none; }
+    .badge { min-width:38px; text-align:center; padding:2px 6px; border-radius:6px; font-weight:800; font-size:12px; background:var(--panel-2); border:1px solid var(--border); }
+    .badge.hi{background:rgba(63,185,80,.16);border-color:var(--ok);color:var(--ok)}
+    .badge.mid{background:rgba(210,153,34,.16);border-color:var(--warn);color:var(--warn)}
+    .act { font-weight:700; }
+    .act.enter{color:var(--ok)} .act.no_trade{color:var(--muted)}
+    .why { color:var(--muted); margin-left:auto; font-size:12px; text-align:right; }
+    .tap { cursor:pointer; }
+    .dwrap { border-bottom:1px solid var(--border); padding-bottom:8px; }
+    .dwrap:last-child { border-bottom:none; }
+    .ai-snip { font-size:12px; line-height:1.4; color:var(--text); background:var(--panel-2); border:1px solid var(--border); border-radius:8px; padding:7px 9px; margin:2px 0 4px; }
+    .ai-snip.muted { color:var(--muted); background:transparent; border:0; padding:2px 0; }
+
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { text-align:left; padding:7px 4px; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; }
+    td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; }
+
+    /* controls */
+    .ctl { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-bottom:1px solid var(--border); }
+    .ctl:last-child { border-bottom:none; }
+    .toggle-btn { padding:9px 16px; border-radius:8px; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font-weight:700; font-size:14px; min-width:84px; }
+    .toggle-btn.on { background:var(--ok); color:#0e1116; border-color:var(--ok); }
+    .toggle-btn.off { background:var(--panel-2); }
+    .pill { padding:3px 10px; border-radius:12px; font-size:12px; font-weight:700; }
+    .pill.on{background:var(--ok);color:#0e1116} .pill.off{background:var(--border)} .pill.warn{background:var(--warn);color:#0e1116} .pill.err{background:var(--err);color:#0e1116}
+    .stop-btn { width:100%; padding:16px; border-radius:12px; border:1px solid var(--err); background:#5a1d1d; color:#ffb4b4; font-weight:800; font-size:16px; }
+    .stop-btn.engaged { background:var(--err); color:#160a0a; animation:ep 1s infinite; }
+    @keyframes ep { 50%{opacity:.6} }
+    .link-btn { display:block; width:100%; text-align:left; padding:13px; margin-top:8px; border-radius:10px; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font-size:14px; }
+    .full-btn { width:100%; padding:13px; border-radius:10px; border:1px solid var(--accent); background:var(--accent); color:#0e1116; font-weight:700; font-size:15px; }
+
+    /* bottom nav */
+    .nav { flex:none; height:calc(var(--nav-h) + env(safe-area-inset-bottom));
+      padding-bottom:env(safe-area-inset-bottom); display:flex; background:var(--panel); border-top:1px solid var(--border); z-index:30; }
+    .nav button { flex:1; background:none; border:0; color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:10px; }
+    .nav button .ic { font-size:20px; line-height:1; }
+    .nav button.active { color:var(--accent); }
+    .nav button .badge-dot { position:absolute; top:8px; margin-left:18px; width:8px; height:8px; border-radius:50%; background:var(--err); }
+
+    /* modal */
+    .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:60; display:flex; align-items:flex-end; }
+    .modal.hidden { display:none; }
+    .sheet { background:var(--panel); border-top-left-radius:16px; border-top-right-radius:16px; width:100%; max-height:80vh; overflow-y:auto; padding:18px 16px calc(18px + env(safe-area-inset-bottom)); border:1px solid var(--border); }
+    .sheet h3 { margin:0 0 12px; }
+    .sheet .close { float:right; background:var(--panel-2); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:6px 12px; }
+    .rationale { font-size:14px; line-height:1.5; white-space:pre-wrap; }
+    .toast { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(var(--nav-h) + 16px + env(safe-area-inset-bottom)); background:var(--panel-2); border:1px solid var(--border); color:var(--text); padding:10px 16px; border-radius:10px; z-index:80; font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.5); }
+    .toast.hidden { display:none; }
+  </style>
+</head>
+<body>
+  <!-- Login (LAN fallback; behind Cloudflare Access this never shows) -->
+  <div id="login" class="hidden">
+    <div class="login-box">
+      <h2>🪙 Gold<span style="color:var(--accent)">Manager</span></h2>
+      <input id="login-user" placeholder="Benutzer" autocomplete="username" />
+      <input id="login-pass" type="password" placeholder="Passwort" autocomplete="current-password" />
+      <button id="login-btn">Anmelden</button>
+      <div class="login-error" id="login-error"></div>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="topbar">
+      <div class="logo">🪙 Gold<span>Manager</span></div>
+      <div class="spacer"></div>
+      <div class="conn"><span class="dot" id="conn-dot"></span><span id="conn-txt">…</span></div>
+      <button class="icon-btn" id="refresh-btn" title="Aktualisieren">⟳</button>
+    </div>
+
+    <div class="content" id="content">
+    <!-- STATUS / cockpit -->
+    <div class="view" id="view-status">
+      <div class="banner" id="status-banner">Lade…</div>
+      <div class="grid2" style="margin-bottom:12px">
+        <div class="stat"><div class="lbl">Equity</div><div class="val" id="st-equity">—</div></div>
+        <div class="stat"><div class="lbl">P&L heute</div><div class="val" id="st-pnl">—</div></div>
+      </div>
+      <div class="card">
+        <h3>Services</h3>
+        <div class="svc-dots" id="st-services">—</div>
+      </div>
+      <div class="card">
+        <h3>KI (M3)</h3>
+        <div class="kv"><span class="k">Status</span><span class="v" id="st-ai-status">—</span></div>
+        <div class="kv"><span class="k">Reasoning</span><span class="v" id="st-reasoning">—</span></div>
+        <div class="kv"><span class="k">Letzte Entscheidung</span><span class="v" id="st-ai-age">—</span></div>
+        <div class="kv"><span class="k">Score / Band</span><span class="v" id="st-score">—</span></div>
+        <div class="score-bd" id="st-scores"></div>
+      </div>
+      <div class="card" id="st-position-card">
+        <h3>Position</h3>
+        <div id="st-position">—</div>
+      </div>
+    </div>
+
+    <!-- POSITIONEN -->
+    <div class="view hidden" id="view-positions">
+      <div class="card">
+        <h3>Konto</h3>
+        <div class="grid2">
+          <div class="stat"><div class="lbl">Balance</div><div class="val" id="po-balance">—</div></div>
+          <div class="stat"><div class="lbl">Equity</div><div class="val" id="po-equity">—</div></div>
+          <div class="stat"><div class="lbl">P&L heute</div><div class="val" id="po-pnl-day">—</div></div>
+          <div class="stat"><div class="lbl">P&L Woche</div><div class="val" id="po-pnl-week">—</div></div>
+        </div>
+      </div>
+      <div class="card"><h3>Risk</h3><div id="po-risk">—</div></div>
+      <div class="card"><h3>Offene Positionen</h3><div id="po-positions">—</div></div>
+      <div class="card">
+        <h3>Letzte Trades (€)</h3>
+        <div id="po-trades">—</div>
+      </div>
+    </div>
+
+    <!-- DECISIONS -->
+    <div class="view hidden" id="view-decisions">
+      <div class="card">
+        <h3>Decision-Feed <span class="muted" id="de-meta"></span></h3>
+        <div id="de-feed">—</div>
+      </div>
+    </div>
+
+    <!-- CHART -->
+    <div class="view hidden" id="view-chart">
+      <div class="chart-head">
+        <div class="tf-row" id="tf-row">
+          <button data-tf="M1">M1</button><button data-tf="M5" class="active">M5</button><button data-tf="M15">M15</button><button data-tf="H1">H1</button>
+        </div>
+        <span id="ch-last" class="ch-price">—</span>
+        <button class="icon-btn" id="ch-gear" title="Chart-Einstellungen">⚙</button>
+      </div>
+      <div id="ch-container"></div>
+      <div class="chart-legend" id="ch-legend"></div>
+    </div>
+
+    <!-- MEHR / controls -->
+    <div class="view hidden" id="view-more">
+      <div class="card" id="more-controls">
+        <h3>Steuerung</h3>
+        <div class="ctl"><span>KI-Layer</span><button class="toggle-btn" id="t-ai">—</button></div>
+        <div class="ctl"><span>🧠 Reasoning</span><button class="toggle-btn" id="t-reasoning">—</button></div>
+        <div style="margin-top:12px"><button class="stop-btn" id="t-emergency">⛔ NOT-AUS</button></div>
+      </div>
+      <div class="card">
+        <h3>Benachrichtigungen</h3>
+        <div class="ctl"><span>Push (dieses Gerät)</span><span class="pill off" id="push-state">aus</span></div>
+        <button class="full-btn" id="push-enable" style="margin-top:8px">🔔 Push aktivieren</button>
+        <button class="link-btn" id="push-test">Push testen</button>
+        <button class="link-btn" id="tg-test">Telegram testen</button>
+        <div class="muted" id="notify-hint" style="font-size:12px;margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h3>Mehr Ansichten (am PC)</h3>
+        <a class="link-btn" href="../#" >📈 Indicators / Feature-State</a>
+        <a class="link-btn" href="../#">🧪 Backtest</a>
+        <a class="link-btn" href="../#">📝 Reviews & Proposals</a>
+        <a class="link-btn" href="../">🖥️ Volles Desktop-Dashboard</a>
+      </div>
+      <div class="card">
+        <div class="kv"><span class="k">Angemeldet</span><span class="v" id="more-user">—</span></div>
+        <div class="kv"><span class="k">Rolle</span><span class="v" id="more-role">—</span></div>
+        <button class="link-btn" id="logout-btn">Abmelden</button>
+      </div>
+    </div>
+    </div><!-- /.content -->
+
+    <nav class="nav" id="nav">
+      <button data-view="status" class="active"><span class="ic">🏠</span>Status</button>
+      <button data-view="positions"><span class="ic">📊</span>Positionen</button>
+      <button data-view="decisions"><span class="ic">🧠</span>Decisions</button>
+      <button data-view="chart"><span class="ic">📈</span>Chart</button>
+      <button data-view="more"><span class="ic">⚙️</span>Mehr</button>
+    </nav>
+  </div>
+
+  <div class="modal hidden" id="modal"><div class="sheet" id="sheet"></div></div>
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="mobile.js"></script>
+</body>
+</html>

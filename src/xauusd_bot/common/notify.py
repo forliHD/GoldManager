@@ -90,4 +90,29 @@ class TelegramNotifier:
             return False
 
 
-__all__ = ["TelegramNotifier"]
+class FanoutNotifier:
+    """Fan one alert out to several notifiers (Telegram + Web Push + …).
+
+    Exposes the same ``.enabled`` / ``async send(text)`` contract as
+    :class:`TelegramNotifier`, so it is a drop-in replacement at the single
+    execution-engine call site. ``enabled`` is True if *any* child is enabled;
+    ``send`` dispatches to every enabled child best-effort (one failure never
+    blocks the others) and returns True if at least one delivered.
+    """
+
+    def __init__(self, *notifiers: Any) -> None:
+        self._children = [n for n in notifiers if n is not None]
+
+    @property
+    def enabled(self) -> bool:
+        return any(getattr(n, "enabled", False) for n in self._children)
+
+    async def send(self, text: str) -> bool:
+        results = await asyncio.gather(
+            *(n.send(text) for n in self._children if getattr(n, "enabled", False)),
+            return_exceptions=True,
+        )
+        return any(r is True for r in results)
+
+
+__all__ = ["TelegramNotifier", "FanoutNotifier"]

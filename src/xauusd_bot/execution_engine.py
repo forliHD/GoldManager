@@ -39,7 +39,8 @@ from xauusd_bot.common.runtime_config import (
     get_json,
     set_json,
 )
-from xauusd_bot.common.notify import TelegramNotifier
+from xauusd_bot.common.notify import FanoutNotifier, TelegramNotifier
+from xauusd_bot.common.webpush import WebPushNotifier
 from xauusd_bot.common.schemas.journal import ExitReasonTag, TradeCloseUpdate
 from xauusd_bot.common.service import make_consumer, make_publisher, service_runtime
 from xauusd_bot.connectors.factory import make_connector
@@ -450,8 +451,15 @@ async def _run(settings: Settings) -> int:
         block_ms=settings.stream_block_ms,
         batch_size=settings.stream_batch_size,
     )
-    notifier = TelegramNotifier.from_settings(settings)
-    log.info("execution_engine_alerts", telegram_enabled=notifier.enabled)
+    telegram = TelegramNotifier.from_settings(settings)
+    # Trade-event pushes go only to operator/admin devices, never a viewer's.
+    webpush = WebPushNotifier.from_settings(settings, state_redis, broadcast_roles=("operator", "admin"))
+    notifier = FanoutNotifier(telegram, webpush)
+    log.info(
+        "execution_engine_alerts",
+        telegram_enabled=telegram.enabled,
+        webpush_enabled=webpush.enabled,
+    )
     handler = _make_handler(pipeline, publisher, state_redis, settings, notifier)
 
     # service_runtime gives us the shared stop_event so the consumer loop

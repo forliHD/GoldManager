@@ -56,8 +56,10 @@ from xauusd_bot.common.runtime_config import (
     get_emergency_stop,
     get_json,
     get_llm_usage,
+    get_reasoning_enabled,
     set_ai_enabled,
     set_emergency_stop,
+    set_reasoning_enabled,
 )
 from xauusd_bot.common.schemas.review import (
     FittingProposal,
@@ -1038,6 +1040,60 @@ async def ai_toggle(
     )
 
 
+# ---------------------------------------------------------------- LLM reasoning toggle
+
+
+class ReasoningToggleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(description="Turn LLM chain-of-thought reasoning on (True) or off (False).")
+
+
+class ReasoningStateResult(BaseModel):
+    enabled: bool = Field(description="Current effective runtime reasoning state.")
+    default: bool = Field(description="The static settings default the services start from.")
+
+
+@router.get("/ai/reasoning/state")
+async def ai_reasoning_state(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> ReasoningStateResult:
+    """Report the live LLM-reasoning toggle state (any authenticated user)."""
+
+    settings: Settings = request.app.state.settings
+    enabled = await get_reasoning_enabled(
+        _streams_redis(request), default=settings.ai_layer_reasoning_enabled
+    )
+    return ReasoningStateResult(enabled=enabled, default=settings.ai_layer_reasoning_enabled)
+
+
+@router.post("/ai/reasoning/toggle")
+async def ai_reasoning_toggle(
+    request: Request,
+    body: ReasoningToggleRequest,
+    session: UserSession = Depends(require_role("operator")),
+) -> ReasoningStateResult:
+    """Flip LLM reasoning on/off at runtime (operator or admin).
+
+    Writes ``runtime:llm_reasoning_enabled`` on the trading Redis; the
+    OpenRouter client reads it on the next call — no restart. Off sends
+    ``reasoning:{enabled:false}`` (no chain-of-thought), ~halving the m3
+    round-trip during provider-congestion incidents, at the cost of the
+    multi-factor analysis behind the AI veto.
+    """
+
+    settings: Settings = request.app.state.settings
+    await set_reasoning_enabled(_streams_redis(request), body.enabled)
+    log.warning(
+        "llm_reasoning_toggled",
+        enabled=body.enabled,
+        operator=session.username,
+        role=session.role,
+    )
+    return ReasoningStateResult(enabled=body.enabled, default=settings.ai_layer_reasoning_enabled)
+
+
 # ---------------------------------------------------------------- live ops state
 #
 # The execution-engine publishes account / positions / risk snapshots to
@@ -1180,6 +1236,83 @@ async def alerts_test(
         return {"ok": False, "reason": "Telegram nicht konfiguriert (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID setzen)."}
     ok = await notifier.send("✅ <b>GoldManager</b>: Telegram-Alerts sind aktiv.")
     return {"ok": ok}
+
+
+# ---------------------------------------------------------------- Web Push (PWA)
+
+
+def _webpush(request: Request):
+    """Build a WebPushNotifier from settings + the trading Redis."""
+
+    from xauusd_bot.common.webpush import WebPushNotifier
+
+    settings = getattr(request.app.state, "settings", None)
+    return WebPushNotifier.from_settings(settings, _streams_redis(request))
+
+
+class PushSubscribeRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # passthrough the browser PushSubscription shape
+
+    endpoint: str = Field(description="Push service endpoint URL.")
+    keys: dict[str, str] = Field(description="p256dh + auth keys from the browser.")
+
+
+class PushUnsubscribeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(description="The endpoint to remove.")
+
+
+@router.get("/push/vapid")
+async def push_vapid(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """The VAPID public key the PWA needs to subscribe (and whether push is on)."""
+
+    wp = _webpush(request)
+    return {"public_key": wp.public_key, "enabled": wp.enabled}
+
+
+@router.post("/push/subscribe")
+async def push_subscribe(
+    request: Request,
+    body: PushSubscribeRequest,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Register a browser push subscription (any authenticated user)."""
+
+    wp = _webpush(request)
+    ok = await wp.add_subscription(body.model_dump(), username=session.username, role=session.role)
+    return {"ok": ok, "count": await wp.subscription_count()}
+
+
+@router.post("/push/unsubscribe")
+async def push_unsubscribe(
+    request: Request,
+    body: PushUnsubscribeRequest,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Remove a browser push subscription."""
+
+    wp = _webpush(request)
+    await wp.remove_subscription(body.endpoint)
+    return {"ok": True, "count": await wp.subscription_count()}
+
+
+@router.post("/push/test")
+async def push_test(
+    request: Request,
+    session: UserSession = Depends(require_role("operator")),
+) -> dict[str, Any]:
+    """Send a test push to all registered subscriptions (operator/admin)."""
+
+    wp = _webpush(request)
+    if not wp.enabled:
+        return {"ok": False, "reason": "Web Push nicht konfiguriert (VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY setzen)."}
+    # Only the caller's own devices — a test must not spam other users.
+    ok = await wp.send_to_user("🔔 <b>GoldManager</b>: Push-Benachrichtigungen sind aktiv.", session.username)
+    return {"ok": ok, "count": await wp.subscription_count()}
 
 
 class EmergencyRequest(BaseModel):

@@ -765,3 +765,85 @@ class TestAIToggle:
         r2 = client.post("/api/ai/toggle", json={"enabled": True}, cookies=login)
         assert r2.json()["enabled"] is True
         assert client.get("/api/ai/state", cookies=login).json()["enabled"] is True
+
+
+# ------------------------------------------------------- /api/ai/reasoning/toggle
+
+
+class TestReasoningToggle:
+    def test_state_default_reflects_settings(self, client, login) -> None:
+        r = client.get("/api/ai/reasoning/state", cookies=login)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["default"] is True
+        assert body["enabled"] is True
+
+    def test_viewer_can_read_but_not_toggle(self, client) -> None:
+        lr = client.post(
+            "/api/auth/login",
+            data={"username": "viewer", "password": "viewer-pw"},
+        )
+        sid = lr.cookies.get(SESSION_COOKIE)
+        assert client.get(
+            "/api/ai/reasoning/state", cookies={SESSION_COOKIE: sid}
+        ).status_code == 200
+        r = client.post(
+            "/api/ai/reasoning/toggle",
+            json={"enabled": False},
+            cookies={SESSION_COOKIE: sid},
+        )
+        assert r.status_code == 403
+
+    def test_operator_can_toggle_and_state_persists(self, client, login) -> None:
+        r = client.post("/api/ai/reasoning/toggle", json={"enabled": False}, cookies=login)
+        assert r.status_code == 200, r.text
+        assert r.json()["enabled"] is False
+        s = client.get("/api/ai/reasoning/state", cookies=login).json()
+        assert s["enabled"] is False
+        assert s["default"] is True
+        r2 = client.post("/api/ai/reasoning/toggle", json={"enabled": True}, cookies=login)
+        assert r2.json()["enabled"] is True
+        assert client.get("/api/ai/reasoning/state", cookies=login).json()["enabled"] is True
+
+
+# ----------------------------------------------------------------- /api/push/*
+
+
+class TestWebPush:
+    _SUB = {"endpoint": "https://push.example/abc", "keys": {"p256dh": "k", "auth": "a"}}
+
+    def test_vapid_endpoint_readable(self, client, login) -> None:
+        r = client.get("/api/push/vapid", cookies=login)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "public_key" in body and "enabled" in body
+
+    def test_subscribe_then_unsubscribe(self, client, login) -> None:
+        r = client.post("/api/push/subscribe", json=self._SUB, cookies=login)
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is True
+        assert r.json()["count"] >= 1
+        r2 = client.post(
+            "/api/push/unsubscribe", json={"endpoint": self._SUB["endpoint"]}, cookies=login
+        )
+        assert r2.status_code == 200
+        assert r2.json()["count"] == 0
+
+    def test_viewer_can_subscribe(self, client) -> None:
+        lr = client.post("/api/auth/login", data={"username": "viewer", "password": "viewer-pw"})
+        sid = lr.cookies.get(SESSION_COOKIE)
+        r = client.post("/api/push/subscribe", json=self._SUB, cookies={SESSION_COOKIE: sid})
+        assert r.status_code == 200
+
+    def test_test_push_requires_operator(self, client) -> None:
+        lr = client.post("/api/auth/login", data={"username": "viewer", "password": "viewer-pw"})
+        sid = lr.cookies.get(SESSION_COOKIE)
+        r = client.post("/api/push/test", cookies={SESSION_COOKIE: sid})
+        assert r.status_code == 403
+
+    def test_test_push_reports_unconfigured(self, client, login) -> None:
+        # No VAPID keys in test settings → graceful 'not configured'.
+        r = client.post("/api/push/test", cookies=login)
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is False
+        assert "VAPID" in r.json()["reason"]
