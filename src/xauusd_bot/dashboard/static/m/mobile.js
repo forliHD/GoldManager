@@ -154,17 +154,28 @@
 
   // ---------- DECISIONS ----------
   async function loadDecisions() {
-    const items = await api('/api/decisions/recent?count=40').catch(() => null);
+    // history (journaled) carries the LLM rationale; recent (stream) does not.
+    let items = await api('/api/decisions/history?limit=40').catch(() => null);
+    if (!items) items = await api('/api/decisions/recent?count=40').catch(() => null);
     $('#de-meta').textContent = items ? `(${items.length})` : '';
     if (!items || !items.length) { $('#de-feed').innerHTML = '<span class="muted">noch keine Decisions</span>'; return; }
     $('#de-feed').innerHTML = items.map((d, i) => {
       const act = d.action || '—', badgeCls = d.score >= 85 ? 'hi' : d.score >= 65 ? 'mid' : '';
       const why = d.qualified ? `✓ ${esc(d.entry_type || 'qualified')}` : (d.block_reason ? esc(d.block_reason) : '');
-      return `<div class="row tap" data-i="${i}"><span class="badge ${badgeCls}">${d.score == null ? '—' : Math.round(d.score)}</span>` +
+      const ai = d.ai_reasoning || d.ai_comment;
+      const conf = d.ai_confidence != null ? ` · ${Math.round(d.ai_confidence)}%` : '';
+      const aiLine = ai
+        ? `<div class="ai-snip">🧠 ${esc(ai.length > 120 ? ai.slice(0, 120) + '…' : ai)}<span class="muted">${conf}</span></div>`
+        : (d.ai_status && d.ai_status !== 'ran' ? `<div class="ai-snip muted">🧠 ${esc(aiStatusLabel(d.ai_status))}</div>` : '');
+      return `<div class="dwrap tap" data-i="${i}"><div class="row" style="border:0;padding:8px 0 2px">` +
+        `<span class="badge ${badgeCls}">${d.score == null ? '—' : Math.round(d.score)}</span>` +
         `<span class="act ${esc(act)}">${esc(act)}</span><span class="muted">${esc(d.direction || '')}</span>` +
-        `<span class="why">${why}<br><span style="font-size:10px">${esc(fmtTs(d.ts))}</span></span></div>`;
+        `<span class="why">${why}<br><span style="font-size:10px">${esc(fmtTs(d.ts))}</span></span></div>${aiLine}</div>`;
     }).join('');
-    $$('#de-feed .row').forEach(r => r.onclick = () => showDecision(items[+r.dataset.i]));
+    $$('#de-feed .dwrap').forEach(r => r.onclick = () => showDecision(items[+r.dataset.i]));
+  }
+  function aiStatusLabel(s) {
+    return { ai_off: 'KI aus', score_low: 'Score zu niedrig für KI', news_blackout: 'News-Blackout', llm_error: 'LLM-Fehler → Regel-Fallback' }[s] || s;
   }
   function showDecision(d) {
     const ai = (d.ai_reasoning || d.ai_comment);
@@ -173,6 +184,7 @@
       kv('Aktion', d.action || '—') + kv('Grund', d.block_reason || (d.qualified ? '✓ ' + (d.entry_type || 'qualified') : '—'));
     if (d.ai_confidence != null) html += kv('KI-Konfidenz', Math.round(d.ai_confidence) + '%');
     if (ai) html += `<h3 style="margin-top:14px">🧠 KI-Begründung</h3><div class="rationale">${esc(ai)}</div>`;
+    else if (d.ai_status) html += `<h3 style="margin-top:14px">🧠 KI</h3><div class="rationale muted">${esc(aiStatusLabel(d.ai_status))}</div>`;
     if (d.ai_invalidations && d.ai_invalidations.length) html += `<div class="muted" style="margin-top:8px;font-size:13px">✗ ${d.ai_invalidations.map(esc).join(' · ')}</div>`;
     $('#sheet').innerHTML = html; $('#modal').classList.remove('hidden');
   }
@@ -181,24 +193,32 @@
 
   // ---------- CHART ----------
   async function loadChart() {
-    if (!window.LightweightCharts) return;
+    const el = $('#ch-container');
+    if (!window.LightweightCharts) { $('#ch-last').textContent = 'Chart-Lib fehlt'; return; }
     if (!state.chart) {
-      const el = $('#ch-container'); el.innerHTML = '';
+      el.innerHTML = '';
+      const w = el.clientWidth || (window.innerWidth - 44);
       state.chart = LightweightCharts.createChart(el, {
-        width: el.clientWidth, height: 340, layout: { background: { color: 'transparent' }, textColor: '#7d8590' },
+        width: w, height: 340, layout: { background: { color: 'transparent' }, textColor: '#7d8590' },
         grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
         timeScale: { timeVisible: true, borderColor: '#30363d' }, rightPriceScale: { borderColor: '#30363d' },
+        handleScale: { axisPressedMouseMove: true }, handleScroll: true,
       });
       state.series = state.chart.addCandlestickSeries({ upColor: '#3fb950', downColor: '#f85149', borderVisible: false, wickUpColor: '#3fb950', wickDownColor: '#f85149' });
-      window.addEventListener('resize', () => state.chart && state.chart.applyOptions({ width: el.clientWidth }));
+      window.addEventListener('resize', () => { if (state.chart && el.clientWidth) state.chart.applyOptions({ width: el.clientWidth }); });
+    } else if (el.clientWidth) {
+      state.chart.applyOptions({ width: el.clientWidth }); // view was hidden (width 0) when created
     }
     try {
-      const bars = await api('/api/chart/history?timeframe=M5&limit=200');
-      if (Array.isArray(bars) && bars.length) {
-        state.series.setData(bars.map(b => ({ time: Math.floor(new Date(b.ts || b.time).getTime() / 1000), open: +b.open, high: +b.high, low: +b.low, close: +b.close })));
-        const last = bars[bars.length - 1]; $('#ch-last').textContent = num(+last.close);
-      }
-    } catch (e) { $('#ch-last').textContent = '—'; }
+      if (!state.symbol) { const h = await api('/api/health').catch(() => null); state.symbol = (h && h.symbol) || 'XAUUSD'; }
+      $('#ch-symbol').textContent = state.symbol + ' · M5';
+      const candles = await api(`/api/chart/candles?symbol=${encodeURIComponent(state.symbol)}&timeframe=M5&count=300`);
+      if (Array.isArray(candles) && candles.length) {
+        state.series.setData(candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: +c.open, high: +c.high, low: +c.low, close: +c.close })));
+        const last = candles[candles.length - 1]; $('#ch-last').textContent = num(+last.close);
+        try { const n = candles.length; state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 90), to: n + 3 }); } catch (e) {}
+      } else { $('#ch-last').textContent = 'keine Daten'; }
+    } catch (e) { $('#ch-last').textContent = 'Fehler'; console.error('chart', e); }
   }
 
   // ---------- MEHR ----------
