@@ -1291,6 +1291,57 @@ async def decisions_recent(
     return feed
 
 
+@router.get("/decisions/history")
+async def decisions_history(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    limit: int = Query(default=1000, ge=1, le=10_000),
+    only_qualified: bool = False,
+    blocked_only: bool = False,
+    block_reason: str | None = None,
+    min_score: float | None = None,
+    session: UserSession = Depends(require_role("viewer")),
+) -> list[dict[str, Any]]:
+    """Persisted decision history (newest first) for the Decisions tab.
+
+    Reads the durable ``journal_decisions`` table — goes back days/weeks, with
+    filters to audit "did it see a setup, and why wasn't it taken". Decision
+    times are broker-server time (as shown on the live feed); the default
+    window's upper bound is extended 24h so broker-ahead rows aren't cut.
+    """
+
+    store = _get_journal_store()
+    end = end or (datetime.now(tz=UTC) + timedelta(hours=24))
+    start = start or (datetime.now(tz=UTC) - timedelta(days=7))
+    recs = await store.list_decisions(start=start, end=end, limit=limit)
+    out: list[dict[str, Any]] = []
+    for r in recs:
+        if only_qualified and not r.qualified:
+            continue
+        if blocked_only and r.qualified:
+            continue
+        if block_reason and (r.block_reason or "") != block_reason:
+            continue
+        if min_score is not None and (r.score is None or r.score < min_score):
+            continue
+        out.append(
+            {
+                "ts": r.ts.isoformat() if r.ts else None,
+                "action": r.action,
+                "block_reason": r.block_reason,
+                "direction": r.direction,
+                "score": r.score,
+                "band": r.band,
+                "subscores": r.subscores or {},
+                "source_ai": r.source_ai,
+                "qualified": r.qualified,
+                "entry_type": r.entry_type,
+                "ref_price": r.ref_price,
+            }
+        )
+    return out
+
+
 @router.get("/orders/recent")
 async def orders_recent(
     request: Request,

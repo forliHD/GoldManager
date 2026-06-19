@@ -51,6 +51,7 @@ import structlog
 
 from xauusd_bot.common.config import Settings
 from xauusd_bot.common.schemas.journal import (
+    DecisionLogRecord,
     FeatureSnapshotRecord,
     LLMFallbackDiscrepancy,
     LLMFallbackDiscrepancyV2,
@@ -100,6 +101,22 @@ class JournalStore(Protocol):
 
     async def write_order(self, order: OrderRecord) -> UUID:
         """Persist an :class:`OrderRecord`. Returns the assigned id."""
+
+        ...
+
+    async def write_decision(self, record: DecisionLogRecord) -> UUID:
+        """Persist a :class:`DecisionLogRecord` (one per bar). Returns the id."""
+
+        ...
+
+    async def list_decisions(
+        self,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        symbol: str | None = None,
+        limit: int = 1000,
+    ) -> list[DecisionLogRecord]:
+        """Return decisions in [start, end) by ``ts``, newest first, capped at ``limit``."""
 
         ...
 
@@ -284,6 +301,7 @@ class InMemoryJournalStore:
         self._trades: dict[UUID, TradeRecord] = {}
         self._snapshots: dict[UUID, FeatureSnapshotRecord] = {}
         self._orders: dict[UUID, OrderRecord] = {}
+        self._decisions: dict[UUID, DecisionLogRecord] = {}
         self._discrepancies: dict[UUID, LLMFallbackDiscrepancy] = {}
         # Block-6 spec-exact discrepancy records (LLMFallbackDiscrepancyV2).
         self._discrepancies_v2: dict[UUID, LLMFallbackDiscrepancyV2] = {}
@@ -351,6 +369,24 @@ class InMemoryJournalStore:
             self._orders[order.id] = order
             self._orders_by_trade[order.trade_id].append(order.id)
             return order.id
+
+    async def write_decision(self, record: DecisionLogRecord) -> UUID:
+        async with self._lock:
+            self._decisions[record.id] = record
+            return record.id
+
+    async def list_decisions(
+        self, start=None, end=None, symbol=None, limit=1000
+    ) -> list[DecisionLogRecord]:
+        async with self._lock:
+            out = [
+                d for d in self._decisions.values()
+                if (start is None or d.ts >= start)
+                and (end is None or d.ts < end)
+                and (symbol is None or d.symbol == symbol)
+            ]
+            out.sort(key=lambda d: d.ts, reverse=True)  # newest first
+            return out[:limit]
 
     async def write_discrepancy(self, d: LLMFallbackDiscrepancy) -> UUID:
         async with self._lock:
@@ -576,6 +612,9 @@ CREATE TABLE IF NOT EXISTS journal_fitting_proposals (
   id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, status TEXT NOT NULL,
   category TEXT, data JSONB NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_fp_created ON journal_fitting_proposals (created_at);
+CREATE TABLE IF NOT EXISTS journal_decisions (
+  id TEXT PRIMARY KEY, ts TIMESTAMPTZ NOT NULL, symbol TEXT NOT NULL, data JSONB NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_decisions_ts ON journal_decisions (ts);
 """
 
 
@@ -708,6 +747,34 @@ class TimescaleJournalStore:
                 getattr(order.status, "value", str(order.status)), self._dump(order),
             )
         return order.id
+
+    async def write_decision(self, record: DecisionLogRecord) -> UUID:
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            await con.execute(
+                "INSERT INTO journal_decisions (id, ts, symbol, data) "
+                "VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (id) DO NOTHING",
+                str(record.id), record.ts, record.symbol, self._dump(record),
+            )
+        return record.id
+
+    async def list_decisions(
+        self, start=None, end=None, symbol=None, limit=1000
+    ) -> list[DecisionLogRecord]:
+        clauses, args = [], []
+        if start is not None:
+            args.append(start); clauses.append(f"ts>=${len(args)}")
+        if end is not None:
+            args.append(end); clauses.append(f"ts<${len(args)}")
+        if symbol is not None:
+            args.append(symbol); clauses.append(f"symbol=${len(args)}")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        args.append(limit)
+        q = f"SELECT data FROM journal_decisions{where} ORDER BY ts DESC LIMIT ${len(args)}"
+        pool = await self._ensure_pool()
+        async with pool.acquire() as con:
+            rows = await con.fetch(q, *args)
+        return [DecisionLogRecord.model_validate(json.loads(r["data"])) for r in rows]
 
     async def _write_discrepancy(self, d: Any, version: int) -> UUID:
         pool = await self._ensure_pool()

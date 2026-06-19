@@ -115,6 +115,32 @@ class TradeCloseUpdate(BaseModel):
     exit_reason: ExitReasonTag
 
 
+class DecisionLogRecord(BaseModel):
+    """Slim, persistence-shaped log of one decision (no feature bundle).
+
+    Journaled by the decision-engine for the dashboard's decision-history tab —
+    enough to audit "did it see a setup, and why wasn't it taken" without the
+    heavy bundle. Immutable once written.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID = Field(default_factory=uuid4)
+    ts: datetime = Field(description="Decision time (broker bar time, as displayed on the feed).")
+    written_at: datetime = Field(description="Wall-clock UTC when journaled.")
+    symbol: str
+    action: str = Field(description="no_trade / enter / ...")
+    direction: str | None = None
+    score: float | None = None
+    band: str | None = None
+    subscores: dict[str, float] = Field(default_factory=dict)
+    block_reason: str | None = None
+    qualified: bool = False
+    entry_type: str | None = None
+    source_ai: bool = False
+    ref_price: float | None = None
+
+
 class OrderStatusTag(str, Enum):
     """Stable order status strings for the journal."""
 

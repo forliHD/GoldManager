@@ -51,6 +51,7 @@ from xauusd_bot.common.schemas.decision import (
 )
 from xauusd_bot.common.schemas.features import FeatureSnapshotBundle
 from xauusd_bot.common.schemas.journal import (
+    DecisionLogRecord,
     FeatureSnapshotRecord,
     OrderRecord,
     TradeCloseUpdate,
@@ -144,11 +145,12 @@ class JournalEvent(_Envelope):
     """
 
     kind: Literal["journal"] = "journal"
-    entry_type: Literal["trade", "order", "feature_snapshot", "trade_close"]
+    entry_type: Literal["trade", "order", "feature_snapshot", "trade_close", "decision"]
     trade: TradeRecord | None = None
     order: OrderRecord | None = None
     snapshot: FeatureSnapshotRecord | None = None
     trade_close: TradeCloseUpdate | None = None
+    decision: DecisionLogRecord | None = None
 
 
 # Topic → envelope map, so services and tests resolve the model class for

@@ -629,3 +629,23 @@ async def test_get_trade_by_order_id_prefers_open() -> None:
     hit = await store.get_trade_by_order_id("TICKET-1")
     assert hit is not None and hit.id == open_t.id  # prefers the still-open record
     assert await store.get_trade_by_order_id("UNKNOWN") is None
+
+
+@pytest.mark.asyncio
+async def test_write_and_list_decisions() -> None:
+    from xauusd_bot.common.schemas.journal import DecisionLogRecord
+    store = InMemoryJournalStore()
+    base = _ts()
+    for i in range(4):
+        await store.write_decision(DecisionLogRecord(
+            ts=base + timedelta(minutes=i), written_at=base, symbol="XAUUSD+",
+            action="no_trade", direction="short", score=60 + i, band="observe_55_64",
+            subscores={"vwap": 40.0}, block_reason="score_below_threshold",
+            qualified=False, source_ai=False, ref_price=4140.0 + i,
+        ))
+    out = await store.list_decisions(start=base, end=base + timedelta(hours=1), limit=10)
+    assert len(out) == 4
+    assert [d.score for d in out] == [63, 62, 61, 60]  # newest (highest ts) first
+    # window filter
+    sub = await store.list_decisions(start=base + timedelta(minutes=2), end=base + timedelta(hours=1))
+    assert len(sub) == 2

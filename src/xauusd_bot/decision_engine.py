@@ -24,12 +24,16 @@ import structlog
 from xauusd_bot.common.config import ServiceRole, Settings, load_settings
 from xauusd_bot.common.logging import setup_logging
 from xauusd_bot.common.messaging.compact import compact_bundle
+from datetime import UTC, datetime
+
 from xauusd_bot.common.messaging.events import (
     ENVELOPE_SCHEMA_VERSION,
     DecisionEvent,
     FeaturesEvent,
+    JournalEvent,
 )
 from xauusd_bot.common.messaging.streams import Publisher, StreamMessage, StreamTopic
+from xauusd_bot.common.schemas.journal import DecisionLogRecord
 from xauusd_bot.common.runtime_config import get_ai_enabled
 from xauusd_bot.common.service import make_publisher, run_consumer_service
 from xauusd_bot.decision.pipeline import DecisionPipeline
@@ -72,6 +76,33 @@ class _RuntimeAIFlag:
         return self._value
 
 
+def _decision_log(decision, score, qualification, symbol: str, ref_price) -> DecisionLogRecord:
+    """Build the slim, persistence-shaped decision record (no feature bundle)."""
+    d = decision.model_dump(mode="json") if decision is not None else {}
+    s = score.model_dump(mode="json") if score is not None else {}
+    q = qualification.model_dump(mode="json") if qualification is not None else {}
+    ts_raw = d.get("timestamp")
+    try:
+        ts = datetime.fromisoformat(ts_raw) if ts_raw else datetime.now(tz=UTC)
+    except (TypeError, ValueError):
+        ts = datetime.now(tz=UTC)
+    return DecisionLogRecord(
+        ts=ts,
+        written_at=datetime.now(tz=UTC),
+        symbol=symbol,
+        action=str(d.get("action") or "no_trade"),
+        direction=d.get("source_direction"),
+        score=s.get("total_score"),
+        band=s.get("band"),
+        subscores={k: float(v) for k, v in (s.get("subscores") or {}).items() if v is not None},
+        block_reason=d.get("block_reason"),
+        qualified=bool(q.get("qualified")),
+        entry_type=q.get("final_entry_type"),
+        source_ai=bool(d.get("source_ai")),
+        ref_price=float(ref_price) if ref_price is not None else None,
+    )
+
+
 def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _RuntimeAIFlag):
     async def handle(msg: StreamMessage) -> None:
         ev = msg.payload
@@ -103,6 +134,19 @@ def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _Ru
                 ref_price=ev.ref_price,
             ),
         )
+        # Persist a slim decision record (no bundle) for the dashboard's
+        # decision-history tab. Best-effort — never block the decision path.
+        try:
+            await publisher.publish(
+                StreamTopic.JOURNAL,
+                JournalEvent(
+                    symbol=ev.symbol,
+                    entry_type="decision",
+                    decision=_decision_log(decision, score, qualification, ev.symbol, ev.ref_price),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - journaling is best-effort
+            log.warning("decision_engine_journal_failed", error=str(exc))
 
     return handle
 

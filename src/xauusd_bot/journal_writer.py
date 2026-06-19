@@ -45,6 +45,8 @@ def _make_handler(store):
             await store.write_order(ev.order)
         elif ev.entry_type == "feature_snapshot" and ev.snapshot is not None:
             await store.write_feature_snapshot(ev.snapshot)
+        elif ev.entry_type == "decision" and ev.decision is not None:
+            await store.write_decision(ev.decision)
         elif ev.entry_type == "trade_close" and ev.trade_close is not None:
             tc = ev.trade_close
             trade = await store.get_trade_by_order_id(tc.order_id)

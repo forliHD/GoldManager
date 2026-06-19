@@ -89,6 +89,11 @@
     .svc-health .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
     .svc-health .sdot.ok { background: var(--ok); } .svc-health .sdot.warn { background: var(--warn); }
     /* Performance tab */
+    .dh-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; font-size: 12px; }
+    .dh-controls label { display: flex; align-items: center; gap: 5px; }
+    .dh-controls select, .dh-controls input, .dh-controls button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; }
+    .dh-controls button { cursor: pointer; }
+    #dh-table td.q { color: var(--ok); } #dh-table tr.qual td { background: rgba(63,185,80,0.06); }
     .perf-period { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .perf-period select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; }
     .rbar { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; }
@@ -272,6 +277,7 @@
           <div class="tab" data-tab="performance">Performance</div>
           <div class="tab" data-tab="indicators">Indicators</div>
           <div class="tab" data-tab="trades">Trades</div>
+          <div class="tab" data-tab="decisions">Decisions</div>
           <div class="tab" data-tab="backtest">Backtest</div>
           <div class="tab" data-tab="reviews">Reviews</div>
           <div class="tab" data-tab="proposals">Proposals</div>
@@ -337,6 +343,26 @@
           <div id="tab-trades" class="hidden">
             <table id="trades-table">
               <thead><tr><th>Time</th><th>Side</th><th class="num">Entry</th><th class="num">Exit</th><th class="num">P/L €</th><th class="num">R</th><th>Kind</th><th class="num">Score</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <!-- Decisions history -->
+          <div id="tab-decisions" class="hidden">
+            <div class="dh-controls">
+              <select id="dh-range">
+                <option value="360">6 h</option>
+                <option value="1440" selected>24 h</option>
+                <option value="4320">3 Tage</option>
+                <option value="10000">7 Tage</option>
+              </select>
+              <label><input type="checkbox" id="dh-blocked"> nur abgelehnte</label>
+              <label><input type="checkbox" id="dh-qualified"> nur qualifizierte</label>
+              <label>Min-Score <input type="number" id="dh-minscore" min="0" max="100" step="1" style="width:54px"></label>
+              <button id="dh-refresh">Aktualisieren</button>
+              <span id="dh-count" class="muted"></span>
+            </div>
+            <table id="dh-table">
+              <thead><tr><th>Zeit</th><th>Richtung</th><th class="num">Score</th><th>Band</th><th>Aktion</th><th>Grund</th><th>AI</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>

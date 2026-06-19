@@ -182,7 +182,7 @@
   });
   function activateTab(name) {
     $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-    const tabs = ['live', 'performance', 'indicators', 'trades', 'backtest', 'reviews', 'proposals'];
+    const tabs = ['live', 'performance', 'indicators', 'trades', 'decisions', 'backtest', 'reviews', 'proposals'];
     tabs.forEach(n => {
       const el = $('#tab-' + n);
       if (el) el.classList.toggle('hidden', n !== name);
@@ -191,6 +191,7 @@
     if (name === 'live') loadLive();
     if (name === 'performance') loadPerformance();
     if (name === 'trades') loadTrades();
+    if (name === 'decisions') loadDecisionsHistory();
     if (name === 'backtest') loadBacktestList();
     if (name === 'reviews') setDefaultDates();
     if (name === 'proposals') loadProposals();
@@ -536,6 +537,41 @@
       }
     } catch (e) { console.error('trades load failed', e); }
   }
+
+  // ----- Decisions history tab -----
+  async function loadDecisionsHistory() {
+    const params = new URLSearchParams();
+    params.set('limit', ($('#dh-range') && $('#dh-range').value) || '1440');
+    if ($('#dh-blocked') && $('#dh-blocked').checked) params.set('blocked_only', 'true');
+    if ($('#dh-qualified') && $('#dh-qualified').checked) params.set('only_qualified', 'true');
+    const ms = $('#dh-minscore') ? $('#dh-minscore').value : '';
+    if (ms !== '') params.set('min_score', ms);
+    if ($('#dh-count')) $('#dh-count').textContent = 'lädt…';
+    try {
+      const rows = await api('/api/decisions/history?' + params.toString());
+      const tbody = $('#dh-table tbody'); tbody.innerHTML = '';
+      for (const d of rows) {
+        const tr = document.createElement('tr');
+        if (d.qualified) tr.className = 'qual';
+        const sub = Object.entries(d.subscores || {}).map(([k, v]) => `${k} ${Math.round(v)}`).join(' · ');
+        tr.title = sub ? ('Sub-Scores: ' + sub + (d.ref_price ? '  ·  Preis ' + fmtNum(d.ref_price) : '')) : '';
+        const dirCls = d.direction === 'short' ? 'neg' : d.direction === 'long' ? 'pos' : 'muted';
+        tr.innerHTML = `<td>${escapeHtml(fmtTs(d.ts))}</td>`
+          + `<td class="${dirCls}">${escapeHtml(d.direction || '—')}</td>`
+          + `<td class="num">${fmtNum(d.score, 1)}</td>`
+          + `<td>${escapeHtml((d.band || '').replace(/_\d.*$/, ''))}</td>`
+          + `<td>${d.qualified ? '<span class="q">✓ ' + escapeHtml(d.entry_type || 'qualified') + '</span>' : escapeHtml(d.action || '—')}</td>`
+          + `<td class="muted">${escapeHtml(d.block_reason || '')}</td>`
+          + `<td>${d.source_ai ? 'AI' : '—'}</td>`;
+        tbody.appendChild(tr);
+      }
+      if ($('#dh-count')) $('#dh-count').textContent = rows.length + ' Decisions';
+    } catch (e) { if ($('#dh-count')) $('#dh-count').textContent = 'Fehler: ' + e.message; }
+  }
+  ['#dh-refresh', '#dh-range', '#dh-blocked', '#dh-qualified'].forEach(sel => {
+    const el = $(sel); if (el) el.addEventListener(sel === '#dh-refresh' ? 'click' : 'change', loadDecisionsHistory);
+  });
+  { const el = $('#dh-minscore'); if (el) el.addEventListener('change', loadDecisionsHistory); }
 
   // ----- Backtest tab -----
   $('#bt-wf').addEventListener('change', (e) => {
