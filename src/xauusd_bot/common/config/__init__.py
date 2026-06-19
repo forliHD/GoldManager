@@ -92,7 +92,7 @@ class Settings(BaseSettings):
         description="Only call the LLM when score.total >= this threshold. Default 65 = 'prepare' band and above.",
     )
     ai_layer_max_attempts: int = Field(
-        default=3,
+        default=2,
         ge=1,
         le=6,
         description=(
@@ -108,9 +108,9 @@ class Settings(BaseSettings):
         description="Base delay between LLM retries (grows linearly: 0.4s, 0.8s, ...).",
     )
     ai_layer_timeout_seconds: float = Field(
-        default=10.0,
+        default=20.0,
         gt=0,
-        description="Hard timeout per OpenRouter HTTP call (seconds).",
+        description="Hard total timeout per OpenRouter HTTP call (seconds, enforced via asyncio.wait_for).",
     )
     ai_layer_zdr: bool = Field(
         default=False,

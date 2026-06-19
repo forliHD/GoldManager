@@ -45,6 +45,7 @@ AGENTS.md §4f for the operational caveat.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -214,9 +215,17 @@ class OpenRouterClient:
         # call rate) — keeps the client simple and avoids the
         # "lifecycle of a shared client" trap.
         try:
+            # asyncio.wait_for enforces a HARD total wall-clock cap. The httpx
+            # ``timeout`` float is only per-operation (connect/read/write), so a
+            # slowly-trickling response could otherwise block the decision loop
+            # far longer than the timeout (observed: a single call stalling the
+            # engine ~170s, delaying every downstream decision).
             async with httpx.AsyncClient(timeout=effective_timeout) as client:
-                response = await client.post(self._base_url, headers=headers, json=body)
-        except httpx.TimeoutException as exc:
+                response = await asyncio.wait_for(
+                    client.post(self._base_url, headers=headers, json=body),
+                    timeout=effective_timeout,
+                )
+        except (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError) as exc:
             log.warning("openrouter_timeout", timeout_s=effective_timeout, error=str(exc))
             raise LLMTimeoutError(
                 f"OpenRouter request timed out after {effective_timeout:.1f}s"
@@ -479,9 +488,17 @@ class OpenRouterClient:
         effective_timeout = float(timeout) if timeout is not None else self._default_timeout
 
         try:
+            # asyncio.wait_for enforces a HARD total wall-clock cap. The httpx
+            # ``timeout`` float is only per-operation (connect/read/write), so a
+            # slowly-trickling response could otherwise block the decision loop
+            # far longer than the timeout (observed: a single call stalling the
+            # engine ~170s, delaying every downstream decision).
             async with httpx.AsyncClient(timeout=effective_timeout) as client:
-                response = await client.post(self._base_url, headers=headers, json=body)
-        except httpx.TimeoutException as exc:
+                response = await asyncio.wait_for(
+                    client.post(self._base_url, headers=headers, json=body),
+                    timeout=effective_timeout,
+                )
+        except (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError) as exc:
             log.warning("openrouter_timeout", timeout_s=effective_timeout, error=str(exc))
             raise LLMTimeoutError(
                 f"OpenRouter request timed out after {effective_timeout:.1f}s"
