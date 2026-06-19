@@ -106,6 +106,16 @@ def _decision_log(decision, score, qualification, symbol: str, ref_price, ai_inf
         ts = datetime.now(tz=UTC)
     ai = ai_info or {}
     conf = ai.get("confidence")
+    # The raw rule decision may say "enter_short" with no block_reason, yet the
+    # qualification engine vetoed it (e.g. no_clear_tp_target). In that case the
+    # raw block_reason is None -> the dashboard would show an action with no
+    # reason. Fall back to the qualification's block_reasons so every non-traded
+    # row carries a reason. An empty reason therefore means "actually traded".
+    block_reason = d.get("block_reason")
+    if not block_reason and not bool(q.get("qualified")):
+        q_reasons = [r for r in (q.get("block_reasons") or []) if r]
+        if q_reasons:
+            block_reason = ", ".join(q_reasons)
     return DecisionLogRecord(
         ts=ts,
         written_at=datetime.now(tz=UTC),
@@ -115,7 +125,7 @@ def _decision_log(decision, score, qualification, symbol: str, ref_price, ai_inf
         score=s.get("total_score"),
         band=s.get("band"),
         subscores={k: float(v) for k, v in (s.get("subscores") or {}).items() if v is not None},
-        block_reason=d.get("block_reason"),
+        block_reason=block_reason,
         qualified=bool(q.get("qualified")),
         entry_type=q.get("final_entry_type"),
         source_ai=bool(d.get("source_ai")),
