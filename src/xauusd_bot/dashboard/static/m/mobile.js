@@ -219,12 +219,20 @@
         api(`/api/chart/overlays?symbol=${sym}`).catch(() => null),
       ]);
       if (Array.isArray(candles) && candles.length) {
-        const first = !state.chartReady;
-        state.series.setData(candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: +c.open, high: +c.high, low: +c.low, close: +c.close })));
-        const last = candles[candles.length - 1]; $('#ch-last').textContent = num(+last.close);
+        const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: +c.open, high: +c.high, low: +c.low, close: +c.close }));
+        if (!state.chartReady) {
+          state.series.setData(mapped);
+          try { const n = mapped.length; state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 80), to: n + 3 }); } catch (e) {}
+          state.chartReady = true;
+        } else {
+          // Live: update() only the LAST bar (its time is >= the last data point,
+          // as required) so the forming candle moves in real time and a freshly
+          // closed bar auto-scrolls into view — without yanking a user who panned
+          // back to history. setData would reset the viewport every tick.
+          state.series.update(mapped[mapped.length - 1]);
+        }
+        $('#ch-last').textContent = num(mapped[mapped.length - 1].close);
         applyChartOverlays(overlays);
-        // Only frame the view on first load — don't yank the user's pan/zoom on refresh.
-        if (first) { try { const n = candles.length; state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 80), to: n + 3 }); } catch (e) {} state.chartReady = true; }
       } else { $('#ch-last').textContent = 'keine Daten'; }
     } catch (e) { $('#ch-last').textContent = 'Fehler'; console.error('chart', e); }
   }
@@ -283,11 +291,25 @@
     if (!('serviceWorker' in navigator)) return;
     try { await navigator.serviceWorker.register('sw.js'); } catch (e) { console.warn('SW register failed', e); }
   }
+  function isStandalone() {
+    return window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  }
   async function refreshPushState() {
     const el = $('#push-state'); const hint = $('#notify-hint');
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) { el.textContent = 'n/v'; hint.textContent = 'Dieses Gerät unterstützt keine Web-Push-Benachrichtigungen.'; $('#push-enable').classList.add('hidden'); return; }
-    if (window.navigator.standalone === false && /iPhone|iPad/.test(navigator.userAgent)) hint.textContent = 'Tipp: für iOS zuerst über Teilen → „Zum Home-Bildschirm" installieren, dann Push aktivieren.';
+    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      el.textContent = 'n/v';
+      hint.innerHTML = isIOS
+        ? 'iOS unterstützt Push nur in der <b>installierten App</b>: unten <b>Teilen → „Zum Home-Bildschirm"</b>, die App von dort öffnen, dann hier Push aktivieren.'
+        : 'Dieses Gerät/dieser Browser unterstützt keine Web-Push-Benachrichtigungen.';
+      $('#push-enable').classList.add('hidden');
+      return;
+    }
+    if (isIOS && !isStandalone()) {
+      hint.innerHTML = '⚠️ Für Push auf dem iPhone: <b>Teilen → „Zum Home-Bildschirm"</b>, dann die App vom Homescreen öffnen — im normalen Safari-Tab geht Push nicht.';
+    } else { hint.textContent = ''; }
     try {
+      state.vapidKey = (await api('/api/push/vapid').catch(() => null) || {}).public_key || state.vapidKey;
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       state.pushSub = sub;
@@ -296,21 +318,32 @@
     } catch (e) {}
   }
   $('#push-enable').onclick = async () => {
+    // Already subscribed (known synchronously) → toggle OFF. No permission prompt.
+    if (state.pushSub) {
+      try {
+        await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: state.pushSub.endpoint }), headers: { 'Content-Type': 'application/json' } }).catch(() => {});
+        await state.pushSub.unsubscribe();
+      } catch (e) {}
+      state.pushSub = null; toast('Push deaktiviert'); return refreshPushState();
+    }
+    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    if (isIOS && !isStandalone()) return toast('iOS: zuerst „Zum Home-Bildschirm" hinzufügen und die App von dort öffnen — im Safari-Tab geht Push nicht.');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return toast('Push wird hier nicht unterstützt.');
+    // iOS requires Notification.requestPermission() to run INSIDE the user gesture,
+    // before any await — otherwise it silently fails. Call it first.
+    let perm = Notification.permission;
+    if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch (e) {} }
+    if (perm !== 'granted') return toast('Benachrichtigungen sind blockiert — in den Einstellungen für diese App erlauben.');
     try {
       const reg = await navigator.serviceWorker.ready;
-      const existing = await reg.pushManager.getSubscription();
-      if (existing) { // unsubscribe
-        await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: existing.endpoint }), headers: { 'Content-Type': 'application/json' } }).catch(() => {});
-        await existing.unsubscribe(); toast('Push deaktiviert'); return refreshPushState();
-      }
-      const perm = await Notification.requestPermission();
-      if (perm !== 'granted') return toast('Benachrichtigungen nicht erlaubt');
-      const { public_key, enabled } = await api('/api/push/vapid');
-      if (!enabled || !public_key) return toast('Push am Server nicht konfiguriert (VAPID fehlt)');
-      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(public_key) });
+      const key = state.vapidKey || ((await api('/api/push/vapid').catch(() => null)) || {}).public_key;
+      if (!key) return toast('Push am Server nicht konfiguriert (VAPID fehlt).');
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
+      state.pushSub = sub;
       const r = await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()), headers: { 'Content-Type': 'application/json' } });
-      toast(r.ok ? '🔔 Push aktiviert' : 'Fehler beim Registrieren'); refreshPushState();
-    } catch (e) { toast('Push-Fehler: ' + e.message); }
+      toast(r.ok ? `🔔 Push aktiviert (${r.count} Gerät${r.count === 1 ? '' : 'e'})` : 'Speichern fehlgeschlagen');
+      refreshPushState();
+    } catch (e) { toast('Push-Fehler: ' + (e.message || e.name)); }
   };
   $('#push-test').onclick = async () => { try { const r = await api('/api/push/test', { method: 'POST' }); toast(r.ok ? '✓ Push gesendet (' + r.count + ')' : '✗ ' + (r.reason || 'keine Empfänger')); } catch (e) { toast('✗ ' + e.message); } };
   function urlB64ToUint8(b64) { const pad = '='.repeat((4 - b64.length % 4) % 4); const s = (b64 + pad).replace(/-/g, '+').replace(/_/g, '/'); const raw = atob(s); return Uint8Array.from([...raw].map(c => c.charCodeAt(0))); }
