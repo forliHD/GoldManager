@@ -34,8 +34,9 @@
     .login-box button { width:100%; padding:13px; background:var(--accent); color:#0e1116; border:0; border-radius:8px; font-weight:700; font-size:16px; }
     .login-error { color:var(--err); margin-top:10px; min-height:18px; }
 
-    /* App shell — full-height flex column: topbar (fixed) / content (scrolls) / nav (fixed). */
-    #app { display:flex; flex-direction:column; height:100vh; height:100dvh; }
+    /* App shell — pinned to the exact viewport (avoids iOS vh/dvh quirks), flex
+       column: topbar (safe-area top) / content (scrolls) / nav (safe-area bottom). */
+    #app { position:fixed; inset:0; display:flex; flex-direction:column; }
     .content { flex:1 1 auto; overflow-y:auto; -webkit-overflow-scrolling:touch; }
     .topbar { flex:none; display:flex; align-items:center; gap:10px;
       padding: calc(8px + env(safe-area-inset-top)) 16px 8px; background:var(--panel); border-bottom:1px solid var(--border); }
@@ -51,9 +52,22 @@
     .view.hidden { display:none; }
     /* chart fills the screen between topbar and nav */
     #view-chart { padding:8px 8px 4px; }
-    .chart-head { display:flex; justify-content:space-between; align-items:center; padding:2px 4px 8px; }
-    .chart-head strong { font-size:15px; }
-    .ch-price { font-size:17px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); }
+    .chart-head { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:2px 2px 8px; }
+    .ch-price { font-size:17px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); margin-left:auto; }
+    .tf-row { display:flex; gap:4px; }
+    .tf-row button { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); border-radius:7px; padding:5px 9px; font-size:12px; font-weight:700; }
+    .tf-row button.active { background:var(--accent); color:#0e1116; border-color:var(--accent); }
+    /* settings sheet */
+    .set-row { display:flex; align-items:center; justify-content:space-between; padding:11px 0; border-bottom:1px solid var(--border); font-size:14px; }
+    .set-row:last-child { border-bottom:none; }
+    .chips { display:flex; gap:6px; }
+    .chip { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); border-radius:14px; padding:5px 12px; font-size:13px; font-weight:600; }
+    .chip.on { background:var(--accent); color:#0e1116; border-color:var(--accent); }
+    .set-row input[type=number] { width:60px; padding:7px; background:var(--panel-2); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:15px; text-align:center; }
+    .switch { width:46px; height:26px; border-radius:14px; background:var(--border); position:relative; transition:background .2s; flex:none; }
+    .switch.on { background:var(--ok); }
+    .switch::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:left .2s; }
+    .switch.on::after { left:23px; }
     #ch-container { width:100%; height:calc(100vh - 220px); height:calc(100dvh - 220px); min-height:300px;
       border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--panel); }
     .chart-legend { display:flex; flex-wrap:wrap; gap:12px; padding:8px 4px 2px; font-size:11px; color:var(--muted); }
@@ -216,8 +230,11 @@
     <!-- CHART -->
     <div class="view hidden" id="view-chart">
       <div class="chart-head">
-        <strong id="ch-symbol">XAUUSD · M5</strong>
+        <div class="tf-row" id="tf-row">
+          <button data-tf="M1">M1</button><button data-tf="M5" class="active">M5</button><button data-tf="M15">M15</button><button data-tf="H1">H1</button>
+        </div>
         <span id="ch-last" class="ch-price">—</span>
+        <button class="icon-btn" id="ch-gear" title="Chart-Einstellungen">⚙</button>
       </div>
       <div id="ch-container"></div>
       <div class="chart-legend" id="ch-legend"></div>

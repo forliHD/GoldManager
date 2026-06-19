@@ -4,7 +4,7 @@
   'use strict';
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
-  const state = { user: null, view: 'status', timer: null, reasoning: null, ai: null, emergency: false, chart: null, series: null, pushSub: null };
+  const state = { user: null, view: 'status', timer: null, reasoning: null, ai: null, emergency: false, chart: null, series: null, pushSub: null, timeframe: 'M5', lastCandle: null, lastOverlays: null, ws: null, wsRetry: 0 };
 
   // ---------- helpers ----------
   async function api(path, opts = {}) {
@@ -32,6 +32,7 @@
     $('#more-controls').classList.toggle('hidden', !priv);
     registerSW();
     refreshPushState();
+    connectWS();
     switchView('status');
   }
   function showLogin() {
@@ -53,9 +54,10 @@
     $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === v));
     loadView();
     if (state.timer) clearInterval(state.timer);
-    // auto-refresh the active view (chart included; 'more' is static controls)
-    const period = v === 'chart' ? 5000 : v === 'decisions' ? 6000 : 4000;
-    if (v !== 'more') state.timer = setInterval(loadView, period);
+    // Chart: live candles come over the WebSocket; only slow-refresh overlays as
+    // a fallback (full re-fetch would reset the live candle/viewport every tick).
+    if (v === 'chart') state.timer = setInterval(refreshOverlays, 20000);
+    else if (v !== 'more') state.timer = setInterval(loadView, v === 'decisions' ? 6000 : 4000);
   }
   function loadView() {
     const fn = { status: loadStatus, positions: loadPositions, decisions: loadDecisions, chart: loadChart, more: loadMore }[state.view];
@@ -212,61 +214,130 @@
     } else { const x = sz(); if (x.width) state.chart.applyOptions(x); } // re-fit after the view was hidden (size 0) at create time
     try {
       if (!state.symbol) { const h = await api('/api/health').catch(() => null); state.symbol = (h && h.symbol) || 'XAUUSD'; }
-      $('#ch-symbol').textContent = state.symbol + ' · M5';
+      const tf = state.timeframe || 'M5';
       const sym = encodeURIComponent(state.symbol);
       const [candles, overlays] = await Promise.all([
-        api(`/api/chart/candles?symbol=${sym}&timeframe=M5&count=300`),
+        api(`/api/chart/candles?symbol=${sym}&timeframe=${tf}&count=300`),
         api(`/api/chart/overlays?symbol=${sym}`).catch(() => null),
       ]);
       if (Array.isArray(candles) && candles.length) {
         const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: +c.open, high: +c.high, low: +c.low, close: +c.close }));
-        if (!state.chartReady) {
-          state.series.setData(mapped);
-          try { const n = mapped.length; state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 80), to: n + 3 }); } catch (e) {}
-          state.chartReady = true;
-        } else {
-          // Live: update() only the LAST bar (its time is >= the last data point,
-          // as required) so the forming candle moves in real time and a freshly
-          // closed bar auto-scrolls into view — without yanking a user who panned
-          // back to history. setData would reset the viewport every tick.
-          state.series.update(mapped[mapped.length - 1]);
-        }
+        state.series.setData(mapped);           // full (re)load on open / timeframe change
+        state.lastCandle = { ...mapped[mapped.length - 1] };  // seed the live-merge bucket
+        try { const n = mapped.length; state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 80), to: n + 3 }); } catch (e) {}
         $('#ch-last').textContent = num(mapped[mapped.length - 1].close);
+        state.lastOverlays = overlays;
         applyChartOverlays(overlays);
       } else { $('#ch-last').textContent = 'keine Daten'; }
     } catch (e) { $('#ch-last').textContent = 'Fehler'; console.error('chart', e); }
   }
+  // Seconds per timeframe bucket — for merging live bars into the active candle.
+  const TF_SECONDS = { M1: 60, M5: 300, M15: 900, H1: 3600 };
+  // Merge a live bar (forming, ~1/s via the WS 'ticks' topic) into the active
+  // timeframe's candle so the chart animates like MT5 — no full re-fetch.
+  function liveUpdateCandle(bar) {
+    if (!bar || !state.series || state.view !== 'chart') return;
+    const tfSec = TF_SECONDS[state.timeframe || 'M5'] || 300;
+    const barT = Math.floor(new Date(bar.time).getTime() / 1000);
+    if (isNaN(barT)) return;
+    const bucketT = Math.floor(barT / tfSec) * tfSec;
+    const o = +bar.open, h = +bar.high, l = +bar.low, c = +bar.close;
+    const last = state.lastCandle;
+    let candle;
+    if (last && last.time === bucketT) candle = { time: bucketT, open: last.open, high: Math.max(last.high, h), low: Math.min(last.low, l), close: c };
+    else if (last && bucketT < last.time) return; // stale/out-of-order
+    else candle = { time: bucketT, open: o, high: h, low: l, close: c };
+    state.lastCandle = candle;
+    try { state.series.update(candle); $('#ch-last').textContent = num(candle.close); } catch (e) {}
+  }
+  async function refreshOverlays() {
+    if (!state.series) return;
+    const o = await api(`/api/chart/overlays?symbol=${encodeURIComponent(state.symbol || 'XAUUSD')}`).catch(() => null);
+    if (o) { state.lastOverlays = o; applyChartOverlays(o); }
+  }
+  const CHART_DEFAULTS = { vwap: true, va: true, fvg: true, fvgMax: 5, fvgTf: { H1: true, M5: true, M1: true } };
+  function chartSettings() {
+    if (state.cset) return state.cset;
+    try { state.cset = Object.assign({}, CHART_DEFAULTS, JSON.parse(localStorage.getItem('mChartCfg') || '{}')); }
+    catch (e) { state.cset = { ...CHART_DEFAULTS }; }
+    state.cset.fvgTf = Object.assign({}, CHART_DEFAULTS.fvgTf, state.cset.fvgTf);
+    return state.cset;
+  }
+  function saveChartSettings() { try { localStorage.setItem('mChartCfg', JSON.stringify(state.cset)); } catch (e) {} }
   function applyChartOverlays(o) {
     (state.priceLines || []).forEach(pl => { try { state.series.removePriceLine(pl); } catch (e) {} });
     state.priceLines = [];
     const legend = [];
-    if (!o || !window.LightweightCharts) { $('#ch-legend').innerHTML = ''; return; }
+    if (!o || !window.LightweightCharts || !state.series) { $('#ch-legend').innerHTML = ''; return; }
+    const s = chartSettings();
     const S = LightweightCharts.LineStyle;
     const add = (price, color, title, style, w) => {
       if (price == null || isNaN(+price)) return;
       try { state.priceLines.push(state.series.createPriceLine({ price: +price, color, lineWidth: w || 1, lineStyle: style, axisLabelVisible: true, title })); } catch (e) {}
     };
-    const vw = o.vwaps || o.vwap || {};
-    const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
-    let anyVw = false;
-    ['utc00', 'utc07', 'utc12'].forEach(k => { if (vw[k] != null) { add(vw[k], vwCol[k], 'VWAP ' + k.slice(3), S.Solid, 1); anyVw = true; } });
-    if (anyVw) legend.push(`<span><i style="background:#3b82f6"></i>VWAP</span>`);
-    const w = (o.volume_profile || {}).weekly;
-    if (w) {
-      add(w.vah, '#ef4444', 'VAH', S.Dotted); add(w.vpoc, '#eab308', 'VPOC', S.Dotted); add(w.val, '#22c55e', 'VAL', S.Dotted);
-      legend.push(`<span><i style="background:#ef4444"></i>VAH</span><span><i style="background:#eab308"></i>VPOC</span><span><i style="background:#22c55e"></i>VAL</span>`);
+    if (s.vwap) {
+      const vw = o.vwaps || o.vwap || {}; const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
+      let any = false;
+      ['utc00', 'utc07', 'utc12'].forEach(k => { if (vw[k] != null) { add(vw[k], vwCol[k], 'VWAP ' + k.slice(3), S.Solid, 1); any = true; } });
+      if (any) legend.push(`<span><i style="background:#3b82f6"></i>VWAP</span>`);
     }
-    // FVG — nearest few zones as colored top/bottom levels (lightweight, robust).
-    const zones = (o.fvg_zones || o.fvgZones || []).slice(0, 5);
-    let anyFvg = false;
-    zones.forEach(z => {
-      const bull = String(z.type || '').toLowerCase().includes('bull');
-      const col = bull ? 'rgba(63,185,80,.55)' : 'rgba(248,81,73,.55)';
-      const top = z.top != null ? z.top : z.price_high, bot = z.bottom != null ? z.bottom : z.price_low;
-      add(top, col, 'FVG', S.Dashed); add(bot, col, '', S.Dashed); anyFvg = anyFvg || top != null;
-    });
-    if (anyFvg) legend.push(`<span><i style="background:#3fb950"></i>FVG↑</span><span><i style="background:#f85149"></i>FVG↓</span>`);
+    if (s.va) {
+      const w = (o.volume_profile || {}).weekly;
+      if (w) {
+        add(w.vah, '#ef4444', 'VAH', S.Dotted); add(w.vpoc, '#eab308', 'VPOC', S.Dotted); add(w.val, '#22c55e', 'VAL', S.Dotted);
+        legend.push(`<span><i style="background:#ef4444"></i>VAH</span><span><i style="background:#eab308"></i>VPOC</span><span><i style="background:#22c55e"></i>VAL</span>`);
+      }
+    }
+    if (s.fvg) {
+      const zones = (o.fvg_zones || o.fvgZones || [])
+        .filter(z => { const tf = String(z.tf || '').toUpperCase(); return (tf in s.fvgTf) ? s.fvgTf[tf] : true; })
+        .slice(0, s.fvgMax);
+      let any = false;
+      zones.forEach(z => {
+        const bull = String(z.type || '').toLowerCase().includes('bull');
+        const col = bull ? 'rgba(63,185,80,.55)' : 'rgba(248,81,73,.55)';
+        const top = z.top != null ? z.top : z.price_high, bot = z.bottom != null ? z.bottom : z.price_low;
+        add(top, col, 'FVG', S.Dashed); add(bot, col, '', S.Dashed); any = any || top != null;
+      });
+      if (any) legend.push(`<span><i style="background:#3fb950"></i>FVG↑</span><span><i style="background:#f85149"></i>FVG↓</span>`);
+    }
     $('#ch-legend').innerHTML = legend.join('');
+  }
+  // ----- chart settings sheet (timeframe lives in the head; this is overlays) -----
+  function openChartSettings() {
+    const s = chartSettings();
+    const sw = on => `<div class="switch ${on ? 'on' : ''}"></div>`;
+    const chip = (k, on) => `<button class="chip ${on ? 'on' : ''}" data-tf="${k}">${k}</button>`;
+    $('#sheet').innerHTML =
+      `<button class="close" onclick="document.getElementById('modal').classList.add('hidden')">Schließen</button><h3>Chart-Einstellungen</h3>` +
+      `<div class="set-row"><span>VWAP-Linien</span><div id="cs-vwap">${sw(s.vwap)}</div></div>` +
+      `<div class="set-row"><span>Value Area (VAH/VPOC/VAL)</span><div id="cs-va">${sw(s.va)}</div></div>` +
+      `<div class="set-row"><span>Fair Value Gaps</span><div id="cs-fvg">${sw(s.fvg)}</div></div>` +
+      `<div class="set-row"><span>FVG max. Zonen</span><input type="number" id="cs-fvgmax" min="0" max="15" value="${s.fvgMax}"></div>` +
+      `<div class="set-row"><span>FVG Timeframes</span><div class="chips" id="cs-fvgtf">${chip('H1', s.fvgTf.H1)}${chip('M5', s.fvgTf.M5)}${chip('M1', s.fvgTf.M1)}</div></div>`;
+    const reapply = () => { saveChartSettings(); applyChartOverlays(state.lastOverlays); };
+    const tog = (id, key) => { $(id).onclick = () => { s[key] = !s[key]; $(id).querySelector('.switch').classList.toggle('on', s[key]); reapply(); }; };
+    tog('#cs-vwap', 'vwap'); tog('#cs-va', 'va'); tog('#cs-fvg', 'fvg');
+    $('#cs-fvgmax').onchange = () => { s.fvgMax = Math.max(0, Math.min(15, parseInt($('#cs-fvgmax').value, 10) || 0)); reapply(); };
+    $$('#cs-fvgtf .chip').forEach(c => c.onclick = () => { const k = c.dataset.tf; s.fvgTf[k] = !s.fvgTf[k]; c.classList.toggle('on', s.fvgTf[k]); reapply(); });
+    $('#modal').classList.remove('hidden');
+  }
+  // ----- live WebSocket (forming bar ~1/s -> chart animates; features -> overlays) -----
+  function connectWS() {
+    try { if (state.ws) state.ws.close(); } catch (e) {}
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    let ws; try { ws = new WebSocket(`${proto}://${location.host}/ws`); } catch (e) { return; }
+    state.ws = ws;
+    ws.onopen = () => { state.wsRetry = 0; ['ticks', 'features'].forEach(t => { try { ws.send(JSON.stringify({ action: 'subscribe', topic: t })); } catch (e) {} }); };
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.topic === 'ticks') liveUpdateCandle((m.data || {}).bar);
+        else if (m.topic === 'features' && state.view === 'chart') refreshOverlays();
+      } catch (e) {}
+    };
+    ws.onerror = () => {};
+    ws.onclose = () => { const d = Math.min(30000, 1000 * Math.pow(2, (state.wsRetry++) || 0)); clearTimeout(state.wsTimer); state.wsTimer = setTimeout(connectWS, d); };
   }
 
   // ---------- MEHR ----------
@@ -350,6 +421,14 @@
 
   // ---------- wire ----------
   $$('#nav button').forEach(b => b.onclick = () => switchView(b.dataset.view));
+  $$('#tf-row button').forEach(b => b.onclick = () => {
+    $$('#tf-row button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    state.timeframe = b.dataset.tf;
+    state.lastCandle = null;
+    loadChart();
+  });
+  $('#ch-gear').onclick = openChartSettings;
   $('#refresh-btn').onclick = () => loadView();
   $('#logout-btn').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) {} location.reload(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) loadView(); });
