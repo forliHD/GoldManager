@@ -27,7 +27,7 @@ Validation contract
 * All literal fields are strict enums via :class:`typing.Literal` —
   the LLM cannot emit a typo without :class:`pydantic.ValidationError`.
 * All numeric ranges are bounded (e.g. ``confidence: 0..100``,
-  ``comment: 0..500``).
+  ``comment: 0..1500``).
 """
 
 from __future__ import annotations
@@ -155,7 +155,7 @@ class LLMDecision(BaseModel):
       ``"vwap_loss"``). The executor pattern-matches these.
     * ``management`` — :class:`ManagementBlock` of R-multiple hints.
     * ``confidence`` — LLM's 0-100 confidence score. Advisory only.
-    * ``comment`` — short free-form explanation. Max 500 chars.
+    * ``comment`` — free-form rationale. Max 1500 chars.
 
     The schema is ``extra="forbid"`` — any extra key the LLM emits
     causes :class:`pydantic.ValidationError` and triggers the
@@ -194,8 +194,8 @@ class LLMDecision(BaseModel):
     )
     comment: str = Field(
         default="",
-        max_length=500,
-        description="Short free-form explanation (≤ 500 chars).",
+        max_length=1500,
+        description="Free-form rationale (≤ 1500 chars). Was 500, which clipped the model's reasoning mid-sentence.",
     )
 
 

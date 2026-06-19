@@ -197,6 +197,11 @@
     #dd-body .dd-sub span { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; font-size: 11px; }
     #dd-body .dd-ai { background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 4px; padding: 10px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
     #dd-body .dd-ai-none { color: var(--muted); font-style: italic; }
+    #dd-body .dd-ai.clamped { max-height: 108px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 68%, transparent); mask-image: linear-gradient(to bottom, #000 68%, transparent); }
+    #dd-body .dd-more { margin-top: 6px; background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; padding: 0; }
+    .dh-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 10px; font-size: 12px; }
+    .dh-pager button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; cursor: pointer; }
+    .dh-pager button:disabled { opacity: 0.4; cursor: default; }
   </style>
 </head>
 <body>
@@ -372,6 +377,11 @@
               <thead><tr><th>Zeit</th><th>Richtung</th><th class="num">Score</th><th>Band</th><th>Aktion</th><th>Grund</th><th>AI</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div class="dh-pager">
+              <button id="dh-prev">‹ Zurück</button>
+              <span id="dh-page" class="muted"></span>
+              <button id="dh-next">Weiter ›</button>
+            </div>
           </div>
           <!-- Backtest -->
           <div id="tab-backtest" class="hidden">

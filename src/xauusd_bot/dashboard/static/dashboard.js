@@ -548,33 +548,48 @@
     if (ms !== '') params.set('min_score', ms);
     if ($('#dh-count')) $('#dh-count').textContent = 'lädt…';
     try {
-      const rows = await api('/api/decisions/history?' + params.toString());
-      const tbody = $('#dh-table tbody'); tbody.innerHTML = '';
-      for (const d of rows) {
-        const tr = document.createElement('tr');
-        if (d.qualified) tr.className = 'qual';
-        tr.style.cursor = 'pointer';
-        tr.addEventListener('click', () => showDecisionDetail(d));
-        const sub = Object.entries(d.subscores || {}).map(([k, v]) => `${k} ${Math.round(v)}`).join(' · ');
-        const aiHint = d.ai_reasoning ? ' · 🧠 KI-Begründung (klicken)' : '';
-        tr.title = (sub ? ('Sub-Scores: ' + sub) : '') + (d.ref_price ? '  ·  Preis ' + fmtNum(d.ref_price) : '') + aiHint;
-        const dirCls = d.direction === 'short' ? 'neg' : d.direction === 'long' ? 'pos' : 'muted';
-        tr.innerHTML = `<td>${escapeHtml(fmtTs(d.ts))}</td>`
-          + `<td class="${dirCls}">${escapeHtml(d.direction || '—')}</td>`
-          + `<td class="num">${fmtNum(d.score, 1)}</td>`
-          + `<td>${escapeHtml((d.band || '').replace(/_\d.*$/, ''))}</td>`
-          + `<td>${d.qualified ? '<span class="q">✓ ' + escapeHtml(d.entry_type || 'qualified') + '</span>' : escapeHtml(d.action || '—')}</td>`
-          + `<td class="muted">${escapeHtml(d.block_reason || '')}</td>`
-          + `<td>${d.source_ai ? 'AI' : '—'}</td>`;
-        tbody.appendChild(tr);
-      }
-      if ($('#dh-count')) $('#dh-count').textContent = rows.length + ' Decisions';
+      state.dhRows = await api('/api/decisions/history?' + params.toString());
+      state.dhPage = 0;
+      renderDecisionsPage();
+      if ($('#dh-count')) $('#dh-count').textContent = state.dhRows.length + ' Decisions';
     } catch (e) { if ($('#dh-count')) $('#dh-count').textContent = 'Fehler: ' + e.message; }
+  }
+  const DH_PAGE_SIZE = 50;
+  function renderDecisionsPage() {
+    const rows = state.dhRows || [];
+    const pages = Math.max(1, Math.ceil(rows.length / DH_PAGE_SIZE));
+    if (state.dhPage >= pages) state.dhPage = pages - 1;
+    const start = state.dhPage * DH_PAGE_SIZE;
+    const slice = rows.slice(start, start + DH_PAGE_SIZE);
+    const tbody = $('#dh-table tbody'); tbody.innerHTML = '';
+    for (const d of slice) {
+      const tr = document.createElement('tr');
+      if (d.qualified) tr.className = 'qual';
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('click', () => showDecisionDetail(d));
+      const sub = Object.entries(d.subscores || {}).map(([k, v]) => `${k} ${Math.round(v)}`).join(' · ');
+      const aiHint = d.ai_reasoning ? ' · 🧠 KI-Begründung (klicken)' : '';
+      tr.title = (sub ? ('Sub-Scores: ' + sub) : '') + (d.ref_price ? '  ·  Preis ' + fmtNum(d.ref_price) : '') + aiHint;
+      const dirCls = d.direction === 'short' ? 'neg' : d.direction === 'long' ? 'pos' : 'muted';
+      tr.innerHTML = `<td>${escapeHtml(fmtTs(d.ts))}</td>`
+        + `<td class="${dirCls}">${escapeHtml(d.direction || '—')}</td>`
+        + `<td class="num">${fmtNum(d.score, 1)}</td>`
+        + `<td>${escapeHtml((d.band || '').replace(/_\d.*$/, ''))}</td>`
+        + `<td>${d.qualified ? '<span class="q">✓ ' + escapeHtml(d.entry_type || 'qualified') + '</span>' : escapeHtml(d.action || '—')}</td>`
+        + `<td class="muted">${escapeHtml(d.block_reason || '')}</td>`
+        + `<td>${d.source_ai ? 'AI' : '—'}</td>`;
+      tbody.appendChild(tr);
+    }
+    if ($('#dh-page')) $('#dh-page').textContent = rows.length ? `Seite ${state.dhPage + 1} / ${pages}` : 'keine Decisions';
+    if ($('#dh-prev')) $('#dh-prev').disabled = state.dhPage <= 0;
+    if ($('#dh-next')) $('#dh-next').disabled = state.dhPage >= pages - 1;
   }
   ['#dh-refresh', '#dh-range', '#dh-blocked', '#dh-qualified'].forEach(sel => {
     const el = $(sel); if (el) el.addEventListener(sel === '#dh-refresh' ? 'click' : 'change', loadDecisionsHistory);
   });
   { const el = $('#dh-minscore'); if (el) el.addEventListener('change', loadDecisionsHistory); }
+  { const el = $('#dh-prev'); if (el) el.addEventListener('click', () => { if (state.dhPage > 0) { state.dhPage--; renderDecisionsPage(); } }); }
+  { const el = $('#dh-next'); if (el) el.addEventListener('click', () => { state.dhPage++; renderDecisionsPage(); }); }
 
   // Decision detail modal — meta, full sub-scores, and the LLM rationale.
   function showDecisionDetail(d) {
@@ -588,7 +603,12 @@
       const inval = (d.ai_invalidations || []).length
         ? `<h4>Invalidierung</h4><div class="dd-sub">${d.ai_invalidations.map(x => `<span>${escapeHtml(x)}</span>`).join('')}</div>` : '';
       const conf = d.ai_confidence != null ? ` · Konfidenz ${Math.round(d.ai_confidence)}%` : '';
-      ai = `<h4>🧠 KI-Begründung${conf}</h4><div class="dd-ai">${escapeHtml(d.ai_reasoning)}</div>${inval}`;
+      // Long rationale → show a clamped preview with an inline expand toggle.
+      const long = d.ai_reasoning.length > 280;
+      const more = long
+        ? `<button class="dd-more" onclick="var b=this.previousElementSibling;b.classList.toggle('clamped');this.textContent=b.classList.contains('clamped')?'mehr anzeigen ▾':'weniger ▴';">mehr anzeigen ▾</button>`
+        : '';
+      ai = `<h4>🧠 KI-Begründung${conf}</h4><div class="dd-ai${long ? ' clamped' : ''}">${escapeHtml(d.ai_reasoning)}</div>${more}${inval}`;
     } else {
       const byStatus = {
         ai_off: 'AI-Toggle war aus → die Regel hat entschieden (kein LLM-Call).',

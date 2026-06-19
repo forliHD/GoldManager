@@ -308,7 +308,7 @@ class TestClientParsesValid:
     @pytest.mark.asyncio
     async def test_oversized_comment_is_truncated_not_rejected(self, fake_http, tmp_path):
         # Verbose models (e.g. MiniMax M3) routinely emit a `comment`
-        # well over the 500-char cap. Because the comment is advisory
+        # well over the 1500-char cap. Because the comment is advisory
         # only (Brain vs Hands — it never drives execution), an
         # otherwise-valid decision must be accepted with the comment
         # clamped, not rejected over free-text length.
@@ -320,7 +320,7 @@ class TestClientParsesValid:
             "invalidations": [],
             "management": {"tp1_rr": 1.0, "tp2_rr": 2.0, "runner_to": None, "protect_before_news_min": None},
             "confidence": 70,
-            "comment": "x" * 900,
+            "comment": "x" * 2000,
         }
         body = {"id": "gen-1", "choices": [{"message": {"role": "assistant", "content": json.dumps(content)}}]}
         fake_http(response=_FakeResponse(200, body=body))
@@ -328,7 +328,7 @@ class TestClientParsesValid:
         d = await client.complete(system_prompt="sys", user_payload={"x": 1})
         assert isinstance(d, LLMDecision)
         assert d.decision == "scout"
-        assert len(d.comment) == 500
+        assert len(d.comment) == 1500
 
 
 class TestClientErrorPaths:
