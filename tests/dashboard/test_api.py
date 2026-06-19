@@ -804,3 +804,46 @@ class TestReasoningToggle:
         r2 = client.post("/api/ai/reasoning/toggle", json={"enabled": True}, cookies=login)
         assert r2.json()["enabled"] is True
         assert client.get("/api/ai/reasoning/state", cookies=login).json()["enabled"] is True
+
+
+# ----------------------------------------------------------------- /api/push/*
+
+
+class TestWebPush:
+    _SUB = {"endpoint": "https://push.example/abc", "keys": {"p256dh": "k", "auth": "a"}}
+
+    def test_vapid_endpoint_readable(self, client, login) -> None:
+        r = client.get("/api/push/vapid", cookies=login)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "public_key" in body and "enabled" in body
+
+    def test_subscribe_then_unsubscribe(self, client, login) -> None:
+        r = client.post("/api/push/subscribe", json=self._SUB, cookies=login)
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is True
+        assert r.json()["count"] >= 1
+        r2 = client.post(
+            "/api/push/unsubscribe", json={"endpoint": self._SUB["endpoint"]}, cookies=login
+        )
+        assert r2.status_code == 200
+        assert r2.json()["count"] == 0
+
+    def test_viewer_can_subscribe(self, client) -> None:
+        lr = client.post("/api/auth/login", data={"username": "viewer", "password": "viewer-pw"})
+        sid = lr.cookies.get(SESSION_COOKIE)
+        r = client.post("/api/push/subscribe", json=self._SUB, cookies={SESSION_COOKIE: sid})
+        assert r.status_code == 200
+
+    def test_test_push_requires_operator(self, client) -> None:
+        lr = client.post("/api/auth/login", data={"username": "viewer", "password": "viewer-pw"})
+        sid = lr.cookies.get(SESSION_COOKIE)
+        r = client.post("/api/push/test", cookies={SESSION_COOKIE: sid})
+        assert r.status_code == 403
+
+    def test_test_push_reports_unconfigured(self, client, login) -> None:
+        # No VAPID keys in test settings → graceful 'not configured'.
+        r = client.post("/api/push/test", cookies=login)
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is False
+        assert "VAPID" in r.json()["reason"]

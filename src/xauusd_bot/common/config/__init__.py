@@ -174,6 +174,22 @@ class Settings(BaseSettings):
         default=True, description="Master switch for Telegram alerts (effective only if token+chat set)."
     )
 
+    # --- Web Push (mobile PWA notifications)
+    vapid_public_key: str | None = Field(
+        default=None,
+        description="VAPID public key (base64url) the PWA uses to subscribe. Push disabled when unset.",
+    )
+    vapid_private_key: SecretStr | None = Field(
+        default=None, description="VAPID private key (base64url PEM). Server-side only; never commit."
+    )
+    vapid_subject: str = Field(
+        default="mailto:admin@goldmanager.local",
+        description="VAPID 'sub' claim — a mailto: or https: contact for the push service.",
+    )
+    webpush_enabled: bool = Field(
+        default=True, description="Master switch for Web Push (effective only if VAPID keys set)."
+    )
+
     # --- MT5 (prod only)
     mt5_login: str | None = None
     mt5_password: SecretStr | None = None

@@ -1238,6 +1238,82 @@ async def alerts_test(
     return {"ok": ok}
 
 
+# ---------------------------------------------------------------- Web Push (PWA)
+
+
+def _webpush(request: Request):
+    """Build a WebPushNotifier from settings + the trading Redis."""
+
+    from xauusd_bot.common.webpush import WebPushNotifier
+
+    settings = getattr(request.app.state, "settings", None)
+    return WebPushNotifier.from_settings(settings, _streams_redis(request))
+
+
+class PushSubscribeRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # passthrough the browser PushSubscription shape
+
+    endpoint: str = Field(description="Push service endpoint URL.")
+    keys: dict[str, str] = Field(description="p256dh + auth keys from the browser.")
+
+
+class PushUnsubscribeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(description="The endpoint to remove.")
+
+
+@router.get("/push/vapid")
+async def push_vapid(
+    request: Request,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """The VAPID public key the PWA needs to subscribe (and whether push is on)."""
+
+    wp = _webpush(request)
+    return {"public_key": wp.public_key, "enabled": wp.enabled}
+
+
+@router.post("/push/subscribe")
+async def push_subscribe(
+    request: Request,
+    body: PushSubscribeRequest,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Register a browser push subscription (any authenticated user)."""
+
+    wp = _webpush(request)
+    ok = await wp.add_subscription(body.model_dump())
+    return {"ok": ok, "count": await wp.subscription_count()}
+
+
+@router.post("/push/unsubscribe")
+async def push_unsubscribe(
+    request: Request,
+    body: PushUnsubscribeRequest,
+    session: UserSession = Depends(require_role("viewer")),
+) -> dict[str, Any]:
+    """Remove a browser push subscription."""
+
+    wp = _webpush(request)
+    await wp.remove_subscription(body.endpoint)
+    return {"ok": True, "count": await wp.subscription_count()}
+
+
+@router.post("/push/test")
+async def push_test(
+    request: Request,
+    session: UserSession = Depends(require_role("operator")),
+) -> dict[str, Any]:
+    """Send a test push to all registered subscriptions (operator/admin)."""
+
+    wp = _webpush(request)
+    if not wp.enabled:
+        return {"ok": False, "reason": "Web Push nicht konfiguriert (VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY setzen)."}
+    ok = await wp.send("🔔 <b>GoldManager</b>: Push-Benachrichtigungen sind aktiv.")
+    return {"ok": ok, "count": await wp.subscription_count()}
+
+
 class EmergencyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
