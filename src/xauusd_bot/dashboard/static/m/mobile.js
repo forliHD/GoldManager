@@ -210,7 +210,11 @@
         handleScale: true, handleScroll: true,
       });
       state.series = state.chart.addCandlestickSeries({ upColor: '#3fb950', downColor: '#f85149', borderVisible: false, wickUpColor: '#3fb950', wickDownColor: '#f85149', priceLineColor: '#58a6ff' });
-      window.addEventListener('resize', () => { if (state.chart) { const x = sz(); state.chart.applyOptions(x); } });
+      // FVG box overlay layer (HTML rectangles positioned via the coordinate API).
+      const layer = document.createElement('div'); layer.className = 'fvg-layer'; el.appendChild(layer); state.fvgLayer = layer;
+      state.chart.timeScale().subscribeVisibleTimeRangeChange(() => positionFvgBoxes());
+      if (window.ResizeObserver) new ResizeObserver(() => { try { state.chart.applyOptions(sz()); } catch (e) {} positionFvgBoxes(); }).observe(el);
+      window.addEventListener('resize', () => { if (state.chart) { const x = sz(); state.chart.applyOptions(x); positionFvgBoxes(); } });
     } else { const x = sz(); if (x.width) state.chart.applyOptions(x); } // re-fit after the view was hidden (size 0) at create time
     try {
       if (!state.symbol) { const h = await api('/api/health').catch(() => null); state.symbol = (h && h.symbol) || 'XAUUSD'; }
@@ -252,21 +256,23 @@
     else candle = { time: bucketT, open: o, high: h, low: l, close: c };
     state.lastCandle = candle;
     try { state.series.update(candle); $('#ch-last').textContent = num(candle.close); } catch (e) {}
+    positionFvgBoxes(); // price autoscale can shift Y without a time-range change
   }
   async function refreshOverlays() {
     if (!state.series) return;
     const o = await api(`/api/chart/overlays?symbol=${encodeURIComponent(state.symbol || 'XAUUSD')}`).catch(() => null);
     if (o) { state.lastOverlays = o; applyChartOverlays(o); }
   }
-  const CHART_DEFAULTS = { vwap: true, va: true, fvg: true, fvgMax: 5, fvgTf: { H1: true, M5: true, M1: true } };
+  const CHART_DEFAULTS = { vwap: true, va: true, fvg: true, fvgMax: 6, fvgTf: { H1: true, M5: true, M1: true }, fvgType: { bullish: true, bearish: true }, fvgPartial: true };
   function chartSettings() {
     if (state.cset) return state.cset;
-    try { state.cset = Object.assign({}, CHART_DEFAULTS, JSON.parse(localStorage.getItem('mChartCfg') || '{}')); }
+    try { state.cset = Object.assign({}, CHART_DEFAULTS, JSON.parse(localStorage.getItem('mChartCfg2') || '{}')); }
     catch (e) { state.cset = { ...CHART_DEFAULTS }; }
     state.cset.fvgTf = Object.assign({}, CHART_DEFAULTS.fvgTf, state.cset.fvgTf);
+    state.cset.fvgType = Object.assign({}, CHART_DEFAULTS.fvgType, state.cset.fvgType);
     return state.cset;
   }
-  function saveChartSettings() { try { localStorage.setItem('mChartCfg', JSON.stringify(state.cset)); } catch (e) {} }
+  function saveChartSettings() { try { localStorage.setItem('mChartCfg2', JSON.stringify(state.cset)); } catch (e) {} }
   function applyChartOverlays(o) {
     (state.priceLines || []).forEach(pl => { try { state.series.removePriceLine(pl); } catch (e) {} });
     state.priceLines = [];
@@ -291,30 +297,62 @@
         legend.push(`<span><i style="background:#ef4444"></i>VAH</span><span><i style="background:#eab308"></i>VPOC</span><span><i style="background:#22c55e"></i>VAL</span>`);
       }
     }
-    if (s.fvg) {
-      const FVG_TF_SCALE = { H1: 80, M5: 30, M1: 12 };
-      const px = state.lastCandle && Number(state.lastCandle.close);
-      let zones = (o.fvg_zones || o.fvgZones || [])
-        .filter(z => { const tf = String(z.tf || '').toUpperCase(); return (tf in s.fvgTf) ? s.fvgTf[tf] : true; });
-      if (px) {
-        // Rank by relevance = strength / proximity, so the NEAREST actionable gaps
-        // win — not far H1 gaps that draw off-screen (the bug: rank_score alone put
-        // distant zones first, so the visible ones got sliced away).
-        const center = z => (Number(z.top) + Number(z.bottom)) / 2;
-        const relevance = z => (Number(z.rank_score) || 1) / (1 + Math.abs(center(z) - px) / (FVG_TF_SCALE[String(z.tf).toUpperCase()] || 30));
-        zones.sort((a, b) => relevance(b) - relevance(a));
-      }
-      zones = zones.slice(0, s.fvgMax);
-      let any = false;
-      zones.forEach(z => {
-        const bull = String(z.type || '').toLowerCase().includes('bull');
-        const col = bull ? 'rgba(63,185,80,.55)' : 'rgba(248,81,73,.55)';
-        const top = z.top != null ? z.top : z.price_high, bot = z.bottom != null ? z.bottom : z.price_low;
-        add(top, col, 'FVG', S.Dashed); add(bot, col, '', S.Dashed); any = any || top != null;
-      });
-      if (any) legend.push(`<span><i style="background:#3fb950"></i>FVG↑</span><span><i style="background:#f85149"></i>FVG↓</span>`);
-    }
+    // FVG as HTML boxes (desktop parity) — store raw, curate, position.
+    state.fvgRaw = (o.fvg_zones || o.fvgZones || []);
+    renderFvgZones();
+    if (s.fvg && (state.fvgZones || []).length) legend.push(`<span><i style="background:#3fb950"></i>FVG↑</span><span><i style="background:#f85149"></i>FVG↓</span>`);
     $('#ch-legend').innerHTML = legend.join('');
+  }
+  // ----- FVG boxes (HTML overlay) — mirrors desktop renderFvgZones/positionFvgZones -----
+  const FVG_TF_SCALE = { H1: 80, M5: 30, M1: 12 };
+  function renderFvgZones() {
+    const s = chartSettings();
+    if (!s.fvg) { state.fvgZones = []; return positionFvgBoxes(); }
+    const px = state.lastCandle && Number(state.lastCandle.close);
+    const dist = x => { const top = +x.top, bot = +x.bottom; if (px == null) return 0; if (px > top) return px - top; if (px < bot) return bot - px; return 0; };
+    const rank = x => (Number(x.rank_score || x.size_points || 0)) || 0.01;
+    const relevance = x => px == null ? rank(x) : rank(x) / (1 + dist(x) / (FVG_TF_SCALE[String(x.tf).toUpperCase()] || 20)); // blend: strength + proximity
+    const z = (state.fvgRaw || []).filter(x => {
+      const tf = String(x.tf || '').toUpperCase();
+      return ((tf in s.fvgTf) ? s.fvgTf[tf] : true) && (s.fvgType[x.type] !== false) && (s.fvgPartial || x.status !== 'partially_mitigated');
+    });
+    z.sort((a, b) => relevance(b) - relevance(a));
+    const perTf = {}; const kept = [];
+    for (const zone of z) { const tf = zone.tf || '?'; perTf[tf] = (perTf[tf] || 0) + 1; if (perTf[tf] <= s.fvgMax) kept.push(zone); } // cap PER timeframe
+    state.fvgZones = kept;
+    positionFvgBoxes();
+  }
+  function positionFvgBoxes() {
+    const layer = state.fvgLayer, series = state.series, chart = state.chart;
+    if (!layer || !series || !chart) return;
+    layer.innerHTML = '';
+    const zones = state.fvgZones || [];
+    if (!zones.length) return;
+    const el = $('#ch-container');
+    const ts = chart.timeScale();
+    let paneW = el.clientWidth;
+    try { paneW -= (chart.priceScale('right').width() || 0); } catch (e) {}
+    if (!(paneW > 0)) paneW = el.clientWidth;
+    for (const z of zones) {
+      const yTop = series.priceToCoordinate(+z.top), yBot = series.priceToCoordinate(+z.bottom);
+      if (yTop == null || yBot == null) continue;
+      const top = Math.min(yTop, yBot), h = Math.max(4, Math.abs(yBot - yTop));
+      let xl = ts.timeToCoordinate(Math.floor(new Date(z.created_at).getTime() / 1000));
+      if (xl == null || xl < 0) xl = 0;           // formed off-screen left → from edge
+      if (xl > paneW) continue;                    // formed beyond the view → skip
+      const bull = z.type === 'bullish', partial = z.status === 'partially_mitigated';
+      const col = bull ? '63,185,80' : '248,81,73';
+      const box = document.createElement('div'); box.className = 'fvg-box';
+      box.style.left = xl + 'px'; box.style.top = top + 'px';
+      box.style.width = Math.max(2, paneW - xl) + 'px'; box.style.height = h + 'px';
+      box.style.background = `rgba(${col},${partial ? 0.06 : 0.13})`;
+      const bs = `1px ${partial ? 'dashed' : 'solid'} rgba(${col},0.85)`;
+      box.style.borderTop = bs; box.style.borderBottom = bs;
+      const tag = document.createElement('div'); tag.className = 'fvg-tag';
+      tag.textContent = `${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}`;
+      tag.style.background = `rgba(${col},0.9)`;
+      box.appendChild(tag); layer.appendChild(box);
+    }
   }
   // ----- chart settings sheet (timeframe lives in the head; this is overlays) -----
   function openChartSettings() {
@@ -326,13 +364,16 @@
       `<div class="set-row"><span>VWAP-Linien</span><div id="cs-vwap">${sw(s.vwap)}</div></div>` +
       `<div class="set-row"><span>Value Area (VAH/VPOC/VAL)</span><div id="cs-va">${sw(s.va)}</div></div>` +
       `<div class="set-row"><span>Fair Value Gaps</span><div id="cs-fvg">${sw(s.fvg)}</div></div>` +
-      `<div class="set-row"><span>FVG max. Zonen</span><input type="number" id="cs-fvgmax" min="0" max="15" value="${s.fvgMax}"></div>` +
-      `<div class="set-row"><span>FVG Timeframes</span><div class="chips" id="cs-fvgtf">${chip('H1', s.fvgTf.H1)}${chip('M5', s.fvgTf.M5)}${chip('M1', s.fvgTf.M1)}</div></div>`;
+      `<div class="set-row"><span>FVG Zonen je Timeframe</span><input type="number" id="cs-fvgmax" min="0" max="12" value="${s.fvgMax}"></div>` +
+      `<div class="set-row"><span>FVG Timeframes</span><div class="chips" id="cs-fvgtf">${chip('H1', s.fvgTf.H1)}${chip('M5', s.fvgTf.M5)}${chip('M1', s.fvgTf.M1)}</div></div>` +
+      `<div class="set-row"><span>FVG Typ</span><div class="chips" id="cs-fvgtype"><button class="chip ${s.fvgType.bullish ? 'on' : ''}" data-t="bullish">▲ Bull</button><button class="chip ${s.fvgType.bearish ? 'on' : ''}" data-t="bearish">▼ Bear</button></div></div>` +
+      `<div class="set-row"><span>Teilw. mitigierte zeigen</span><div id="cs-fvgpartial">${sw(s.fvgPartial)}</div></div>`;
     const reapply = () => { saveChartSettings(); applyChartOverlays(state.lastOverlays); };
     const tog = (id, key) => { $(id).onclick = () => { s[key] = !s[key]; $(id).querySelector('.switch').classList.toggle('on', s[key]); reapply(); }; };
-    tog('#cs-vwap', 'vwap'); tog('#cs-va', 'va'); tog('#cs-fvg', 'fvg');
-    $('#cs-fvgmax').onchange = () => { s.fvgMax = Math.max(0, Math.min(15, parseInt($('#cs-fvgmax').value, 10) || 0)); reapply(); };
+    tog('#cs-vwap', 'vwap'); tog('#cs-va', 'va'); tog('#cs-fvg', 'fvg'); tog('#cs-fvgpartial', 'fvgPartial');
+    $('#cs-fvgmax').onchange = () => { s.fvgMax = Math.max(0, Math.min(12, parseInt($('#cs-fvgmax').value, 10) || 0)); reapply(); };
     $$('#cs-fvgtf .chip').forEach(c => c.onclick = () => { const k = c.dataset.tf; s.fvgTf[k] = !s.fvgTf[k]; c.classList.toggle('on', s.fvgTf[k]); reapply(); });
+    $$('#cs-fvgtype .chip').forEach(c => c.onclick = () => { const k = c.dataset.t; s.fvgType[k] = !s.fvgType[k]; c.classList.toggle('on', s.fvgType[k]); reapply(); });
     $('#modal').classList.remove('hidden');
   }
   // ----- live WebSocket (forming bar ~1/s -> chart animates; features -> overlays) -----
