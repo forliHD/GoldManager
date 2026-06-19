@@ -139,6 +139,8 @@ class DecisionLogRecord(BaseModel):
     entry_type: str | None = None
     source_ai: bool = False
     ref_price: float | None = None
+    # Why the AI did / didn't run: ran | ai_off | score_low | news_blackout | llm_error.
+    ai_status: str | None = None
     # LLM rationale for this decision (only when the AI layer actually ran).
     ai_reasoning: str | None = None
     ai_confidence: float | None = None

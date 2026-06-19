@@ -91,6 +91,22 @@ class Settings(BaseSettings):
         le=100,
         description="Only call the LLM when score.total >= this threshold. Default 65 = 'prepare' band and above.",
     )
+    ai_layer_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=6,
+        description=(
+            "Total LLM attempts per decision before falling back to the rule. Retries cover "
+            "transient validation/empty-body/timeout errors (same provider — no ZDR change). "
+            "1 = no retry."
+        ),
+    )
+    ai_layer_retry_backoff_seconds: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=5.0,
+        description="Base delay between LLM retries (grows linearly: 0.4s, 0.8s, ...).",
+    )
     ai_layer_timeout_seconds: float = Field(
         default=10.0,
         gt=0,

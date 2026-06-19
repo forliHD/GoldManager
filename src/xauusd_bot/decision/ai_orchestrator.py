@@ -56,6 +56,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import asyncio
+
 import structlog
 
 from xauusd_bot.common.config import Settings
@@ -382,15 +384,19 @@ class AIDecisionOrchestrator:
         score: Score,
         account: AccountInfo | None,
     ) -> tuple[LLMDecision, int]:
-        """Call :meth:`AIDecisionLayer.decide` with one retry on validation / zone errors.
+        """Call :meth:`AIDecisionLayer.decide`, retrying transient errors.
 
-        Returns ``(decision, attempts)``. On the second failure the
-        original exception bubbles up to :meth:`decide` for fallback
-        handling.
+        Retries on validation / empty-body / zone / timeout errors (a brief
+        linear backoff between tries, same provider — no ZDR change), up to
+        ``settings.ai_layer_max_attempts``. Server / auth errors are NOT
+        retried. On final failure the last exception bubbles to
+        :meth:`decide` for rule fallback. Returns ``(decision, attempts)``.
         """
 
+        max_attempts = max(1, int(self._settings.ai_layer_max_attempts))
+        backoff = float(self._settings.ai_layer_retry_backoff_seconds)
         last_exc: Exception | None = None
-        for attempt in (1, 2):
+        for attempt in range(1, max_attempts + 1):
             try:
                 llm_decision = await self._ai_layer.decide(
                     feature_snapshot=feature_snapshot,
@@ -403,14 +409,17 @@ class AIDecisionOrchestrator:
                 log.warning(
                     "orchestrator_llm_retry",
                     attempt=attempt,
+                    max_attempts=max_attempts,
                     error_type=type(exc).__name__,
                     error=str(exc),
                 )
+                if attempt < max_attempts and backoff > 0:
+                    await asyncio.sleep(backoff * attempt)  # 0.4s, 0.8s, ...
                 continue
-            except LLMCallError as exc:
+            except LLMCallError:
                 # Server / auth — do NOT retry; bubble up.
                 raise
-        # Two failed attempts → bubble the last exception.
+        # All attempts failed → bubble the last exception.
         assert last_exc is not None
         raise last_exc
 

@@ -76,7 +76,21 @@ class _RuntimeAIFlag:
         return self._value
 
 
-def _decision_log(decision, score, qualification, symbol: str, ref_price, ai_info=None) -> DecisionLogRecord:
+def _ai_status(use_ai: bool, score_total, bundle, ai_info, threshold: float) -> str:
+    """Why the AI did / didn't run for this decision (for the audit tab)."""
+    if ai_info:                       # state:last_ai fresh → the LLM ran & answered
+        return "ran"
+    if not use_ai:
+        return "ai_off"               # runtime dashboard toggle was off
+    if score_total is None or score_total < threshold:
+        return "score_low"            # below the LLM-consult threshold
+    news = getattr(bundle, "news", None)
+    if news is not None and getattr(news, "in_blackout_flag", False):
+        return "news_blackout"        # hard news gate skips the LLM
+    return "llm_error"                # consulted, but no valid response → rule fallback
+
+
+def _decision_log(decision, score, qualification, symbol: str, ref_price, ai_info=None, ai_status=None) -> DecisionLogRecord:
     """Build the slim, persistence-shaped decision record (no feature bundle).
 
     ``ai_info`` is the fresh ``state:last_ai`` payload when the LLM ran for THIS
@@ -106,6 +120,7 @@ def _decision_log(decision, score, qualification, symbol: str, ref_price, ai_inf
         entry_type=q.get("final_entry_type"),
         source_ai=bool(d.get("source_ai")),
         ref_price=float(ref_price) if ref_price is not None else None,
+        ai_status=ai_status,
         ai_reasoning=ai.get("comment"),
         ai_confidence=float(conf) if conf is not None else None,
         ai_invalidations=list(ai.get("invalidations") or []),
@@ -159,12 +174,16 @@ def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _Ru
                             ai_info = last_ai
                 except Exception:  # noqa: BLE001
                     ai_info = None
+            status = _ai_status(
+                use_ai, getattr(score, "total_score", None), ev.bundle, ai_info,
+                pipeline.settings.ai_layer_score_threshold,
+            )
             await publisher.publish(
                 StreamTopic.JOURNAL,
                 JournalEvent(
                     symbol=ev.symbol,
                     entry_type="decision",
-                    decision=_decision_log(decision, score, qualification, ev.symbol, ev.ref_price, ai_info),
+                    decision=_decision_log(decision, score, qualification, ev.symbol, ev.ref_price, ai_info, status),
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - journaling is best-effort
