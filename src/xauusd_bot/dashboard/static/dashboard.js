@@ -301,10 +301,13 @@
 
   // ---- Fair Value Gap boxes -----------------------------------------------
   // Keep the latest zones and (re)draw them as HTML rectangles over the chart.
-  // Cap PER timeframe, and select the zones NEAREST the current price — those
-  // are the actionable ones on screen. A global cap by rank_score drops the
-  // near-price gaps in favour of higher-ranked but far-off-screen ones.
+  // Cap PER timeframe, ranked by a blend of STRENGTH and PROXIMITY to price:
+  // relevance = rank_score / (1 + distance/scale). Strong zones stay visible
+  // from further away; weak ones only when price is right there. The scale is
+  // per-TF (H1 levels matter from far, M1 only locally) so a big off-screen
+  // gap can't crowd out the actionable near-price ones.
   const FVG_MAX_PER_TF = 6;
+  const FVG_TF_SCALE = { H1: 80, M5: 30, M1: 12 };  // gold points
   function renderFvgZones(zones) {
     const z = Array.isArray(zones) ? zones.slice() : [];
     const px = (state.lastCandle && Number(state.lastCandle.close)) || null;
@@ -316,9 +319,9 @@
       if (px < bot) return bot - px;
       return 0;
     };
-    const rank = (x) => Number(x.rank_score || x.size_points || 0);
-    // Nearest-to-price first; fall back to strongest rank when price is unknown.
-    z.sort((a, b) => (px == null ? rank(b) - rank(a) : dist(a) - dist(b)));
+    const rank = (x) => Number(x.rank_score || x.size_points || 0) || 0.01;
+    const relevance = (x) => (px == null ? rank(x) : rank(x) / (1 + dist(x) / (FVG_TF_SCALE[x.tf] || 20)));
+    z.sort((a, b) => relevance(b) - relevance(a));
     const perTf = {};
     const kept = [];
     for (const zone of z) {
