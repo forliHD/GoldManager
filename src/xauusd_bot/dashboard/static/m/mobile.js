@@ -92,8 +92,8 @@
     $('#st-ai-status').innerHTML = aiState ? (aiState.enabled ? '<span class="ok">an</span>' : '<span class="muted">aus</span>') : '—';
     $('#st-reasoning').innerHTML = rState ? (rState.enabled ? '<span class="ok">an</span>' : '<span class="warn">aus (schnell)</span>') : '—';
     $('#st-ai-age').textContent = aiLast && aiLast.written_at ? 'vor ' + ago(aiLast.written_at) : (aiLast && aiLast.ts ? 'vor ' + ago(aiLast.ts) : 'noch keiner');
-    // last score from recent decisions
-    try { const recent = await api('/api/decisions/recent?count=1'); const d = recent && recent[0]; $('#st-score').textContent = d ? `${Math.round(d.score)} · ${d.band || ''}` : '—'; } catch (e) {}
+    // last score + subscore breakdown from the most recent decision
+    try { const recent = await api('/api/decisions/recent?count=1'); const d = recent && recent[0]; $('#st-score').textContent = d ? `${Math.round(d.score)} · ${d.band || ''}` : '—'; renderScoreBreakdown(d); } catch (e) {}
     // position summary
     $('#st-position').innerHTML = renderPositionsList(positions, true);
   }
@@ -109,6 +109,19 @@
     }
     out.push(`<span class="svc"><span class="dot ${h.execution_alive ? 'ok' : 'err'}"></span>exec</span>`);
     return out.join('');
+  }
+  const SCORE_LABELS = { h1_zone: 'H1-Zone', m5_zone: 'M5-Zone', triple_vwap: 'VWAP', htf_volume_profile: 'VolProfile', session_liquidity: 'Sess/Liq', news: 'News', momentum: 'Momentum' };
+  function renderScoreBreakdown(d) {
+    const el = $('#st-scores'); if (!el) return;
+    const sub = d && d.subscores;
+    if (!sub || !Object.keys(sub).length) { el.innerHTML = ''; return; }
+    el.innerHTML = Object.entries(sub).map(([k, v]) => {
+      const val = Math.round(Number(v) || 0), w = Math.max(2, Math.min(100, val));
+      const col = val >= 65 ? 'var(--ok)' : val >= 45 ? 'var(--warn)' : '#8b949e';
+      return `<div class="sb-row"><span class="sb-lbl">${esc(SCORE_LABELS[k] || k)}</span>` +
+        `<span class="sb-bar"><span class="sb-fill" style="width:${w}%;background:${col}"></span></span>` +
+        `<span class="sb-val">${val}</span></div>`;
+    }).join('');
   }
 
   // ---------- POSITIONEN ----------

@@ -1135,9 +1135,9 @@
     "semantic_hash": "5e183618f88a1922825635312e25b982"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/config/__init__.py": {
-    "mtime": 1781810028.5302968,
-    "ast_hash": "5bd3aada3b83b45fe3ab2c9dd926909d",
-    "semantic_hash": "5bd3aada3b83b45fe3ab2c9dd926909d"
+    "mtime": 1781878730.973556,
+    "ast_hash": "44a589193c5af35e31bff6b49e8983e5",
+    "semantic_hash": "44a589193c5af35e31bff6b49e8983e5"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/config/settings.py": {
     "mtime": 1781441340.69386,
@@ -1165,9 +1165,9 @@
     "semantic_hash": "c2177aeb7d2f0dcfff4fc206e545e165"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/messaging/events.py": {
-    "mtime": 1781815604.1697392,
-    "ast_hash": "100745c61a4094ee527e4bec55d1aa39",
-    "semantic_hash": "100745c61a4094ee527e4bec55d1aa39"
+    "mtime": 1781851792.551698,
+    "ast_hash": "b5ea9943e293824a5f8b071f0ead51fa",
+    "semantic_hash": "b5ea9943e293824a5f8b071f0ead51fa"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/messaging/streams.py": {
     "mtime": 1781806901.3305967,
@@ -1175,14 +1175,14 @@
     "semantic_hash": "cbac1417bd8ce1aa41cfe7329ae61a17"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/notify.py": {
-    "mtime": 1781804586.8708892,
-    "ast_hash": "d18fe83fa0b1d0b41b59b2f03fccacda",
-    "semantic_hash": "d18fe83fa0b1d0b41b59b2f03fccacda"
+    "mtime": 1781878806.5098333,
+    "ast_hash": "f72e3ae8f5fbf569f25d729161f61e13",
+    "semantic_hash": "f72e3ae8f5fbf569f25d729161f61e13"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/runtime_config.py": {
-    "mtime": 1781780820.8539593,
-    "ast_hash": "6f38fab00ad232b9a7514f77a1d6d9a9",
-    "semantic_hash": "6f38fab00ad232b9a7514f77a1d6d9a9"
+    "mtime": 1781875855.4343548,
+    "ast_hash": "2eb4a4ad1210b80c38a0f56a9c2f539f",
+    "semantic_hash": "2eb4a4ad1210b80c38a0f56a9c2f539f"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/schemas/__init__.py": {
     "mtime": 1781680310.62603,
@@ -1190,9 +1190,9 @@
     "semantic_hash": "9f3833e18f0a339336e46e954111f10c"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/schemas/ai_decision.py": {
-    "mtime": 1781621757.3878965,
-    "ast_hash": "59c58ad643d473163b43a2446019b2c0",
-    "semantic_hash": "59c58ad643d473163b43a2446019b2c0"
+    "mtime": 1781858064.4299972,
+    "ast_hash": "632d99a6a13042b130286cdc2ffc40e5",
+    "semantic_hash": "632d99a6a13042b130286cdc2ffc40e5"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/schemas/backtest.py": {
     "mtime": 1781600018.6105464,
@@ -1220,9 +1220,9 @@
     "semantic_hash": "a1e92e240adc1728d812a59af70191a9"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/schemas/journal.py": {
-    "mtime": 1781815563.4661667,
-    "ast_hash": "aa967a0f83ab0edf2e630f396057241b",
-    "semantic_hash": "aa967a0f83ab0edf2e630f396057241b"
+    "mtime": 1781856307.6409533,
+    "ast_hash": "9cd1cdf93db19e6cbf46b1e29800a4a3",
+    "semantic_hash": "9cd1cdf93db19e6cbf46b1e29800a4a3"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/schemas/review.py": {
     "mtime": 1781685812.9357579,
@@ -1290,19 +1290,19 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/api.py": {
-    "mtime": 1781820164.3675406,
-    "ast_hash": "d8660aa2e65ff3060938da4c94b1f764",
-    "semantic_hash": "d8660aa2e65ff3060938da4c94b1f764"
+    "mtime": 1781878875.9876223,
+    "ast_hash": "ef857598afa40f57888dd3999f611066",
+    "semantic_hash": "ef857598afa40f57888dd3999f611066"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/app.py": {
-    "mtime": 1781817767.5348296,
-    "ast_hash": "3e6c5f896eb032f1bf8a0572d537fcc8",
-    "semantic_hash": "3e6c5f896eb032f1bf8a0572d537fcc8"
+    "mtime": 1781865319.0020704,
+    "ast_hash": "99617f104c6ab44209a62c871cb2e327",
+    "semantic_hash": "99617f104c6ab44209a62c871cb2e327"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/auth.py": {
-    "mtime": 1781689590.7040625,
-    "ast_hash": "24cbec1eafefa3a83eff0568edfd836c",
-    "semantic_hash": "24cbec1eafefa3a83eff0568edfd836c"
+    "mtime": 1781865228.55269,
+    "ast_hash": "11de357552b665b2afe3fe6bc1bb3aa8",
+    "semantic_hash": "11de357552b665b2afe3fe6bc1bb3aa8"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/redis_subscriber.py": {
     "mtime": 1781790593.317185,
@@ -1310,9 +1310,9 @@
     "semantic_hash": "662b7955fc1443524486c6b2319d551d"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/dashboard.js": {
-    "mtime": 1781820399.8490596,
-    "ast_hash": "8542b65b4b7f1fad1992351eafc564b5",
-    "semantic_hash": "8542b65b4b7f1fad1992351eafc564b5"
+    "mtime": 1781875855.4355416,
+    "ast_hash": "2217fafedf61e63662e526f52a064100",
+    "semantic_hash": "2217fafedf61e63662e526f52a064100"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/lightweight-charts.v4.standalone.js": {
     "mtime": 1781767630.8489945,
@@ -1320,9 +1320,9 @@
     "semantic_hash": "f6722fe0b2c52f5b9979bbff61b8a1d2"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/websocket.py": {
-    "mtime": 1781690906.2761693,
-    "ast_hash": "7722287ce6dbd4fb1d3185924c5ec67f",
-    "semantic_hash": "7722287ce6dbd4fb1d3185924c5ec67f"
+    "mtime": 1781869594.2319868,
+    "ast_hash": "874ea0acd8c7230bb847ad3b3f7d8452",
+    "semantic_hash": "874ea0acd8c7230bb847ad3b3f7d8452"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/data/__init__.py": {
     "mtime": 1781441255.484502,
@@ -1370,19 +1370,19 @@
     "semantic_hash": "05a786e4e557b3f23cbdca51b070dc20"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/decision/ai_layer.py": {
-    "mtime": 1781621837.0870123,
-    "ast_hash": "2bf98286d5eb32009b32c6168cdff374",
-    "semantic_hash": "2bf98286d5eb32009b32c6168cdff374"
+    "mtime": 1781876576.1319723,
+    "ast_hash": "89179af08ac5d22c9a8bbce0a39e0a14",
+    "semantic_hash": "89179af08ac5d22c9a8bbce0a39e0a14"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/decision/ai_orchestrator.py": {
-    "mtime": 1781622125.6238408,
-    "ast_hash": "1f9952c7e1e58a8eb76aae88f35acfdb",
-    "semantic_hash": "1f9952c7e1e58a8eb76aae88f35acfdb"
+    "mtime": 1781856260.7852135,
+    "ast_hash": "6c862d7e7c31b800685cdb56e5affb32",
+    "semantic_hash": "6c862d7e7c31b800685cdb56e5affb32"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/decision/openrouter_client.py": {
-    "mtime": 1781799389.259072,
-    "ast_hash": "fbfa27e382b3a1f9559d707ec05a03d8",
-    "semantic_hash": "fbfa27e382b3a1f9559d707ec05a03d8"
+    "mtime": 1781875855.436288,
+    "ast_hash": "d3eb2ffc5c5c3807ffeaaf2907c2b684",
+    "semantic_hash": "d3eb2ffc5c5c3807ffeaaf2907c2b684"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/decision/pipeline.py": {
     "mtime": 1781780984.9519255,
@@ -1405,9 +1405,9 @@
     "semantic_hash": "7cf8a131bf7deabc6faacde0a9691e32"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/decision_engine.py": {
-    "mtime": 1781783489.540545,
-    "ast_hash": "dfb53d224c28e7f8fe01c4d2b16d851b",
-    "semantic_hash": "dfb53d224c28e7f8fe01c4d2b16d851b"
+    "mtime": 1781873423.4203632,
+    "ast_hash": "9ab5f5d789c0b38c83186fd36fcc5b5f",
+    "semantic_hash": "9ab5f5d789c0b38c83186fd36fcc5b5f"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/docker_entrypoint.py": {
     "mtime": 1781719974.023764,
@@ -1445,9 +1445,9 @@
     "semantic_hash": "1b56027afa0d5c0bd9a3bc0b7b834ba7"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/execution/risk.py": {
-    "mtime": 1781805952.8971472,
-    "ast_hash": "e25b774825f1ce72023c78b703202904",
-    "semantic_hash": "e25b774825f1ce72023c78b703202904"
+    "mtime": 1781847885.505548,
+    "ast_hash": "7fe472331ec18b330106ee16fb897c4d",
+    "semantic_hash": "7fe472331ec18b330106ee16fb897c4d"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/execution/sizer.py": {
     "mtime": 1781516694.8158553,
@@ -1465,9 +1465,9 @@
     "semantic_hash": "a683062ce3a9a07c5ff6a9d0c4c67308"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/execution_engine.py": {
-    "mtime": 1781816358.8593564,
-    "ast_hash": "2fe2afea02396e299f65c5065d91a647",
-    "semantic_hash": "2fe2afea02396e299f65c5065d91a647"
+    "mtime": 1781878841.0035288,
+    "ast_hash": "2cc2e84faa1cd9eecc4a5d8568d03cbf",
+    "semantic_hash": "2cc2e84faa1cd9eecc4a5d8568d03cbf"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/feature_engine.py": {
     "mtime": 1781813059.7744145,
@@ -1525,9 +1525,9 @@
     "semantic_hash": "4050b445064b10b3789420151abf7876"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/features/vwap.py": {
-    "mtime": 1781812913.33905,
-    "ast_hash": "34d6c4cffb998ca7c1937014f5dc3b1b",
-    "semantic_hash": "34d6c4cffb998ca7c1937014f5dc3b1b"
+    "mtime": 1781846780.491345,
+    "ast_hash": "25a5d96292e43d8b9606d3c025aa7317",
+    "semantic_hash": "25a5d96292e43d8b9606d3c025aa7317"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/healthcheck.py": {
     "mtime": 1781720364.977477,
@@ -1545,14 +1545,14 @@
     "semantic_hash": "2918ae47a9b89d3960b1321487b9cc6c"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/journal/store.py": {
-    "mtime": 1781818086.3792088,
-    "ast_hash": "028295967f242c92b1734e31a3adc4bc",
-    "semantic_hash": "028295967f242c92b1734e31a3adc4bc"
+    "mtime": 1781852395.3619418,
+    "ast_hash": "d7193d0623e506e04742d399fd09ad3a",
+    "semantic_hash": "d7193d0623e506e04742d399fd09ad3a"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/journal_writer.py": {
-    "mtime": 1781816136.68397,
-    "ast_hash": "3415b25a3428687c6416015c3ac83206",
-    "semantic_hash": "3415b25a3428687c6416015c3ac83206"
+    "mtime": 1781852467.8605115,
+    "ast_hash": "d914b4919914b9c0643ed1987844849b",
+    "semantic_hash": "d914b4919914b9c0643ed1987844849b"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/review/__init__.py": {
     "mtime": 1781681058.257761,
@@ -1635,9 +1635,9 @@
     "semantic_hash": "56bbb51c7e27117a421caaf07b0ce91d"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/common/test_notify.py": {
-    "mtime": 1781805180.8569567,
-    "ast_hash": "ca9c811737de6b908e3a08c2523c1484",
-    "semantic_hash": "ca9c811737de6b908e3a08c2523c1484"
+    "mtime": 1781878946.0421832,
+    "ast_hash": "f91a74f0002f84aad39148f325a7f1f6",
+    "semantic_hash": "f91a74f0002f84aad39148f325a7f1f6"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/common/test_schemas.py": {
     "mtime": 1781446241.3753994,
@@ -1700,9 +1700,9 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/dashboard/test_api.py": {
-    "mtime": 1781732342.6503465,
-    "ast_hash": "e98bdef4370f539781c091592642762c",
-    "semantic_hash": "e98bdef4370f539781c091592642762c"
+    "mtime": 1781879017.551031,
+    "ast_hash": "02a53c7857c4fcabbbf3258647b9c761",
+    "semantic_hash": "02a53c7857c4fcabbbf3258647b9c761"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/dashboard/test_auth.py": {
     "mtime": 1781804429.1754987,
@@ -1750,19 +1750,19 @@
     "semantic_hash": "94a66fc1a07117082cf1de67980183a6"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/decision/test_ai_layer.py": {
-    "mtime": 1781621890.011085,
-    "ast_hash": "81fa07514cd13d6a058ccc7c486ff09a",
-    "semantic_hash": "81fa07514cd13d6a058ccc7c486ff09a"
+    "mtime": 1781876675.9051862,
+    "ast_hash": "cbbfa0af931bfdbeb16c52fda38bfbab",
+    "semantic_hash": "cbbfa0af931bfdbeb16c52fda38bfbab"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/decision/test_ai_orchestrator.py": {
-    "mtime": 1781621979.393016,
-    "ast_hash": "0af0ce1bbe3457359bbadb3a79c537f6",
-    "semantic_hash": "0af0ce1bbe3457359bbadb3a79c537f6"
+    "mtime": 1781856981.5621653,
+    "ast_hash": "814a52f5e6785e8ac1615d40735f078f",
+    "semantic_hash": "814a52f5e6785e8ac1615d40735f078f"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/decision/test_ai_schemas.py": {
-    "mtime": 1781622240.3724403,
-    "ast_hash": "c21fdb3e2f51bf79eb0d63ba5bb0dc66",
-    "semantic_hash": "c21fdb3e2f51bf79eb0d63ba5bb0dc66"
+    "mtime": 1781875899.4623053,
+    "ast_hash": "846fa0dd23fd38e8242292247180464d",
+    "semantic_hash": "846fa0dd23fd38e8242292247180464d"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/decision/test_decision_schemas.py": {
     "mtime": 1781510550.8718722,
@@ -1775,9 +1775,9 @@
     "semantic_hash": "5720b53743ffc7de94062a73803eb706"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/decision/test_openrouter_client.py": {
-    "mtime": 1781734404.6576896,
-    "ast_hash": "ac8dad87e6a1dd3915674d5c138837bd",
-    "semantic_hash": "ac8dad87e6a1dd3915674d5c138837bd"
+    "mtime": 1781875855.4372106,
+    "ast_hash": "3788fcadf1ba03cb9d6b8fedd9031ea8",
+    "semantic_hash": "3788fcadf1ba03cb9d6b8fedd9031ea8"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/decision/test_pipeline.py": {
     "mtime": 1781732275.2837229,
@@ -1810,9 +1810,9 @@
     "semantic_hash": "333908bc5f5c8bbc437e1e18b955f8a2"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/execution/test_close_journaling.py": {
-    "mtime": 1781816722.4550178,
-    "ast_hash": "dc7fb16faf9a2cbe00ccb7d55095f034",
-    "semantic_hash": "dc7fb16faf9a2cbe00ccb7d55095f034"
+    "mtime": 1781848366.8110602,
+    "ast_hash": "fbfd104a337be722069fc11c06f50ca7",
+    "semantic_hash": "fbfd104a337be722069fc11c06f50ca7"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/execution/test_emergency.py": {
     "mtime": 1781517638.921376,
@@ -1905,9 +1905,9 @@
     "semantic_hash": "1ed8fb6017d2ab9662d9056978cd4d07"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/features/test_vwap.py": {
-    "mtime": 1781813174.7439551,
-    "ast_hash": "a806dc119a0122ec3803d644bc94cbdd",
-    "semantic_hash": "a806dc119a0122ec3803d644bc94cbdd"
+    "mtime": 1781846938.6971307,
+    "ast_hash": "5054dab20910d0f38d2fd1e82735f229",
+    "semantic_hash": "5054dab20910d0f38d2fd1e82735f229"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/integration/test_end_to_end_replay.py": {
     "mtime": 1781445771.7222953,
@@ -1960,9 +1960,9 @@
     "semantic_hash": "5e0210e060291cf7a952fe8628a1e597"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/journal/test_store.py": {
-    "mtime": 1781816648.935598,
-    "ast_hash": "bd93165985d89b7ebdeba3a3832d87d6",
-    "semantic_hash": "bd93165985d89b7ebdeba3a3832d87d6"
+    "mtime": 1781852920.168041,
+    "ast_hash": "bccecb227ef0fadf0145b2f00831c221",
+    "semantic_hash": "bccecb227ef0fadf0145b2f00831c221"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/review/test_backtest_spec_parser.py": {
     "mtime": 1781681560.6379542,
@@ -2140,8 +2140,63 @@
     "semantic_hash": "b21c0c375de15b4f36bac0a2fd9cb1d8"
   },
   "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/index.html": {
-    "mtime": 1781820299.8193452,
-    "ast_hash": "b6a6267b7ba1ec02b39db748544412cc",
-    "semantic_hash": "b6a6267b7ba1ec02b39db748544412cc"
+    "mtime": 1781875855.4358764,
+    "ast_hash": "c8475e521ecf3876c35a15cf16c36085",
+    "semantic_hash": "c8475e521ecf3876c35a15cf16c36085"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/common/webpush.py": {
+    "mtime": 1781878791.9545734,
+    "ast_hash": "10b05ee2ee47f47f27a06bb1d07ac473",
+    "semantic_hash": "10b05ee2ee47f47f27a06bb1d07ac473"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/cf_access.py": {
+    "mtime": 1781865137.2390065,
+    "ast_hash": "57024c419ac7d6ef2f795b3ee56631d1",
+    "semantic_hash": "57024c419ac7d6ef2f795b3ee56631d1"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/m/mobile.js": {
+    "mtime": 1781886374.325064,
+    "ast_hash": "cd98e03be53f2def60a3257022bf37c4",
+    "semantic_hash": "cd98e03be53f2def60a3257022bf37c4"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/m/sw.js": {
+    "mtime": 1781879402.8239431,
+    "ast_hash": "2332a320b388734eb0bc421d2a6aec3c",
+    "semantic_hash": "2332a320b388734eb0bc421d2a6aec3c"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/common/test_webpush.py": {
+    "mtime": 1781878973.7856383,
+    "ast_hash": "28bd347750d4456107c4f112081e67a2",
+    "semantic_hash": "28bd347750d4456107c4f112081e67a2"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/dashboard/test_cf_access.py": {
+    "mtime": 1781867922.1000555,
+    "ast_hash": "8e60dd65aba4ed40f1e21fbaa879ab1d",
+    "semantic_hash": "8e60dd65aba4ed40f1e21fbaa879ab1d"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/tests/decision/test_decision_log.py": {
+    "mtime": 1781873529.241721,
+    "ast_hash": "7f2c967cd3843a673069760f48c0f630",
+    "semantic_hash": "7f2c967cd3843a673069760f48c0f630"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/m/index.html": {
+    "mtime": 1781886320.5167005,
+    "ast_hash": "f1364c3ca69d77c0dd78581f75fe301e",
+    "semantic_hash": "f1364c3ca69d77c0dd78581f75fe301e"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/m/icons/icon-192.png": {
+    "mtime": 1781879500.941126,
+    "ast_hash": "223ed6ee07d78d1b4ea1107030d340c9",
+    "semantic_hash": "223ed6ee07d78d1b4ea1107030d340c9"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/m/icons/icon-512.png": {
+    "mtime": 1781879501.005901,
+    "ast_hash": "2e89a4c407adc96af296d46f2b6a8d1e",
+    "semantic_hash": "2e89a4c407adc96af296d46f2b6a8d1e"
+  },
+  "/Users/lucasreiser/Documents/GitHub/GoldManager/src/xauusd_bot/dashboard/static/m/icons/icon-maskable-512.png": {
+    "mtime": 1781879501.0778515,
+    "ast_hash": "2cd70baef10859d3576e684d5f5a6a0d",
+    "semantic_hash": "2cd70baef10859d3576e684d5f5a6a0d"
   }
 }

@@ -91,6 +91,13 @@
 
     .kv { display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--border); font-size:14px; }
     .kv:last-child { border-bottom:none; }
+    /* score breakdown (subscores), like the desktop cockpit */
+    .score-bd { margin-top:10px; }
+    .sb-row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:12px; }
+    .sb-lbl { width:84px; flex:none; color:var(--muted); }
+    .sb-bar { flex:1; height:7px; background:var(--panel-2); border:1px solid var(--border); border-radius:4px; overflow:hidden; }
+    .sb-fill { display:block; height:100%; }
+    .sb-val { width:26px; flex:none; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; }
     .kv .k { color:var(--muted); }
     .kv .v { font-weight:700; font-variant-numeric:tabular-nums; }
     .big { font-size:26px; font-weight:800; font-variant-numeric:tabular-nums; }
@@ -199,6 +206,7 @@
         <div class="kv"><span class="k">Reasoning</span><span class="v" id="st-reasoning">—</span></div>
         <div class="kv"><span class="k">Letzte Entscheidung</span><span class="v" id="st-ai-age">—</span></div>
         <div class="kv"><span class="k">Score / Band</span><span class="v" id="st-score">—</span></div>
+        <div class="score-bd" id="st-scores"></div>
       </div>
       <div class="card" id="st-position-card">
         <h3>Position</h3>
