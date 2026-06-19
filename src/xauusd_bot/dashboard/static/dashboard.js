@@ -301,13 +301,24 @@
 
   // ---- Fair Value Gap boxes -----------------------------------------------
   // Keep the latest zones and (re)draw them as HTML rectangles over the chart.
-  // Cap PER timeframe so each TF stays represented — a global cap by rank_score
-  // would always drop the small M1 gaps in favour of the larger H1/M5 ones.
-  const FVG_MAX_PER_TF = 4;
+  // Cap PER timeframe, and select the zones NEAREST the current price — those
+  // are the actionable ones on screen. A global cap by rank_score drops the
+  // near-price gaps in favour of higher-ranked but far-off-screen ones.
+  const FVG_MAX_PER_TF = 6;
   function renderFvgZones(zones) {
     const z = Array.isArray(zones) ? zones.slice() : [];
+    const px = (state.lastCandle && Number(state.lastCandle.close)) || null;
+    // Distance from the current price to the zone (0 when price is inside it).
+    const dist = (x) => {
+      const top = Number(x.top), bot = Number(x.bottom);
+      if (px == null) return 0;
+      if (px > top) return px - top;
+      if (px < bot) return bot - px;
+      return 0;
+    };
     const rank = (x) => Number(x.rank_score || x.size_points || 0);
-    z.sort((a, b) => rank(b) - rank(a));  // strongest first within each TF
+    // Nearest-to-price first; fall back to strongest rank when price is unknown.
+    z.sort((a, b) => (px == null ? rank(b) - rank(a) : dist(a) - dist(b)));
     const perTf = {};
     const kept = [];
     for (const zone of z) {
