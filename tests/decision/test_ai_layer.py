@@ -44,6 +44,7 @@ from xauusd_bot.decision.ai_layer import (
     AIDecisionLayer,
     LLMHardRuleViolation,
     LLMZoneViolation,
+    _bundle_to_payload,
     default_zones_provider,
 )
 from xauusd_bot.decision.openrouter_client import LLMValidationError
@@ -134,6 +135,58 @@ class TestPayloadConstruction:
         assert "news" in payload["features"]
         # No account PII when None.
         assert payload["account"]["present"] is False
+
+    def _bundle_with_n_zones(self, n: int):
+        zones = [
+            FVGZone(
+                tf="M1",
+                type=FVGType.BULLISH,
+                top=2300.0 + i,
+                bottom=2299.0 + i,
+                size_points=1.0,
+                created_at=datetime(2026, 4, 15, 12, 0, tzinfo=UTC),
+                age_seconds=300,
+                displacement_atr=1.0,
+                status=FVGStatus.OPEN,
+                mitigation_pct=0.0,
+                rank_score=float(i),  # rank grows with i → highest i are "best"
+            )
+            for i in range(n)
+        ]
+        return make_bundle(fvg=FVGOutput(zones=zones, top_zones=[]))
+
+    def test_fvg_zones_capped_to_top_n_by_rank(self):
+        bundle = self._bundle_with_n_zones(60)
+        payload = _bundle_to_payload(bundle, max_fvg_zones=25)
+        zones = payload["fvg"]["zones"]
+        # Capped count, full count still reported.
+        assert len(zones) == 25
+        assert payload["fvg"]["zones_total"] == 60
+        # Kept the highest-ranked (rank 59..35), not the low ones.
+        kept_ranks = {z["rank_score"] for z in zones}
+        assert max(kept_ranks) == 59.0
+        assert min(kept_ranks) == 35.0
+        assert 10.0 not in kept_ranks
+
+    def test_fvg_no_cap_when_under_limit(self):
+        bundle = self._bundle_with_n_zones(8)
+        payload = _bundle_to_payload(bundle, max_fvg_zones=25)
+        assert len(payload["fvg"]["zones"]) == 8
+        assert payload["fvg"]["zones_total"] == 8
+
+    def test_payload_floats_are_rounded(self):
+        bundle = make_bundle()
+        # Inject FP-noisy values the rounding must clean.
+        bundle.vwap.levels[next(iter(bundle.vwap.levels))].distance_atr = 0.030000000000654836
+        payload = _bundle_to_payload(bundle)
+        any_level = next(iter(payload["vwap"]["levels"].values()))
+        assert any_level["distance_atr"] == 0.03
+
+    def test_validation_still_sees_full_bundle(self):
+        # The cap only trims what the LLM *sees*; default_zones_provider (used by
+        # zone validation) must still return every zone in the bundle.
+        bundle = self._bundle_with_n_zones(60)
+        assert len(default_zones_provider(bundle)) == 60
 
     @pytest.mark.asyncio
     async def test_strips_account_pii(self):

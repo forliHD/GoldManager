@@ -91,6 +91,17 @@ class Settings(BaseSettings):
         le=100,
         description="Only call the LLM when score.total >= this threshold. Default 65 = 'prepare' band and above.",
     )
+    ai_layer_max_fvg_zones: int = Field(
+        default=25,
+        ge=3,
+        le=500,
+        description=(
+            "Cap the number of FVG zones sent to the LLM (top-N by rank_score, the same "
+            "metric behind top_zones). The bundle can carry 100+ mostly-stale zones — sending "
+            "all of them is ~85% of the prompt tokens and pure noise. Zone *validation* still "
+            "runs against the full bundle, so a smaller payload never invalidates the LLM's pick."
+        ),
+    )
     ai_layer_reasoning_enabled: bool = Field(
         default=True,
         description=(

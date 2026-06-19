@@ -110,17 +110,35 @@ def _account_redacted(account: AccountInfo | None) -> dict[str, Any]:
     }
 
 
-def _bundle_to_payload(bundle: FeatureSnapshotBundle) -> dict[str, Any]:
+def _r(x: Any, n: int = 2) -> Any:
+    """Round a float to ``n`` decimals (drops FP noise like 0.0300000000065).
+
+    Non-numeric / None pass through unchanged. This trims a few hundred bytes
+    AND makes the payload readable for the LLM (no spurious 15-digit tails).
+    """
+
+    return round(x, n) if isinstance(x, float) else x
+
+
+def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -> dict[str, Any]:
     """Convert a :class:`FeatureSnapshotBundle` to a JSON-safe payload.
 
     Only the fields the LLM is allowed to see per
     ``decision_agent.md`` are included. Raw bars and tick streams
     are excluded (the LLM operates on features, not prices).
+
+    ``max_fvg_zones`` caps ``fvg.zones`` to the top-N by ``rank_score``
+    (the same metric behind ``top_zones``). The bundle routinely carries
+    100+ zones — mostly stale/mitigated M1 noise — which alone is ~85% of
+    the prompt tokens. Zone *validation* runs against the full bundle (see
+    :func:`default_zones_provider`), so trimming what the LLM *sees* never
+    invalidates its chosen entry zone; it just removes noise and bounds the
+    prompt size regardless of how many zones formed.
     """
 
     payload: dict[str, Any] = {
         "ts": bundle.ts.isoformat() if bundle.ts else None,
-        "atr": bundle.atr,
+        "atr": _r(bundle.atr, 3),
     }
     if bundle.session is not None:
         s = bundle.session
@@ -136,11 +154,11 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle) -> dict[str, Any]:
         v = bundle.vwap
         payload["vwap"] = {
             "is_cluster": v.is_cluster,
-            "cluster_center": v.cluster_center,
+            "cluster_center": _r(v.cluster_center),
             "levels": {
                 name: {
-                    "value": lvl.value,
-                    "distance_atr": lvl.distance_atr,
+                    "value": _r(lvl.value),
+                    "distance_atr": _r(lvl.distance_atr, 3),
                     "cross_up": lvl.cross_up,
                     "cross_down": lvl.cross_down,
                     "reclaim": lvl.reclaim,
@@ -159,27 +177,32 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle) -> dict[str, Any]:
         }
     if bundle.fvg is not None:
         f = bundle.fvg
+        # Cap to the top-N most relevant zones by rank_score (the bundle can
+        # carry 100+ mostly-stale zones — pure prompt-token noise). Sort defensively
+        # in case the bundle's ordering ever changes; ties keep original order.
+        ranked = sorted(f.zones, key=lambda z: z.rank_score, reverse=True)[: max(3, max_fvg_zones)]
         payload["fvg"] = {
+            "zones_total": len(f.zones),  # let the model know it's seeing the top slice
             "zones": [
                 {
                     "tf": z.tf,
                     "type": z.type.value,
-                    "top": z.top,
-                    "bottom": z.bottom,
-                    "size_points": z.size_points,
-                    "displacement_atr": z.displacement_atr,
+                    "top": _r(z.top),
+                    "bottom": _r(z.bottom),
+                    "size_points": _r(z.size_points, 1),
+                    "displacement_atr": _r(z.displacement_atr, 3),
                     "status": z.status.value,
-                    "rank_score": z.rank_score,
+                    "rank_score": _r(z.rank_score, 3),
                 }
-                for z in f.zones
+                for z in ranked
             ],
             "top_zones": [
                 {
                     "tf": z.tf,
                     "type": z.type.value,
-                    "top": z.top,
-                    "bottom": z.bottom,
-                    "size_points": z.size_points,
+                    "top": _r(z.top),
+                    "bottom": _r(z.bottom),
+                    "size_points": _r(z.size_points, 1),
                 }
                 for z in f.top_zones
             ],
@@ -187,12 +210,12 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle) -> dict[str, Any]:
     if bundle.structure is not None:
         st = bundle.structure
         last_bos = (
-            {"type": st.last_bos.type.value, "level": st.last_bos.level, "close": st.last_bos.close}
+            {"type": st.last_bos.type.value, "level": _r(st.last_bos.level), "close": _r(st.last_bos.close)}
             if st.last_bos is not None
             else None
         )
         last_choch = (
-            {"type": st.last_choch.type.value, "level": st.last_choch.level, "close": st.last_choch.close}
+            {"type": st.last_choch.type.value, "level": _r(st.last_choch.level), "close": _r(st.last_choch.close)}
             if st.last_choch is not None
             else None
         )
@@ -204,13 +227,13 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle) -> dict[str, Any]:
     if bundle.momentum is not None:
         m = bundle.momentum
         payload["momentum"] = {
-            "score": m.score,
+            "score": _r(m.score, 2),
             "by_tf": {
                 name: {
-                    "body_size_atr": bar.body_size_atr,
-                    "close_position": bar.close_position,
-                    "displacement": bar.displacement,
-                    "tick_volume_percentile": bar.tick_volume_percentile,
+                    "body_size_atr": _r(bar.body_size_atr, 3),
+                    "close_position": _r(bar.close_position, 3),
+                    "displacement": _r(bar.displacement, 3),
+                    "tick_volume_percentile": _r(bar.tick_volume_percentile, 1),
                 }
                 for name, bar in m.by_tf.items()
             },
@@ -236,9 +259,9 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle) -> dict[str, Any]:
 def _vp_to_dict(vp: Any) -> dict[str, Any]:
     return {
         "state": vp.state.value,
-        "vah": vp.vah,
-        "val": vp.val,
-        "vpoc": vp.vpoc,
+        "vah": _r(vp.vah),
+        "val": _r(vp.val),
+        "vpoc": _r(vp.vpoc),
         "value_status": vp.value_status.value if vp.value_status else None,
         "acceptance_count": vp.acceptance_count,
         "rotation": vp.rotation,
@@ -249,9 +272,9 @@ def _vp_to_dict(vp: Any) -> dict[str, Any]:
 def _lz(z: Any) -> dict[str, Any]:
     return {
         "kind": z.kind,
-        "center": z.center,
-        "price_low": z.price_low,
-        "price_high": z.price_high,
+        "center": _r(z.center),
+        "price_low": _r(z.price_low),
+        "price_high": _r(z.price_high),
         "pool_count": z.pool_count,
         "is_sl_trap": z.is_sl_trap,
     }
@@ -365,7 +388,9 @@ class AIDecisionLayer:
         user_payload = {
             "generated_at": datetime.now(tz=UTC).isoformat(),
             "score": _score_to_payload(score),
-            "features": _bundle_to_payload(feature_snapshot),
+            "features": _bundle_to_payload(
+                feature_snapshot, self._settings.ai_layer_max_fvg_zones
+            ),
             "account": _account_redacted(account),
         }
 
