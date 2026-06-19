@@ -101,7 +101,17 @@
 
     .main { display: grid; grid-template-columns: 1.4fr 1fr; flex: 1; overflow: hidden; }
     .chart-pane { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
-    .chart-header { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    .chart-header { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); position: relative; }
+    #fvg-settings-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+    #fvg-settings-btn.on { border-color: var(--accent); color: var(--accent); }
+    .fvg-pop { position: absolute; top: 42px; right: 8px; z-index: 30; width: 230px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 8px; }
+    .fvg-pop-title { font-weight: 700; }
+    .fvg-pop label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .fvg-pop .fvg-grp { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); }
+    .fvg-pop .fvg-grp label { color: var(--text); }
+    .fvg-pop input[type=number], .fvg-pop select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
+    .fvg-pop input[type=number] { width: 54px; margin-left: auto; }
+    .fvg-pop select { margin-left: auto; }
     .chart-header .symbol { font-weight: 700; }
     .chart-header .range button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
     .chart-header .range button.active { background: var(--accent); color: #0e1116; border-color: var(--accent); }
@@ -222,7 +232,29 @@
             <button data-tf="H1">H1</button>
           </div>
           <div class="spacer" style="flex:1"></div>
+          <button id="fvg-settings-btn" title="FVG-Anzeige einstellen">⚙ FVG</button>
           <button id="chart-refresh">Refresh</button>
+          <div id="fvg-settings" class="fvg-pop hidden">
+            <div class="fvg-pop-title">FVG-Anzeige</div>
+            <label>Anzahl pro Timeframe <input type="number" id="fvg-max" min="0" max="20" step="1" value="6"></label>
+            <div class="fvg-grp"><span>Timeframes</span>
+              <label><input type="checkbox" id="fvg-tf-H1" checked> H1</label>
+              <label><input type="checkbox" id="fvg-tf-M5" checked> M5</label>
+              <label><input type="checkbox" id="fvg-tf-M1" checked> M1</label>
+            </div>
+            <div class="fvg-grp"><span>Typ</span>
+              <label><input type="checkbox" id="fvg-bull" checked> Bullish</label>
+              <label><input type="checkbox" id="fvg-bear" checked> Bearish</label>
+            </div>
+            <label><input type="checkbox" id="fvg-partial" checked> Teil-mitigierte (◑)</label>
+            <div class="fvg-grp"><span>Auswahl</span>
+              <select id="fvg-mode">
+                <option value="blend">Nähe + Stärke</option>
+                <option value="proximity">nur Nähe</option>
+                <option value="strength">nur Stärke</option>
+              </select>
+            </div>
+          </div>
         </div>
         <div id="chart"></div>
         <div class="legend">

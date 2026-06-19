@@ -140,6 +140,7 @@
     loadIndicators();
     startLivePolling();
     setupAlerts();
+    setupFvgSettings();
     loadTrades();
     loadBacktestList();
     loadProposals();
@@ -301,17 +302,63 @@
 
   // ---- Fair Value Gap boxes -----------------------------------------------
   // Keep the latest zones and (re)draw them as HTML rectangles over the chart.
-  // Cap PER timeframe, ranked by a blend of STRENGTH and PROXIMITY to price:
-  // relevance = rank_score / (1 + distance/scale). Strong zones stay visible
-  // from further away; weak ones only when price is right there. The scale is
-  // per-TF (H1 levels matter from far, M1 only locally) so a big off-screen
-  // gap can't crowd out the actionable near-price ones.
-  const FVG_MAX_PER_TF = 6;
-  const FVG_TF_SCALE = { H1: 80, M5: 30, M1: 12 };  // gold points
+  // Per-TF distance scale (gold points): how far a zone of that TF stays
+  // relevant — H1 levels matter from afar, M1 only locally.
+  const FVG_TF_SCALE = { H1: 80, M5: 30, M1: 12 };
+  const FVG_DEFAULTS = { max: 6, tf: { H1: true, M5: true, M1: true }, type: { bullish: true, bearish: true }, partial: true, mode: 'blend' };
+  function loadFvgSettings() {
+    let s = {};
+    try { s = JSON.parse(localStorage.getItem('fvgSettings') || '{}'); } catch (e) {}
+    return {
+      max: (s.max != null ? s.max : FVG_DEFAULTS.max),
+      tf: Object.assign({}, FVG_DEFAULTS.tf, s.tf),
+      type: Object.assign({}, FVG_DEFAULTS.type, s.type),
+      partial: (s.partial != null ? s.partial : FVG_DEFAULTS.partial),
+      mode: s.mode || FVG_DEFAULTS.mode,
+    };
+  }
+  // Wire the gear popover: reflect saved settings into the controls, persist on
+  // change, and re-curate the already-fetched zones (no re-fetch, no trading
+  // impact — this is display only).
+  function setupFvgSettings() {
+    const s = state.fvgSettings || (state.fvgSettings = loadFvgSettings());
+    const set = (id, prop, val) => { const el = $(id); if (el) el[prop] = val; };
+    set('#fvg-max', 'value', s.max);
+    set('#fvg-tf-H1', 'checked', s.tf.H1); set('#fvg-tf-M5', 'checked', s.tf.M5); set('#fvg-tf-M1', 'checked', s.tf.M1);
+    set('#fvg-bull', 'checked', s.type.bullish); set('#fvg-bear', 'checked', s.type.bearish);
+    set('#fvg-partial', 'checked', s.partial);
+    set('#fvg-mode', 'value', s.mode);
+
+    const apply = () => {
+      s.max = Math.max(0, Math.min(20, parseInt($('#fvg-max').value, 10) || 0));
+      s.tf = { H1: $('#fvg-tf-H1').checked, M5: $('#fvg-tf-M5').checked, M1: $('#fvg-tf-M1').checked };
+      s.type = { bullish: $('#fvg-bull').checked, bearish: $('#fvg-bear').checked };
+      s.partial = $('#fvg-partial').checked;
+      s.mode = $('#fvg-mode').value;
+      try { localStorage.setItem('fvgSettings', JSON.stringify(s)); } catch (e) {}
+      renderFvgZones(state.fvgRawZones || []);  // re-curate, no re-fetch
+    };
+    $('#fvg-settings').querySelectorAll('input,select').forEach(el => el.addEventListener('change', apply));
+
+    const pop = $('#fvg-settings'), btn = $('#fvg-settings-btn');
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = pop.classList.toggle('hidden');
+      btn.classList.toggle('on', !open);
+    });
+    // Click outside closes it.
+    document.addEventListener('click', (e) => {
+      if (!pop.classList.contains('hidden') && !pop.contains(e.target) && e.target !== btn) {
+        pop.classList.add('hidden'); btn.classList.remove('on');
+      }
+    });
+  }
+
+  // Build the curated set from the raw zones using the user's display settings.
   function renderFvgZones(zones) {
-    const z = Array.isArray(zones) ? zones.slice() : [];
+    state.fvgRawZones = Array.isArray(zones) ? zones.slice() : [];  // keep raw for re-filtering on settings change
+    const s = state.fvgSettings || (state.fvgSettings = loadFvgSettings());
     const px = (state.lastCandle && Number(state.lastCandle.close)) || null;
-    // Distance from the current price to the zone (0 when price is inside it).
     const dist = (x) => {
       const top = Number(x.top), bot = Number(x.bottom);
       if (px == null) return 0;
@@ -320,14 +367,22 @@
       return 0;
     };
     const rank = (x) => Number(x.rank_score || x.size_points || 0) || 0.01;
-    const relevance = (x) => (px == null ? rank(x) : rank(x) / (1 + dist(x) / (FVG_TF_SCALE[x.tf] || 20)));
+    const relevance = (x) => {
+      if (s.mode === 'strength' || px == null) return rank(x);
+      if (s.mode === 'proximity') return 1 / (1 + dist(x));      // nearest first
+      return rank(x) / (1 + dist(x) / (FVG_TF_SCALE[x.tf] || 20)); // blend
+    };
+    const z = state.fvgRawZones.filter(x =>
+      s.tf[x.tf] !== false &&
+      s.type[x.type] !== false &&
+      (s.partial || x.status !== 'partially_mitigated'));
     z.sort((a, b) => relevance(b) - relevance(a));
     const perTf = {};
     const kept = [];
     for (const zone of z) {
       const tf = zone.tf || '?';
       perTf[tf] = (perTf[tf] || 0) + 1;
-      if (perTf[tf] <= FVG_MAX_PER_TF) kept.push(zone);
+      if (perTf[tf] <= s.max) kept.push(zone);
     }
     state.fvgZones = kept;
     positionFvgZones();
