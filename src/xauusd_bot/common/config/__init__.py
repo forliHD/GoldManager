@@ -309,6 +309,23 @@ class Settings(BaseSettings):
     dashboard_session_ttl_seconds: int = Field(
         default=8 * 3600, ge=60, description="Session TTL in seconds (default 8h)."
     )
+    # ---- Cloudflare Access SSO (pass-through) --------------------------------
+    cf_access_enabled: bool = Field(
+        default=False,
+        description="Accept a verified Cloudflare Access JWT as login (Google/Azure SSO), bypassing the local password. Off = unchanged.",
+    )
+    cf_access_team_domain: str | None = Field(
+        default=None,
+        description="Cloudflare Access team domain, e.g. 'name.cloudflareaccess.com'. Used for the JWKS URL + issuer.",
+    )
+    cf_access_aud: str | None = Field(
+        default=None,
+        description="Cloudflare Access Application Audience (AUD) tag the JWT must match. Identifier, not a secret.",
+    )
+    cf_access_default_role: Literal["viewer", "operator", "admin"] = Field(
+        default="admin",
+        description="Dashboard role granted to any user who authenticates via Cloudflare Access.",
+    )
     dashboard_redis_url: str = Field(
         default="redis://localhost:6379/1",
         description=(

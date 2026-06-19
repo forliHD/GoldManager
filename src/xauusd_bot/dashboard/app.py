@@ -151,6 +151,21 @@ def create_app(
         app.state.dashboard_redis = await make_dashboard_redis(settings)
         app.state.dashboard_auth = DashboardAuth(settings, app.state.dashboard_redis)
 
+        # Cloudflare Access SSO pass-through (opt-in). When enabled + configured,
+        # a verified Access JWT logs the user in; the local password stays as a
+        # fallback. Off / unconfigured → no behaviour change.
+        app.state.cf_access_verifier = None
+        if settings.cf_access_enabled and settings.cf_access_team_domain and settings.cf_access_aud:
+            try:
+                from xauusd_bot.dashboard.cf_access import CloudflareAccessVerifier
+
+                app.state.cf_access_verifier = CloudflareAccessVerifier(
+                    settings.cf_access_team_domain, settings.cf_access_aud
+                )
+                log.info("dashboard_cf_access_enabled", team=settings.cf_access_team_domain)
+            except Exception as exc:  # noqa: BLE001 - never block boot on SSO setup
+                log.warning("dashboard_cf_access_init_failed", error=str(exc))
+
         # Trading Redis (DB 0) — where runtime toggles the services read
         # live (e.g. the AI-layer flag). Distinct from the session Redis.
         app.state.streams_redis = await make_streams_redis(settings)

@@ -27,6 +27,7 @@ dependencies = [
     "structlog>=24.1",
     "bcrypt>=4.1",  # Block 9 — Dashboard user password hashing.
     "python-multipart>=0.0.9",  # Block 9 — FastAPI Form data for /api/auth/login.
+    "pyjwt[crypto]>=2.8",  # Cloudflare Access JWT (RS256) verification for dashboard SSO.
 ]
 
 [project.optional-dependencies]

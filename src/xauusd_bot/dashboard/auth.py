@@ -281,6 +281,26 @@ async def current_session(
     Wires up to :class:`DashboardAuth` via :attr:`app.state.dashboard_auth`.
     """
 
+    # 1. Cloudflare Access SSO pass-through (when wired): a cryptographically
+    #    verified Access JWT logs the user in without the local password. The
+    #    cookie/password flow below stays as the fallback for local LAN access.
+    verifier = getattr(request.app.state, "cf_access_verifier", None)
+    if verifier is not None:
+        token = request.headers.get("cf-access-jwt-assertion") or request.cookies.get("CF_Authorization")
+        if token:
+            email = await verifier.verify(token)
+            if email:
+                settings = getattr(request.app.state, "settings", None)
+                role = getattr(settings, "cf_access_default_role", "admin") if settings else "admin"
+                now = datetime.now(tz=UTC)
+                return UserSession(
+                    session_id=f"cf-access:{email}",
+                    username=email,
+                    role=role,  # type: ignore[arg-type]
+                    created_at=now,
+                    last_seen=now,
+                )
+
     auth: DashboardAuth | None = getattr(request.app.state, "dashboard_auth", None)
     if auth is None:
         # Auth subsystem not wired up → every authenticated endpoint
