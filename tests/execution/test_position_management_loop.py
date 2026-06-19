@@ -66,7 +66,7 @@ def _plan():
     )
 
 
-async def test_tp1_partial_close_and_breakeven_applied_and_persisted():
+async def test_tp1_partial_close_applied_and_persisted_no_breakeven():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     conn = _FakeConnector([SimpleNamespace(position_id="111")])
     pipeline = SimpleNamespace(connector=conn)
@@ -76,10 +76,10 @@ async def test_tp1_partial_close_and_breakeven_applied_and_persisted():
     bundle = FeatureSnapshotBundle(ts=datetime.now(tz=UTC))  # all engines None → trail/runner no-op
     await _manage_positions(pipeline, _pos_mgr(), r, settings, bundle, current_price=4256.0)
 
-    # A 30% partial close (0.03) and a break-even SL move to entry (4250) fired.
+    # New default (lever #1): a 30% partial close (0.03) fires; NO dead break-even
+    # SL move to entry — the runner is armed for structure-trailing instead.
     assert ("close", "111", 0.03) in conn.calls
-    assert ("modify_sl", "111", 4250.0) in conn.calls
-    # Updated plan was persisted.
+    assert not any(c[0] == "modify_sl" for c in conn.calls)
     stored = await _load_managed_all(r)
     assert stored["111"].tp1_taken is True and stored["111"].breakeven_done is True
 
