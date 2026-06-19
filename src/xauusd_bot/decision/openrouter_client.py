@@ -249,11 +249,19 @@ class OpenRouterClient:
                 from xauusd_bot.common.runtime_config import set_json
 
                 ez = getattr(parsed, "entry_zone", None)
+                # Use the BAR time (broker-server time, as the chart/decision feed
+                # display it) so the dashboard's AI panel isn't 3h behind the rest;
+                # datetime.now() here is real UTC and would mismatch. Fall back to
+                # wall-clock only if the bar ts is unavailable.
+                bar_ts = (user_payload.get("features") or {}).get("ts")
                 await set_json(
                     self._usage_redis,
                     "state:last_ai",
                     {
-                        "ts": datetime.now(tz=UTC).isoformat(),
+                        "ts": bar_ts or datetime.now(tz=UTC).isoformat(),
+                        # Real wall-clock: used by the decision-engine freshness
+                        # gate (ts is broker-time and can't measure age).
+                        "written_at": datetime.now(tz=UTC).isoformat(),
                         "decision": getattr(parsed, "decision", None),
                         "entry_side": getattr(parsed, "entry_side", None),
                         "entry_type": getattr(parsed, "entry_type", None),

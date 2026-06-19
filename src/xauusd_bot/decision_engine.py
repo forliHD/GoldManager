@@ -168,8 +168,11 @@ def _make_handler(pipeline: DecisionPipeline, publisher: Publisher, ai_flag: _Ru
             if ai_redis is not None:
                 try:
                     last_ai = await get_json(ai_redis, "state:last_ai")
-                    if last_ai and last_ai.get("ts"):
-                        age = (datetime.now(tz=UTC) - datetime.fromisoformat(last_ai["ts"])).total_seconds()
+                    # ``written_at`` is real wall-clock; ``ts`` is broker bar time
+                    # (for display) and must NOT be used to measure age.
+                    stamp = (last_ai or {}).get("written_at") or (last_ai or {}).get("ts")
+                    if last_ai and stamp:
+                        age = (datetime.now(tz=UTC) - datetime.fromisoformat(stamp)).total_seconds()
                         if age <= 20:
                             ai_info = last_ai
                 except Exception:  # noqa: BLE001
