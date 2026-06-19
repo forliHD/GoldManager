@@ -228,6 +228,9 @@
         $('#ch-last').textContent = num(mapped[mapped.length - 1].close);
         state.lastOverlays = overlays;
         applyChartOverlays(overlays);
+        // Re-fit after the legend rendered (it shrinks the flex container a bit),
+        // so the canvas matches the available space exactly — no inner scroll.
+        try { state.chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }); } catch (e) {}
       } else { $('#ch-last').textContent = 'keine Daten'; }
     } catch (e) { $('#ch-last').textContent = 'Fehler'; console.error('chart', e); }
   }

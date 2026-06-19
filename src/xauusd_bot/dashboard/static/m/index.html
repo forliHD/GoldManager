@@ -37,7 +37,7 @@
     /* App shell — pinned to the exact viewport (avoids iOS vh/dvh quirks), flex
        column: topbar (safe-area top) / content (scrolls) / nav (safe-area bottom). */
     #app { position:fixed; inset:0; display:flex; flex-direction:column; }
-    .content { flex:1 1 auto; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+    .content { flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
     .topbar { flex:none; display:flex; align-items:center; gap:10px;
       padding: calc(8px + env(safe-area-inset-top)) 16px 8px; background:var(--panel); border-bottom:1px solid var(--border); }
     .topbar .logo { font-weight:800; font-size:16px; letter-spacing:.02em; }
@@ -51,8 +51,10 @@
     .view { padding:14px 14px 6px; }
     .view.hidden { display:none; }
     /* chart fills the screen between topbar and nav */
-    #view-chart { padding:8px 8px 4px; }
-    .chart-head { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:2px 2px 8px; }
+    /* chart view fills the content area exactly: head + chart(flex) + legend,
+       no inner scroll so the timeframe buttons & legend stay put. */
+    #view-chart { padding:8px 8px 4px; display:flex; flex-direction:column; height:100%; }
+    .chart-head { flex:none; display:flex; justify-content:space-between; align-items:center; gap:8px; padding:2px 2px 8px; }
     .ch-price { font-size:17px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); margin-left:auto; }
     .tf-row { display:flex; gap:4px; }
     .tf-row button { background:var(--panel-2); border:1px solid var(--border); color:var(--muted); border-radius:7px; padding:5px 9px; font-size:12px; font-weight:700; }
@@ -68,9 +70,9 @@
     .switch.on { background:var(--ok); }
     .switch::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:left .2s; }
     .switch.on::after { left:23px; }
-    #ch-container { width:100%; height:calc(100vh - 220px); height:calc(100dvh - 220px); min-height:300px;
+    #ch-container { width:100%; flex:1 1 auto; min-height:120px;
       border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--panel); }
-    .chart-legend { display:flex; flex-wrap:wrap; gap:12px; padding:8px 4px 2px; font-size:11px; color:var(--muted); }
+    .chart-legend { flex:none; display:flex; flex-wrap:wrap; gap:12px; padding:8px 4px 2px; font-size:11px; color:var(--muted); }
     .chart-legend span { display:flex; align-items:center; gap:5px; }
     .chart-legend i { width:14px; height:3px; border-radius:2px; display:inline-block; }
 
