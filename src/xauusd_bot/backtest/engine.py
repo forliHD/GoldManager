@@ -135,6 +135,7 @@ from xauusd_bot.features.news import NewsContextEngine, StubNewsProvider
 from xauusd_bot.features.session import SessionEngine
 from xauusd_bot.features.structure import MarketStructureEngine
 from xauusd_bot.features.volume_range import FixedVolumeRangeEngine
+from xauusd_bot.features.volume_trend import VolumeTrendEngine
 from xauusd_bot.features.vwap import TripleVWAPEngine
 from xauusd_bot.journal import (
     InMemoryJournalStore,
@@ -321,6 +322,7 @@ class BacktestEngine:
         self._fvg_eng = FVGEngine()
         self._structure_eng = MarketStructureEngine()
         self._momentum_eng = CandleMomentumEngine()
+        self._volume_trend_eng = VolumeTrendEngine()
         self._liquidity_eng = LiquidityEngine()
         self._news_eng = NewsContextEngine(provider=StubNewsProvider())
 
@@ -627,6 +629,7 @@ class BacktestEngine:
         fvg_out = self._fvg_eng.compute(bars_so_far, current_t)
         structure_out = self._structure_eng.compute(bars_so_far, current_t)
         momentum_out = self._momentum_eng.compute(bars_so_far, current_t)
+        volume_trend_out = self._volume_trend_eng.compute(bars_so_far, current_t)
         liquidity_out = self._liquidity_eng.compute(
             structure_out.liquidity_pools, float(close), bars_so_far, current_t
         )
@@ -671,6 +674,7 @@ class BacktestEngine:
             momentum=momentum_out,
             liquidity=liquidity_out,
             news=news_out,
+            volume_trend=volume_trend_out,
             atr=atr_val,
             price=float(close),
         )

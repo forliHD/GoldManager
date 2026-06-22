@@ -400,6 +400,37 @@ class NewsContextOutput(BaseModel):
 # ---------------------------------------------------------------- master snapshot
 
 
+class VolumeTrendOutput(BaseModel):
+    """Tick-volume trend on M1 — for the AI's volume-confirmation step.
+
+    Captures the strategy's volume read: a *weakening* volume slope into a
+    zone/consolidation, then a *spike* on the reaction/breakout candle.
+
+    Settings note (validated on real XAUUSD M1, 2026-06-20): the MA9/MA20
+    crossover is too noisy on M1 to be a regime signal (~120 flips/day), so
+    the trend uses the **slope of the fast MA** over a short lookback, and the
+    spike uses **last_volume / MA20 > spike_mult** (≈ 3 genuine spikes/day at
+    2.0×). MA9 + MA20 are still exposed because they match the operator's MT5
+    chart overlay.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ma_fast: float | None = Field(default=None, description="Fast MA of tick_volume (default 9).")
+    ma_slow: float | None = Field(default=None, description="Slow MA of tick_volume (default 20).")
+    last_volume: float | None = Field(default=None, description="Most recent bar's tick_volume.")
+    spike_ratio: float | None = Field(
+        default=None, description="last_volume / ma_slow (>1 = above the 20-bar average)."
+    )
+    is_spike: bool = Field(default=False, description="spike_ratio > spike_mult (default 2.0).")
+    trend: Literal["rising", "falling", "flat"] = Field(
+        default="flat", description="Slope of the fast MA over the lookback (falling = weakening volume)."
+    )
+    slope_pct: float | None = Field(
+        default=None, description="% change of the fast MA over the slope lookback."
+    )
+
+
 class FeatureSnapshotBundle(BaseModel):
     """All engine outputs combined into one snapshot (Phase 10 smoke output)."""
 
@@ -414,6 +445,7 @@ class FeatureSnapshotBundle(BaseModel):
     momentum: CandleMomentumOutput | None = None
     liquidity: LiquidityEngineOutput | None = None
     news: NewsContextOutput | None = None
+    volume_trend: VolumeTrendOutput | None = None
     atr: float | None = Field(default=None, ge=0, description="ATR(M1, 14) — the runtime ATR used by all engines.")
     price: float | None = Field(
         default=None,

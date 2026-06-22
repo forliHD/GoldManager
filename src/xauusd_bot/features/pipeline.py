@@ -28,6 +28,7 @@ from xauusd_bot.features.news import NewsContextEngine, StubNewsProvider
 from xauusd_bot.features.session import SessionEngine
 from xauusd_bot.features.structure import MarketStructureEngine
 from xauusd_bot.features.volume_range import FixedVolumeRangeEngine
+from xauusd_bot.features.volume_trend import VolumeTrendEngine
 from xauusd_bot.features.vwap import TripleVWAPEngine
 
 log = structlog.get_logger(__name__)
@@ -48,6 +49,7 @@ class FeaturePipeline:
         self.fvg = FVGEngine()
         self.structure = MarketStructureEngine()
         self.momentum = CandleMomentumEngine()
+        self.volume_trend = VolumeTrendEngine()
         self.liquidity = LiquidityEngine()
         self.news = NewsContextEngine(provider=news_provider or StubNewsProvider())
 
@@ -74,6 +76,7 @@ class FeaturePipeline:
         fvg_out = self.fvg.compute(bars, ts)
         structure_out = self.structure.compute(bars, ts)
         momentum_out = self.momentum.compute(bars, ts)
+        volume_trend_out = self.volume_trend.compute(bars, ts)
         close = float(bars[-1].close) if bars else 0.0
         liquidity_out = self.liquidity.compute(structure_out.liquidity_pools, close, bars, ts)
         news_out = self.news.compute(ts)
@@ -95,6 +98,7 @@ class FeaturePipeline:
             momentum=momentum_out,
             liquidity=liquidity_out,
             news=news_out,
+            volume_trend=volume_trend_out,
             atr=atr_val,
             price=(close if bars else None),
         )

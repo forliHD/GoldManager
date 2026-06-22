@@ -239,6 +239,17 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                 for name, bar in m.by_tf.items()
             },
         }
+    if bundle.volume_trend is not None:
+        vt = bundle.volume_trend
+        payload["volume_trend"] = {
+            "ma_fast": _r(vt.ma_fast, 1),
+            "ma_slow": _r(vt.ma_slow, 1),
+            "last_volume": _r(vt.last_volume, 1),
+            "spike_ratio": _r(vt.spike_ratio, 2),
+            "is_spike": vt.is_spike,
+            "trend": vt.trend,
+            "slope_pct": _r(vt.slope_pct, 3),
+        }
     if bundle.liquidity is not None:
         liq = bundle.liquidity
         payload["liquidity"] = {
