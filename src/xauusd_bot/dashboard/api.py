@@ -225,6 +225,9 @@ class OverlayDict(BaseModel):
     symbol: str
     timestamp: datetime
     vwaps: dict[str, float | None]
+    # Per-level VWAP curve for the CURRENT anchor period: {level: [{time, value}, …]}.
+    # ``time`` is unix seconds (same frame as the candles) so the line aligns.
+    vwap_series: dict[str, list[dict[str, float]]] = {}
     volume_profile: dict[str, OverlayLevel]
     fvg_zones: list[dict[str, Any]]
 
@@ -366,7 +369,7 @@ async def chart_overlays(
     # snapshot hours old (stale levels far above the current price).
     end = datetime.now(tz=UTC) + timedelta(hours=24)
     start = datetime.now(tz=UTC) - timedelta(days=2)
-    snaps = await store.list_snapshots(start=start, end=end, symbol=symbol, limit=200, newest_first=True)
+    snaps = await store.list_snapshots(start=start, end=end, symbol=symbol, limit=900, newest_first=True)
     overlays = [s for s in snaps if isinstance(s.features.get("overlays"), dict)]
     overlays.sort(key=lambda s: s.bar_time, reverse=True)
     if not overlays:
@@ -378,6 +381,32 @@ async def chart_overlays(
             fvg_zones=[],
         )
     latest = overlays[0].features["overlays"]
+
+    # VWAP curve: each per-bar snapshot stores the VWAP value at that bar, so we
+    # assemble a time series (not just the latest value → a flat line). We keep
+    # only the CURRENT anchor period per level so the line has no reset-jumps.
+    # Snapshot bar_time is broker-frame (same frame as the candles) → emit unix s.
+    now = datetime.now(tz=UTC)
+    _latest_bt = overlays[0].bar_time
+    if _latest_bt.tzinfo is None:
+        _latest_bt = _latest_bt.replace(tzinfo=UTC)
+    offset_h = round((_latest_bt - now).total_seconds() / 3600.0)
+    vwap_series: dict[str, list[dict[str, float]]] = {}
+    for lvl, anchor_h in (("utc00", 0), ("utc07", 7), ("utc12", 12)):
+        a_utc = now.replace(hour=anchor_h, minute=0, second=0, microsecond=0)
+        if a_utc > now:
+            a_utc -= timedelta(days=1)
+        cutoff = a_utc + timedelta(hours=offset_h)  # anchor in broker frame
+        pts: list[dict[str, float]] = []
+        for s in sorted(overlays, key=lambda x: x.bar_time):
+            bt = s.bar_time if s.bar_time.tzinfo else s.bar_time.replace(tzinfo=UTC)
+            if bt < cutoff:
+                continue
+            vv = (s.features.get("overlays", {}).get("vwap") or {}).get(lvl)
+            if vv is not None:
+                pts.append({"time": int(bt.timestamp()), "value": float(vv)})
+        if pts:
+            vwap_series[lvl] = pts
     # build_overlay_payload emits the VWAP section under "vwap" (singular); the
     # API response field is "vwaps". Read the payload key, not the response key.
     vwaps = latest.get("vwap", latest.get("vwaps", {"utc00": None, "utc07": None, "utc12": None}))
@@ -387,6 +416,7 @@ async def chart_overlays(
         symbol=symbol,
         timestamp=overlays[0].bar_time,
         vwaps=vwaps,
+        vwap_series=vwap_series,
         volume_profile={
             k: OverlayLevel(
                 vah=(v.get("vah") if v else None),

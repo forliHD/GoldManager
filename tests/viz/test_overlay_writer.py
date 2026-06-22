@@ -135,7 +135,7 @@ def test_vwap_section_has_three_levels() -> None:
     assert payload["vwap"]["utc12"] == 2378.2
 
 
-def test_volume_profile_section_has_all_six_profiles() -> None:
+def test_volume_profile_section_has_all_profiles() -> None:
     payload = build_overlay_payload(
         ts=datetime(2026, 1, 5, 13, 0, tzinfo=UTC),
         vwap=_vwap(),
@@ -143,7 +143,10 @@ def test_volume_profile_section_has_all_six_profiles() -> None:
         fvg=_fvg(),
     )
     keys = set(payload["volume_profile"].keys())
-    assert keys == {"weekly", "monthly", "yearly", "prev_week", "prev_month", "prev_year"}
+    assert keys == {
+        "daily", "weekly", "monthly", "yearly",
+        "prev_day", "prev_week", "prev_month", "prev_year",
+    }
 
 
 def test_prev_profiles_are_locked() -> None:

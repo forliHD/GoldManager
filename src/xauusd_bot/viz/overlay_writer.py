@@ -86,9 +86,11 @@ def build_overlay_payload(
         vwap_section[level_key] = v.value if v is not None else None
 
     vp_section: dict[str, Any] = {
+        "daily": _profile_to_dict(volume_range.daily),
         "weekly": _profile_to_dict(volume_range.weekly),
         "monthly": _profile_to_dict(volume_range.monthly),
         "yearly": _profile_to_dict(volume_range.yearly),
+        "prev_day": _profile_to_dict(volume_range.prev_day),
         "prev_week": _profile_to_dict(volume_range.prev_week),
         "prev_month": _profile_to_dict(volume_range.prev_month),
         "prev_year": _profile_to_dict(volume_range.prev_year),

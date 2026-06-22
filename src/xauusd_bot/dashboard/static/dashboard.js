@@ -215,6 +215,7 @@
       upColor: '#3fb950', downColor: '#f85149', borderVisible: false,
       wickUpColor: '#3fb950', wickDownColor: '#f85149',
     });
+    state.vwapLines = {};  // VWAP curve line-series, recreated with the chart
     // FVG box layer — HTML rectangles positioned via the chart's coordinate API.
     const fvgLayer = document.createElement('div');
     fvgLayer.className = 'fvg-layer';
@@ -437,23 +438,37 @@
     const S = LightweightCharts.LineStyle;
     const lines = [];
     const add = (...a) => { const pl = priceLine(...a); if (pl) lines.push(pl); };
-    // VWAPs — distinct colours, solid, labelled (e.g. "VWAP 12").
-    const vwaps = o.vwaps || o.vwap || {};
+    // VWAPs as evolving CURVES (connected points over time), not flat lines.
+    // The backend sends the current anchor-period series per level.
     const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
+    const series = o.vwap_series || {};
+    state.vwapLines = state.vwapLines || {};
     for (const k of ['utc00', 'utc07', 'utc12']) {
-      if (vwaps[k] != null) add(vwaps[k], { color: vwCol[k], style: S.Solid, width: 1, title: 'VWAP ' + k.slice(3) });
+      if (!state.vwapLines[k]) {
+        state.vwapLines[k] = state.chart.addLineSeries({
+          color: vwCol[k], lineWidth: 2, priceLineVisible: false,
+          lastValueVisible: true, title: 'VWAP ' + k.slice(3),
+          crosshairMarkerVisible: false,
+        });
+      }
+      const data = (series[k] || []).filter(p => p && p.value != null);
+      try { state.vwapLines[k].setData(data); } catch (e) {}
     }
-    // Value areas — keep the chart readable: weekly (developing, dotted) +
-    // previous week (locked, dashed). VAH red / VPOC yellow / VAL green.
+    // Volume Profile — LOCKED references only (the tradeable levels).
+    // VAH red / VPOC yellow / VAL green. Monthly always; the "daily slot" is
+    // yesterday's profile (prev_day, Tue–Fri) or — on Monday, when there is no
+    // completed prior day — the whole previous week (prev_week).
     const vp = o.volume_profile || {};
     const drawVA = (key, label, style, width) => {
-      const p = vp[key]; if (!p) return;
+      const p = vp[key]; if (!p || p.vpoc == null) return;
       add(p.vah, { color: '#ef4444', style, width, title: label + ' VAH' });
       add(p.vpoc, { color: '#eab308', style, width, title: label + ' VPOC' });
       add(p.val, { color: '#22c55e', style, width, title: label + ' VAL' });
     };
-    drawVA('weekly', 'W', S.Dotted, 1);
-    drawVA('prev_week', 'pW', S.Dashed, 2);
+    drawVA('prev_month', 'M', S.Dashed, 2);
+    const hasDay = vp.prev_day && vp.prev_day.vpoc != null;
+    if (hasDay) drawVA('prev_day', 'D', S.Solid, 2);
+    else drawVA('prev_week', 'W', S.Dashed, 2);
     state.overlayLines = lines;
     renderFvgZones(o.fvg_zones || o.fvgZones || []);
   }
