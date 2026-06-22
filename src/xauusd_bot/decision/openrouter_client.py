@@ -109,6 +109,31 @@ class LLMValidationError(LLMCallError):
     """The response was not valid JSON or did not match the Pydantic schema."""
 
 
+def _loads_lenient(content: str) -> Any:
+    """Parse the model's JSON, tolerating markdown fences and surrounding prose.
+
+    Some models (e.g. MiniMax M3) wrap the object in ```json … ``` or add a
+    sentence around it, which broke a strict ``json.loads`` → the whole decision
+    fell back to rules. Strip a leading/trailing code fence; if it still doesn't
+    parse, extract the outermost ``{ … }`` span and try that.
+    """
+
+    t = content.strip()
+    if t.startswith("```"):
+        nl = t.find("\n")
+        t = (t[nl + 1:] if nl != -1 else t[3:])
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+        t = t.strip()
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        i, j = t.find("{"), t.rfind("}")
+        if i != -1 and j > i:
+            return json.loads(t[i : j + 1])
+        raise
+
+
 class LLMAuthError(LLMCallError):
     """401 / 403 — invalid or missing API key."""
 
@@ -443,7 +468,7 @@ class OpenRouterClient:
             ) from exc
 
         try:
-            content_obj = json.loads(content_str)
+            content_obj = _loads_lenient(content_str)
         except json.JSONDecodeError as exc:
             raise LLMValidationError(
                 f"OpenRouter message content is not valid JSON: {content_str[:200]}"

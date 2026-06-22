@@ -148,9 +148,13 @@ class ConfluenceBlock(BaseModel):
         ge=0,
         description="Count of confluent zones at the entry (H1 zone + M1 FVG + golden pocket …).",
     )
-    fib_zone: Literal["0.236", "0.382", "golden_pocket", "deep"] | None = Field(
+    fib_zone: str | None = Field(
         default=None,
-        description="Which fib bracket of the last H1 impulse price sits in. None = not assessed.",
+        description=(
+            "Which fib bracket the price sits in (echoes the fib engine's price_zone: "
+            "shallow / 0.236 / 0.382 / golden_pocket / deep / extended). Advisory free-text — "
+            "kept permissive so an unexpected value never drops the whole decision to fallback."
+        ),
     )
     h1_trend: Literal["strong", "weak", "none"] = Field(
         default="none",

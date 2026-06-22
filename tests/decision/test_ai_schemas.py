@@ -216,6 +216,16 @@ class TestConfluenceBlock:
         assert d.confluence.vwap_mode is None
         assert d.confluence.volume_confirms is None
 
+    def test_fib_zone_accepts_engine_values(self):
+        # The fib engine emits 'shallow'/'extended'; the LLM echoes them into the
+        # advisory confluence trace. These MUST validate — a too-strict Literal
+        # here used to drop the whole decision to RuleBasedFallback.
+        for z in ("shallow", "extended", "0.236", "golden_pocket", "deep", None):
+            p = _valid_payload()
+            p["confluence"] = {"in_zone": True, "fib_zone": z}
+            d = LLMDecision.model_validate(p)
+            assert d.confluence.fib_zone == z
+
     def test_parses_full_confluence(self):
         d = LLMDecision.model_validate(
             _valid_payload(
@@ -241,9 +251,12 @@ class TestConfluenceBlock:
         with pytest.raises(ValidationError):
             ConfluenceBlock.model_validate({"in_zone": True, "bogus": 1})
 
-    def test_rejects_invalid_fib_literal(self):
-        with pytest.raises(ValidationError):
-            LLMDecision.model_validate(_valid_payload(confluence={"fib_zone": "0.99"}))
+    def test_fib_zone_is_permissive(self):
+        # fib_zone is advisory free-text now (it echoes the fib engine's
+        # price_zone vocabulary). An unexpected value must NOT raise — a strict
+        # Literal here previously dropped the whole decision to RuleBasedFallback.
+        d = LLMDecision.model_validate(_valid_payload(confluence={"fib_zone": "0.99"}))
+        assert d.confluence.fib_zone == "0.99"
 
     def test_rejects_negative_zones(self):
         with pytest.raises(ValidationError):
