@@ -400,7 +400,11 @@ async def chart_overlays(
         pts: list[dict[str, float]] = []
         for s in sorted(overlays, key=lambda x: x.bar_time):
             bt = s.bar_time if s.bar_time.tzinfo else s.bar_time.replace(tzinfo=UTC)
-            if bt < cutoff:
+            # Strictly AFTER the anchor: the VWAP resets on the first bar past the
+            # anchor time (the anchor check is strict <), so the bar AT the anchor
+            # still carries the previous period's (carried-forward) value — including
+            # it draws a vertical jump from the old level up to the reset.
+            if bt <= cutoff:
                 continue
             vv = (s.features.get("overlays", {}).get("vwap") or {}).get(lvl)
             if vv is not None:
