@@ -126,6 +126,7 @@ from xauusd_bot.execution import (
     StopManager,
     TakeProfitManager,
 )
+from xauusd_bot.execution.zone_lock import ZoneRegistry, band_from_price
 from xauusd_bot.features._indicators import atr as compute_atr
 from xauusd_bot.features._indicators import bars_to_df
 from xauusd_bot.features.fib import FibRetracementEngine
@@ -293,9 +294,15 @@ class BacktestEngine:
         initial_balance: Decimal | None = None,
         strategy_version: str = "block5b-v1",
         context_window_bars: int = 1500,
+        zone_lock: bool = True,
+        zone_atr_mult: float = 0.5,
     ) -> None:
         """..."""
         self._connector = connector
+        # Zone-lock: one entry per zone/setup (kills the 3-in-a-row clusters).
+        self._zone_lock = zone_lock
+        self._zone_atr_mult = zone_atr_mult
+        self._zones = ZoneRegistry()
         self._journal: JournalStore | JournalSink = journal or InMemoryJournalStore()
         self._settings = settings or Settings()  # type: ignore[call-arg]
         self._slippage = slippage_model or FixedSlippage(Decimal("0.50"))
@@ -478,11 +485,19 @@ class BacktestEngine:
         n_decisions_taken = 0
         # Track per-position state for the close logic.
         open_positions: dict[str, dict[str, Any]] = {}
+        self._zones.reset()  # zone-lock state is per-run (WalkForward reuses the engine)
+        prev_bar: Bar | None = None
         for j in range(start_idx, end_idx + 1):
             if max_bars is not None and n_bars_processed >= max_bars:
                 break
             bar = all_bars[j]
             self._connector.advance_time(bar.time)
+            # Zone-lock: when we roll into a new hour, the previous bar was the
+            # H1 close → invalidate any zone the H1 closed beyond.
+            if self._zone_lock and prev_bar is not None and (
+                bar.time.hour != prev_bar.time.hour or bar.time.date() != prev_bar.time.date()
+            ):
+                self._zones.on_h1_close(float(prev_bar.close))
             # Use a rolling window of recent bars (bounded by
             # ``context_window_bars``) so each decision costs
             # O(context_window_bars) instead of O(j). This trades
@@ -548,6 +563,11 @@ class BacktestEngine:
                 open_positions=open_positions,
                 in_news_blackout=bool(bundle.news.in_blackout_flag) if bundle.news else False,
             )
+
+            # Zone-lock: re-arm 'used' zones once price has left their band.
+            if self._zone_lock:
+                self._zones.note_price(float(bar.close))
+            prev_bar = bar
 
         # --- post-loop: mark-to-market the final bar, close any
         # positions still open at end_date at the last close price.
@@ -701,6 +721,17 @@ class BacktestEngine:
         )
         entry_price_close = bar.close
 
+        # --- zone-lock: one entry per zone/setup (block stacked entries).
+        zside = "long" if side == OrderSide.BUY else "short"
+        z_low, z_high = band_from_price(
+            float(entry_price_close),
+            float(bundle.atr) if bundle.atr else None,
+            atr_mult=self._zone_atr_mult,
+        )
+        if self._zone_lock and not self._zones.can_enter(zside, float(entry_price_close)):
+            log.info("backtest_zone_locked", side=zside, price=float(entry_price_close))
+            return
+
         # --- risk
         risk_verdict = self._risk.approve(qualification, now=bar.time)
         if not risk_verdict.approved:
@@ -853,6 +884,7 @@ class BacktestEngine:
             client_order_id=order_env.client_order_id,
         )
         self._paper._positions[pid] = pos  # noqa: SLF001 — engine owns the book
+        zone_id = self._zones.open(zside, z_low, z_high) if self._zone_lock else None
         open_positions[pid] = {
             "trade_id": trade_id,
             "side": side,
@@ -862,6 +894,7 @@ class BacktestEngine:
             "volume": sizing.volume_lots,
             "risk_amount": risk_verdict.risk_amount,
             "entry_time": bar.time,
+            "zone_id": zone_id,
         }
 
     def _walk_open_positions(
@@ -942,6 +975,12 @@ class BacktestEngine:
 
         # Remove from the paper broker's book.
         self._paper._positions.pop(position_id, None)  # noqa: SLF001
+
+        # Zone-lock: the position closed → the zone is 'used' (a BE/scratch/TP
+        # exit keeps it; only an H1 close beyond it kills it).
+        zid = state.get("zone_id")
+        if zid is not None:
+            self._zones.close(zid)
 
     def _make_market_order(
         self,

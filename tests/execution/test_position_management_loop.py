@@ -69,7 +69,7 @@ def _plan():
 async def test_tp1_partial_close_applied_and_persisted_no_breakeven():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     conn = _FakeConnector([SimpleNamespace(position_id="111")])
-    pipeline = SimpleNamespace(connector=conn)
+    pipeline = SimpleNamespace(connector=conn, on_position_closed=lambda t: None, note_bar=lambda p, ts: None)
     settings = SimpleNamespace(symbol="XAUUSD+")
     await _store_managed(r, _plan())
 
@@ -87,7 +87,7 @@ async def test_tp1_partial_close_applied_and_persisted_no_breakeven():
 async def test_plan_dropped_when_position_closed():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     conn = _FakeConnector([])  # no open positions
-    pipeline = SimpleNamespace(connector=conn)
+    pipeline = SimpleNamespace(connector=conn, on_position_closed=lambda t: None, note_bar=lambda p, ts: None)
     settings = SimpleNamespace(symbol="XAUUSD+")
     await _store_managed(r, _plan())
 
@@ -101,7 +101,7 @@ async def test_plan_dropped_when_position_closed():
 async def test_no_actions_when_price_below_tp1():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     conn = _FakeConnector([SimpleNamespace(position_id="111")])
-    pipeline = SimpleNamespace(connector=conn)
+    pipeline = SimpleNamespace(connector=conn, on_position_closed=lambda t: None, note_bar=lambda p, ts: None)
     settings = SimpleNamespace(symbol="XAUUSD+")
     await _store_managed(r, _plan())
 
