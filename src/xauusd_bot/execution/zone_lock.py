@@ -56,9 +56,19 @@ def band_from_price(price: float, atr: float | None, *, atr_mult: float = 0.5, m
 class ZoneRegistry:
     """Track active zones and enforce one-entry-per-zone with the lifecycle."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_zones: int = 256) -> None:
         self._zones: dict[int, Zone] = {}
         self._next_id = 0
+        # Live runs never call reset() (only the backtest does, per-run), so
+        # without a bound the registry would grow one entry per trade forever
+        # (memory) and ancient 'dead' bands would block new setups indefinitely
+        # (strangling the tradeable range). Cap the registry and evict the
+        # oldest non-'open' zones past the cap. The cap is far above any realistic
+        # short window (backtest runs hold a handful of zones), so this never
+        # changes near-term behaviour or the verified backtest — it only ages out
+        # stale history on a long-lived live process. An 'open' zone (a live
+        # position) is never evicted.
+        self._max_zones = max_zones
 
     @property
     def zones(self) -> list[Zone]:
@@ -88,7 +98,19 @@ class ZoneRegistry:
         zid = self._next_id
         self._next_id += 1
         self._zones[zid] = Zone(id=zid, side=side, low=low, high=high, status="open")
+        self._prune()
         return zid
+
+    def _prune(self) -> None:
+        """Bound the registry: drop the oldest non-'open' zones past ``max_zones``."""
+
+        if len(self._zones) <= self._max_zones:
+            return
+        # Oldest first (ids are monotonic = insertion order); never evict a live
+        # 'open' zone.
+        evictable = [zid for zid in sorted(self._zones) if self._zones[zid].status != "open"]
+        for zid in evictable[: len(self._zones) - self._max_zones]:
+            del self._zones[zid]
 
     def close(self, zone_id: int) -> None:
         """Mark the zone's position closed. A BE/scratch/TP exit keeps it (→ used)."""

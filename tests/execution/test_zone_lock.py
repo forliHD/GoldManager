@@ -85,6 +85,21 @@ def test_open_absorbs_overlapping_armed_zone():
     assert armed == []
 
 
+def test_registry_is_bounded_and_never_evicts_open_zones():
+    # Live never reset()s the registry → it must stay bounded and must never
+    # drop a live ('open') zone while ageing out old non-open history.
+    r = ZoneRegistry(max_zones=8)
+    live = r.open("long", 4100.0, 4101.0)  # stays 'open' the whole time
+    for i in range(50):  # churn many dead zones well past the cap
+        zid = r.open("short", 5000.0 + i, 5001.0 + i)
+        r.close(zid)
+        r.on_h1_close(9999.0)  # H1 close above → 'dead'
+    assert len(r.zones) <= 8
+    # The live position's zone survived and still blocks its band.
+    assert any(z.id == live and z.status == "open" for z in r.zones)
+    assert r.can_enter("long", 4100.5) is False
+
+
 def test_band_from_price_atr():
     low, high = band_from_price(4312.0, atr=4.0, atr_mult=0.5, min_half=0.5)
     assert low == 4310.0 and high == 4314.0  # half = 0.5*4 = 2
