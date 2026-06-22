@@ -27,6 +27,7 @@ from xauusd_bot.decision.aggregator import (
     FeatureAggregator,
     _detect_conflicts,
     _percentile_rank,
+    _score_htf_volume_profile,
 )
 
 
@@ -439,3 +440,40 @@ class TestConflictDetection:
         # → no structure/VP or news conflicts (htf_vp may be neutral).
         for c in out.conflicts:
             assert c.severity in ("info", "warning", "block")
+
+
+class TestHtfVolumeProfileV2:
+    """v2 (2026-06-22): VP is demoted — no directional vote, lower weight."""
+
+    def _vr(self, value_status, state=VolumeProfileState.LOCKED):
+        from xauusd_bot.common.schemas.features import VolumeRangeOutput
+        return VolumeRangeOutput(
+            weekly=make_volume_profile(state=state, value_status=value_status),
+            monthly=make_volume_profile(state=state, value_status=value_status),
+            yearly=make_volume_profile(state=state, value_status=value_status),
+            cluster_within_atr=0.5,
+        )
+
+    def test_above_value_gives_no_long_bias(self):
+        # Price above ALL value areas used to vote +1 (long) — the macro bias.
+        _score, _reason, direction = _score_htf_volume_profile(self._vr(ValueAreaStatus.ABOVE_VALUE))
+        assert direction == 0
+
+    def test_below_value_gives_no_short_bias(self):
+        _score, _reason, direction = _score_htf_volume_profile(self._vr(ValueAreaStatus.BELOW_VALUE))
+        assert direction == 0
+
+    def test_vp_still_contributes_magnitude(self):
+        # VP still scores setup-quality (0-100), just no direction.
+        score, _r, _d = _score_htf_volume_profile(self._vr(ValueAreaStatus.WITHIN_VALUE))
+        assert 0.0 <= score <= 100.0
+
+
+class TestEngineWeightsV2:
+    def test_vp_demoted_zones_promoted(self):
+        assert ENGINE_WEIGHTS["htf_volume_profile"] == 10.0
+        assert ENGINE_WEIGHTS["h1_zone"] == 25.0
+        assert ENGINE_WEIGHTS["m5_zone"] == 20.0
+
+    def test_weights_sum_to_100(self):
+        assert abs(sum(ENGINE_WEIGHTS.values()) - 100.0) < 1e-9

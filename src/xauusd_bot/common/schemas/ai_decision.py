@@ -122,6 +122,54 @@ class ManagementBlock(BaseModel):
     )
 
 
+# ---------------------------------------------------------------- confluence
+
+
+class ConfluenceBlock(BaseModel):
+    """Auditable breakdown of the entry-validation checklist (v2 prompt).
+
+    The v2 ``decision_agent.md`` asks the LLM to walk Joshua's entry
+    sequence and report *why* it decided — so a human (or the journal)
+    can see whether the model actually checked: are we in the zone, how
+    many confluent zones, where in the H1 fib retracement, the VWAP mode,
+    and whether volume confirmed. All fields are advisory / observational
+    — they never override the deterministic gates. The block is optional
+    (``default_factory``) so a pre-v2 prompt that omits it still validates.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    in_zone: bool = Field(
+        default=False,
+        description="Is price currently in/at an H1/M5 demand-supply zone or FVG?",
+    )
+    zones_at_entry: int = Field(
+        default=0,
+        ge=0,
+        description="Count of confluent zones at the entry (H1 zone + M1 FVG + golden pocket …).",
+    )
+    fib_zone: Literal["0.236", "0.382", "golden_pocket", "deep"] | None = Field(
+        default=None,
+        description="Which fib bracket of the last H1 impulse price sits in. None = not assessed.",
+    )
+    h1_trend: Literal["strong", "weak", "none"] = Field(
+        default="none",
+        description="Strength of the last H1 trend (informs the expected retracement depth).",
+    )
+    deeper_fvg_pending: bool = Field(
+        default=False,
+        description="An unmitigated deeper FVG may be run first (a FACTOR, not a hard gate).",
+    )
+    vwap_mode: Literal["pullback", "trend"] | None = Field(
+        default=None,
+        description="Pullback-to-VWAP reversal vs trend-continuation after recross. None = unclear.",
+    )
+    volume_confirms: bool | None = Field(
+        default=None,
+        description="Did volume + candle print confirm the reaction? None = not assessable yet.",
+    )
+
+
 # ---------------------------------------------------------------- main LLMDecision
 
 
@@ -187,6 +235,10 @@ class LLMDecision(BaseModel):
         default_factory=ManagementBlock,
         description="Management hints in R-multiples (NOT absolute prices — see I-4).",
     )
+    confluence: ConfluenceBlock = Field(
+        default_factory=ConfluenceBlock,
+        description="Auditable entry-validation breakdown (v2 prompt). Advisory only.",
+    )
     confidence: int = Field(
         ge=0,
         le=100,
@@ -213,6 +265,7 @@ REASON_ZONE_VIOLATION = "zone_violation"
 REASON_HARD_RULE_VIOLATION = "hard_rule_violation"
 
 __all__ = [
+    "ConfluenceBlock",
     "EntryZone",
     "LLMDecision",
     "ManagementBlock",

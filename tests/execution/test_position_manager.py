@@ -48,8 +48,10 @@ class _FakeTP:
         return (self._close, self._reason)
 
 
-def _mgr(trail_sl=None, runner_close=False):
-    return PositionManager(_FakeStop(trail_sl), _FakeTP(runner_close), _spec())
+def _mgr(trail_sl=None, runner_close=False, breakeven_at_tp1=False):
+    return PositionManager(
+        _FakeStop(trail_sl), _FakeTP(runner_close), _spec(), breakeven_at_tp1=breakeven_at_tp1
+    )
 
 
 def _pos(**kw):
@@ -70,16 +72,24 @@ def _pos(**kw):
 _BUNDLE = object()  # the fake managers ignore the bundle
 
 
-def test_tp1_hit_partial_close_and_breakeven():
+def test_tp1_partial_close_arms_trailing_no_breakeven():
+    # New default (lever #1): TP1 takes the partial and ARMS trailing, but does
+    # NOT snap the SL to entry — the runner keeps room to reach TP3.
     actions, mp = _mgr().plan(_pos(), _BUNDLE, current_price=Decimal("4255.50"))
     kinds = [(a.kind, a.reason) for a in actions]
     assert ("partial_close", "tp1_hit") in kinds
-    assert ("modify_sl", "breakeven_after_tp1") in kinds
+    assert all(a.reason != "breakeven_after_tp1" for a in actions)  # no dead break-even
     pc = next(a for a in actions if a.kind == "partial_close")
     assert pc.volume == Decimal("0.03")  # 30% of 0.10
-    be = next(a for a in actions if a.kind == "modify_sl")
-    assert be.price == Decimal("4250.00")  # entry
-    assert mp.tp1_taken and mp.breakeven_done and mp.sl_price == Decimal("4250.00")
+    assert mp.tp1_taken and mp.breakeven_done  # trailing armed
+    assert mp.sl_price == Decimal("4240.00")  # initial SL unchanged (not entry)
+
+
+def test_tp1_breakeven_when_flag_enabled():
+    # Opt-in restores the old behaviour: SL snaps to entry at TP1.
+    actions, mp = _mgr(breakeven_at_tp1=True).plan(_pos(), _BUNDLE, current_price=Decimal("4255.50"))
+    assert ("modify_sl", "breakeven_after_tp1") in [(a.kind, a.reason) for a in actions]
+    assert mp.sl_price == Decimal("4250.00")  # entry
 
 
 def test_no_tp_hit_no_actions():
@@ -147,7 +157,7 @@ def test_short_side_tp1_mirror():
     )
     actions, mp = _mgr().plan(pos, _BUNDLE, current_price=Decimal("4244.50"))
     assert any(a.reason == "tp1_hit" for a in actions)
-    assert mp.sl_price == Decimal("4250.00")  # breakeven = entry
+    assert mp.sl_price == Decimal("4260.00")  # initial SL unchanged (no break-even snap)
 
 
 def test_partial_below_volume_min_skips_close_but_marks_taken():

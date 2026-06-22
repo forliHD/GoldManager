@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from xauusd_bot.common.schemas.ai_decision import (
+    ConfluenceBlock,
     EntryZone,
     LLMDecision,
     ManagementBlock,
@@ -200,3 +201,50 @@ class TestManagementBlock:
         # (e.g. wait for runner only).
         m = ManagementBlock(tp1_rr=0.0, tp2_rr=2.0)
         assert m.tp1_rr == 0.0
+
+
+class TestConfluenceBlock:
+    def test_defaults_when_omitted(self):
+        # Back-compat: a pre-v2 payload without `confluence` still validates,
+        # and the block fills with conservative defaults.
+        d = LLMDecision.model_validate(_valid_payload())
+        assert d.confluence.in_zone is False
+        assert d.confluence.zones_at_entry == 0
+        assert d.confluence.fib_zone is None
+        assert d.confluence.h1_trend == "none"
+        assert d.confluence.deeper_fvg_pending is False
+        assert d.confluence.vwap_mode is None
+        assert d.confluence.volume_confirms is None
+
+    def test_parses_full_confluence(self):
+        d = LLMDecision.model_validate(
+            _valid_payload(
+                confluence={
+                    "in_zone": True,
+                    "zones_at_entry": 2,
+                    "fib_zone": "golden_pocket",
+                    "h1_trend": "strong",
+                    "deeper_fvg_pending": True,
+                    "vwap_mode": "trend",
+                    "volume_confirms": True,
+                }
+            )
+        )
+        assert d.confluence.in_zone is True
+        assert d.confluence.zones_at_entry == 2
+        assert d.confluence.fib_zone == "golden_pocket"
+        assert d.confluence.h1_trend == "strong"
+        assert d.confluence.vwap_mode == "trend"
+        assert d.confluence.volume_confirms is True
+
+    def test_rejects_extra_field(self):
+        with pytest.raises(ValidationError):
+            ConfluenceBlock.model_validate({"in_zone": True, "bogus": 1})
+
+    def test_rejects_invalid_fib_literal(self):
+        with pytest.raises(ValidationError):
+            LLMDecision.model_validate(_valid_payload(confluence={"fib_zone": "0.99"}))
+
+    def test_rejects_negative_zones(self):
+        with pytest.raises(ValidationError):
+            ConfluenceBlock.model_validate({"zones_at_entry": -1})

@@ -336,6 +336,7 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
             if publisher is not None:
                 await _journal_close(publisher, connector, mp, ticket, current_price, settings, pipeline.risk_mgr, redis_client)
             await _delete_managed(redis_client, ticket)
+            pipeline.on_position_closed(ticket)  # zone-lock: zone → 'used'
             continue
         actions, mp2 = pos_mgr.plan(mp, bundle, price)
         for a in actions:
@@ -372,6 +373,11 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_clien
         # 1. Manage open positions EVERY bar (trailing / TP partials), even on
         #    no_trade — the bundle + ref_price ride on every decision event.
         if ev.bundle is not None and ev.ref_price is not None:
+            # Zone-lock bookkeeping (re-arm used zones + H1-close invalidation).
+            try:
+                pipeline.note_bar(float(ev.ref_price), ev.bundle.ts)
+            except Exception as exc:  # noqa: BLE001 - bookkeeping must never kill the service
+                log.warning("execution_zone_note_bar_failed", error=str(exc))
             try:
                 await _manage_positions(pipeline, pos_mgr, redis_client, settings, ev.bundle, ev.ref_price, notifier, publisher)
             except Exception as exc:  # noqa: BLE001 - management must never kill the service

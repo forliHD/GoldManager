@@ -47,7 +47,10 @@ log = structlog.get_logger(__name__)
 
 
 # Multipliers — the canonical numbers from 05_execution_risk.md.
-DEFAULT_INITIAL_SL_ATR = 1.0
+# Lever #2 (exit tuning): the initial SL buffer behind structure was 1.0×ATR,
+# which made the stop wide → a full stop = a large −R. Tightened to 0.5×ATR so
+# the risk per trade shrinks (better R:R); backtested against 1.0 before live.
+DEFAULT_INITIAL_SL_ATR = 0.5
 DEFAULT_TRAIL_MIN_ATR = 1.0
 DEFAULT_BE_BONUS_POINTS = 5.0  # tiny buffer so commission+spread is covered
 

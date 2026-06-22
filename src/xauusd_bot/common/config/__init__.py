@@ -103,12 +103,15 @@ class Settings(BaseSettings):
         ),
     )
     ai_layer_reasoning_enabled: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Static default for the LLM reasoning toggle. When False the OpenRouter client "
             "sends reasoning:{enabled:false} (no chain-of-thought) — ~halves m3 latency at the "
             "cost of analytical depth. Operators flip this at runtime from the dashboard "
-            "(runtime:llm_reasoning_enabled on the trading Redis); this is only the boot default."
+            "(runtime:llm_reasoning_enabled on the trading Redis); this is only the boot default. "
+            "Default is False: minimax-m3 reasoning-ON runs ~55s (TTFT ~8s + ~3.6k CoT tokens) "
+            "and blows past ai_layer_timeout_seconds. Any client built WITHOUT usage_redis (tools, "
+            "tests, backtest runners) reads this default, so True would silently send reasoning=True."
         ),
     )
     ai_layer_max_attempts: int = Field(
@@ -310,6 +313,16 @@ class Settings(BaseSettings):
     risk_max_weekly: float = Field(default=0.08, ge=0, le=1)
     risk_max_open_positions: int = Field(default=3, ge=1, description="Max simultaneously open positions (Block 4 limit).")
     risk_max_trades_per_session: int = Field(default=5, ge=1, description="Max new trades per UTC day (Block 4 limit).")
+    zone_lock_enabled: bool = Field(
+        default=True,
+        description="One entry per zone/setup: block a second entry into the same price band "
+        "while a position is open / used; a zone dies on an H1 close beyond it. Kills stacked entries.",
+    )
+    zone_lock_atr_mult: float = Field(
+        default=0.5,
+        ge=0,
+        description="Half-width of the zone band as a multiple of ATR (when no explicit entry zone).",
+    )
     # --- Spread block threshold (pips). RuleBasedFallback blocks entries
     # when AccountInfo.current_spread > spread_max_pips * 10 (XAUUSD pip = 10 points).
     spread_max_pips: float = Field(default=3.0, ge=0, description="Max spread in pips before blocking new entries.")

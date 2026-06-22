@@ -400,6 +400,75 @@ class NewsContextOutput(BaseModel):
 # ---------------------------------------------------------------- master snapshot
 
 
+class FibRetracementOutput(BaseModel):
+    """Fibonacci retracement of the last H1 impulse leg.
+
+    The strategy's structural entry filter (decision_agent.md §2): where does
+    the current price sit inside the last H1 impulse? Preferred reaction is the
+    golden pocket (0.5–0.618), best when it overlaps an FVG + supply/demand.
+    Shallow reactions (0.382 / 0.236) suit strong / extreme trends; pullbacks
+    deeper than 0.618 raise the odds of a trend change.
+
+    ``retracement_pct`` is how far price retraced into the leg: 0.0 = at the
+    impulse extreme (no pullback), 1.0 = all the way back to the leg's origin.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: Literal["up", "down", "none"] = Field(
+        default="none", description="Impulse leg direction (up = low→high)."
+    )
+    leg_low: float | None = Field(default=None, description="Low of the last H1 impulse leg.")
+    leg_high: float | None = Field(default=None, description="High of the last H1 impulse leg.")
+    fib_236: float | None = Field(default=None)
+    fib_382: float | None = Field(default=None)
+    fib_500: float | None = Field(default=None)
+    fib_618: float | None = Field(default=None)
+    retracement_pct: float | None = Field(
+        default=None, description="How far price retraced into the leg (0=extreme, 1=origin)."
+    )
+    price_zone: Literal["shallow", "0.382", "golden_pocket", "deep", "extended", "none"] = Field(
+        default="none", description="Which fib bracket the current price sits in."
+    )
+    in_golden_pocket: bool = Field(
+        default=False, description="Price within 0.5–0.618 of the last H1 impulse."
+    )
+    trend_strength: Literal["strong", "weak", "none"] = Field(
+        default="none", description="Impulse leg size vs H1 ATR (strong = >= strong_atr_mult)."
+    )
+
+
+class VolumeTrendOutput(BaseModel):
+    """Tick-volume trend on M1 — for the AI's volume-confirmation step.
+
+    Captures the strategy's volume read: a *weakening* volume slope into a
+    zone/consolidation, then a *spike* on the reaction/breakout candle.
+
+    Settings note (validated on real XAUUSD M1, 2026-06-20): the MA9/MA20
+    crossover is too noisy on M1 to be a regime signal (~120 flips/day), so
+    the trend uses the **slope of the fast MA** over a short lookback, and the
+    spike uses **last_volume / MA20 > spike_mult** (≈ 3 genuine spikes/day at
+    2.0×). MA9 + MA20 are still exposed because they match the operator's MT5
+    chart overlay.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ma_fast: float | None = Field(default=None, description="Fast MA of tick_volume (default 9).")
+    ma_slow: float | None = Field(default=None, description="Slow MA of tick_volume (default 20).")
+    last_volume: float | None = Field(default=None, description="Most recent bar's tick_volume.")
+    spike_ratio: float | None = Field(
+        default=None, description="last_volume / ma_slow (>1 = above the 20-bar average)."
+    )
+    is_spike: bool = Field(default=False, description="spike_ratio > spike_mult (default 2.0).")
+    trend: Literal["rising", "falling", "flat"] = Field(
+        default="flat", description="Slope of the fast MA over the lookback (falling = weakening volume)."
+    )
+    slope_pct: float | None = Field(
+        default=None, description="% change of the fast MA over the slope lookback."
+    )
+
+
 class FeatureSnapshotBundle(BaseModel):
     """All engine outputs combined into one snapshot (Phase 10 smoke output)."""
 
@@ -414,4 +483,10 @@ class FeatureSnapshotBundle(BaseModel):
     momentum: CandleMomentumOutput | None = None
     liquidity: LiquidityEngineOutput | None = None
     news: NewsContextOutput | None = None
+    volume_trend: VolumeTrendOutput | None = None
+    fib: FibRetracementOutput | None = None
     atr: float | None = Field(default=None, ge=0, description="ATR(M1, 14) — the runtime ATR used by all engines.")
+    price: float | None = Field(
+        default=None,
+        description="Latest M1 close at snapshot time — lets the AI layer judge 'are we in the zone?' precisely.",
+    )

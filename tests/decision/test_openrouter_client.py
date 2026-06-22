@@ -308,10 +308,19 @@ class _FakeRedis:
 
 class TestReasoningToggle:
     @pytest.mark.asyncio
-    async def test_reasoning_omitted_by_default(self, fake_http, tmp_path):
-        """No usage_redis + default-on settings → no reasoning field (full reasoning)."""
+    async def test_reasoning_omitted_when_enabled(self, fake_http, tmp_path):
+        """No usage_redis + reasoning-enabled settings → no reasoning field (full reasoning).
+
+        Note: the static default ``ai_layer_reasoning_enabled`` is now False (m3
+        reasoning-ON runs ~55s and blows the timeout), so reasoning-on must be set
+        explicitly here. The default-off path is covered by
+        ``test_static_default_off_disables_reasoning`` / ``test_default_flag_disables_reasoning``.
+        """
         fake_http()
-        client = OpenRouterClient(settings=_make_settings(), prompt_path=_prompt_path(tmp_path))
+        client = OpenRouterClient(
+            settings=_make_settings(ai_layer_reasoning_enabled=True),
+            prompt_path=_prompt_path(tmp_path),
+        )
         await client.complete(system_prompt="sys", user_payload={"x": 1})
         assert "reasoning" not in _FakeAsyncClient.calls[0]["json"]
 

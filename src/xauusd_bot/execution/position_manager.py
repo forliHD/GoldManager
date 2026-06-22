@@ -91,10 +91,24 @@ def _round_volume(volume: Decimal, spec: SymbolSpec) -> Decimal:
 class PositionManager:
     """Pure per-bar position-management planner."""
 
-    def __init__(self, stop_mgr: StopManager, tp_mgr: TakeProfitManager, spec: SymbolSpec) -> None:
+    def __init__(
+        self,
+        stop_mgr: StopManager,
+        tp_mgr: TakeProfitManager,
+        spec: SymbolSpec,
+        *,
+        breakeven_at_tp1: bool = False,
+    ) -> None:
         self._stop = stop_mgr
         self._tp = tp_mgr
         self._spec = spec
+        # Lever #1 (exit tuning): the old logic snapped the SL to break-even the
+        # instant TP1 was hit, choking the 70% runner at entry and capping the
+        # average winner near +0.45R while losers ran a full −1R. Default OFF now:
+        # at TP1 we only ARM structure-trailing (the SL ratchets behind swings as
+        # the runner pushes toward TP3 / the far pool) instead of dead-locking it
+        # at entry. Set True to restore the old behaviour.
+        self._breakeven_at_tp1 = breakeven_at_tp1
 
     def plan(
         self,
@@ -117,9 +131,10 @@ class PositionManager:
             if vol >= vol_min:
                 actions.append(ManagementAction(kind="partial_close", volume=vol, reason="tp1_hit"))
             mp.tp1_taken = True
-            if not mp.breakeven_done and _tighter(mp.side, mp.entry_price, mp.sl_price):
+            if self._breakeven_at_tp1 and not mp.breakeven_done and _tighter(mp.side, mp.entry_price, mp.sl_price):
                 actions.append(ManagementAction(kind="modify_sl", price=mp.entry_price, reason="breakeven_after_tp1"))
                 mp.sl_price = mp.entry_price
+            # Arm structure-trailing from TP1 either way (gates the trail block below).
             mp.breakeven_done = True
 
         # --- TP2: partial close.

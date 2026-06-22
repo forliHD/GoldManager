@@ -48,11 +48,19 @@ from typing import Final
 # separate engines (cleaner per-engine percentile history) but their
 # weights add up to 10.
 
+# v2 re-weighting (2026-06-22): HTF Volume Profile demoted 20 → 10 and its
+# directional vote removed (see _score_htf_volume_profile). It was the joint-
+# largest weight and let a slow MACRO signal (price above/below the *yearly*
+# value area, internal 8/20) inject a persistent directional bias into every
+# intraday decision — wrong for a zone/pullback strategy. The 10 points move to
+# the actual entry zones (h1_zone 20→25, m5_zone 15→20). VP now contributes
+# setup-quality magnitude only; its VAH/VAL/VPOC levels are used as TP targets
+# and pullback-entry confluence zones (by the AI layer), not as a score-direction.
 ENGINE_WEIGHTS: Final[dict[str, float]] = {
-    "h1_zone": 20.0,
-    "m5_zone": 15.0,
+    "h1_zone": 25.0,
+    "m5_zone": 20.0,
     "triple_vwap": 15.0,
-    "htf_volume_profile": 20.0,
+    "htf_volume_profile": 10.0,
     "session_liquidity": 10.0,  # 5 for session + 5 for liquidity
     "news": 10.0,
     "momentum": 10.0,
