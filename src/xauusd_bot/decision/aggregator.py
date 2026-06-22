@@ -379,28 +379,19 @@ def _score_htf_volume_profile(vr: Any) -> tuple[float, str, int]:
         + 3.0 / 20.0 * a_score
     )
 
-    # Direction bias: above_value in the highest-weight profile wins.
+    # Direction: HTF Volume Profile does NOT vote a direction (v2, 2026-06-22).
+    # Price above the *yearly* value area in a gold uptrend is "extended", not
+    # "go long" — for a zone/pullback strategy that macro bias was wrong and it
+    # contaminated 20% of every intraday decision. VP now contributes only
+    # setup-quality magnitude; its VAH/VAL/VPOC levels serve as TP targets and
+    # pullback-entry confluence zones (used by the AI layer), not as direction.
     direction = 0
-    if yearly.value_status == ValueAreaStatus.ABOVE_VALUE:
-        direction += 1
-    elif yearly.value_status == ValueAreaStatus.BELOW_VALUE:
-        direction -= 1
-    if monthly.value_status == ValueAreaStatus.ABOVE_VALUE:
-        direction += 1
-    elif monthly.value_status == ValueAreaStatus.BELOW_VALUE:
-        direction -= 1
-    if weekly.value_status == ValueAreaStatus.ABOVE_VALUE:
-        direction += 1
-    elif weekly.value_status == ValueAreaStatus.BELOW_VALUE:
-        direction -= 1
-    direction = max(-1, min(1, direction))
 
-    # Rotation / breakout bonuses.
+    # Rotation / breakout still raise the magnitude (setup quality), no direction.
     if weekly.rotation:
         base += 5
     if weekly.breakout:
         base += 5
-        direction = 1 if weekly.value_status == ValueAreaStatus.ABOVE_VALUE else -1
 
     score = _clamp(base)
     reasoning = (
