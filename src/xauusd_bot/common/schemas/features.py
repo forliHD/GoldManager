@@ -332,6 +332,13 @@ class CandleMomentumPerBar(BaseModel):
         le=100,
         description="This bar's tick_volume percentile vs last 100 bars (relative, AGENTS.md I-5).",
     )
+    tick_volume: float = Field(
+        default=0.0,
+        ge=0,
+        description="This bar's RAW tick_volume (absolute participation). A percentile of 0 means "
+        "'quietest of the last 100 bars', NOT zero volume — read this to tell low participation "
+        "(price drifting level-to-level) from a genuine reaction.",
+    )
 
 
 class CandleMomentumOutput(BaseModel):

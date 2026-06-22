@@ -31,8 +31,10 @@ Ein `null`-Profil ist noch nicht verfügbar (z.B. `locked.daily` Montags) → ni
 ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
 
 1. IN DER ZONE?  Liegt 'price' AKTUELL in einer H1- (oder M5-) Demand/Supply-Zone bzw. an einem
-   relevanten FVG (price zwischen zone.bottom und zone.top)? Wenn der Preis NICHT in/an einer Zone steht
-   → "watch" oder "no_trade". Wir handeln IN der Zone, nicht 20-30 Punkte später.
+   relevanten FVG? RECHNE EXPLIZIT: price ist IN der Zone, wenn zone.bottom ≤ price ≤ zone.top — auch
+   nahe am oberen oder unteren Rand. Behaupte NIEMALS "price liegt unter/über der Zone", wenn price
+   rechnerisch zwischen bottom und top liegt; das ist ein häufiger Fehler. Wenn der Preis NICHT in/an
+   einer Zone steht → "watch" oder "no_trade". Wir handeln IN der Zone, nicht 20-30 Punkte später.
 
 2. H1-STRUKTUR & FIB-POSITION:  Lege den letzten H1-Impuls (Swing → Swing) zugrunde und prüfe, an welchem
    Fib-Retracement der Preis steht.
@@ -65,7 +67,11 @@ ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
 6. VOLUMEN + CANDLE-PRINT (Validierung):  Bestätige die Reaktion. Erwartetes Muster: in der Zone
    ABSCHWÄCHENDES Tick-Volumen → Seitwärtsphase → Reaktions-/Ausbruchskerze MIT Volumen in Trade-Richtung.
    Lies dazu momentum.by_tf: hohe body_size_atr + close_position nahe 1.0 (Long) / nahe 0.0 (Short) =
-   starke Reaktionskerze; tick_volume_percentile für den Volumen-Impuls. Kein Reaktions-Print → "watch".
+   starke Reaktionskerze. VOLUMEN richtig lesen: 'tick_volume_percentile' ist RELATIV (0 = ruhigster der
+   letzten 100 Bars, NICHT null Volumen!) — es sagt "wenig Beteiligung relativ", nicht "kein Markt".
+   'tick_volume' (roh) + der volume_trend-Block (last_volume, is_spike, trend) zeigen die ABSOLUTE
+   Beteiligung: niedrig/kein Spike → Preis wird ohne echte Orders nur von Level zu Level gezogen;
+   abschwächend → Spike in Trade-Richtung = echte Reaktion. Kein Reaktions-Print → "watch".
 
 7. RICHTUNGS-KONSISTENZ (hart):  Entry-Richtung muss zu H1-Zone, M5-Verfeinerung, Market Structure und
    Triple-VWAP passen. Widerspruch → "no_trade".

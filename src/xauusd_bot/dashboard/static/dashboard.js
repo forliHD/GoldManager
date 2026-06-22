@@ -234,7 +234,7 @@
     try {
       const sym = encodeURIComponent(state.symbol);
       const [candles, overlays] = await Promise.all([
-        api(`/api/chart/candles?symbol=${sym}&timeframe=${state.timeframe}&count=500`),
+        api(`/api/chart/candles?symbol=${sym}&timeframe=${state.timeframe}&count=2000`),
         api(`/api/chart/overlays?symbol=${sym}`),
       ]);
       const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: c.open, high: c.high, low: c.low, close: c.close }));

@@ -247,6 +247,7 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                     "close_position": _r(bar.close_position, 3),
                     "displacement": _r(bar.displacement, 3),
                     "tick_volume_percentile": _r(bar.tick_volume_percentile, 1),
+                    "tick_volume": _r(bar.tick_volume, 1),
                 }
                 for name, bar in m.by_tf.items()
             },

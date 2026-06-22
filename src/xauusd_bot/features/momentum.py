@@ -79,6 +79,7 @@ def _per_bar_features(
             displacement=False,
             impulsive_follow_through=0,
             tick_volume_percentile=50.0,
+            tick_volume=float(last.tick_volume),
         )
 
     # body_size_atr
@@ -140,6 +141,7 @@ def _per_bar_features(
         displacement=displacement,
         impulsive_follow_through=follow_through,
         tick_volume_percentile=tv_pct,
+        tick_volume=float(last.tick_volume),
     )
 
 
