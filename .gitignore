@@ -40,8 +40,12 @@ logs/*.json
 
 # Local data (sample parquet IS committed, see data/sample/)
 data/live/
+data/real/
 data/overlay/*.json
 !data/overlay/.gitkeep
+
+# Generated reports (PDF deliverables — not source)
+/*.pdf
 
 # Secrets
 .env

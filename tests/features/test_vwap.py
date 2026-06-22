@@ -428,3 +428,42 @@ def test_unfired_anchor_is_none_not_spot_price() -> None:
         assert out.levels[k].n_bars_anchored == 0
     # With only one real level, there can be no 3-VWAP cluster.
     assert out.is_cluster is False
+
+
+# ---------------------------------------------------------------- carry-forward (v2)
+
+# Jan 2026: 5th = Mon ... 9th = Fri, 10/11 = weekend, 12th = Mon.
+_FRI = datetime(2026, 1, 9, 12, 0, tzinfo=UTC)
+_MON = datetime(2026, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def test_utc12_carries_friday_over_weekend() -> None:
+    """Monday before noon: UTC12 carries Friday's 12:00 anchor (not blank)."""
+    eng = TripleVWAPEngine()
+    fri = _build_day(_FRI, [2000.0] * 480)          # Fri 12:00 → 20:00 (480 bars)
+    mon = _build_day(_MON, [2000.0] * 600)          # Mon 00:00 → 10:00 (600 bars)
+    out = eng.compute(fri + mon, datetime(2026, 1, 12, 10, 0, tzinfo=UTC))
+    # Carried: Friday 12:00 anchor accumulates Fri (480) + Mon (600) = 1080 bars.
+    assert out.levels["utc12"].n_bars_anchored == 1080
+    assert out.levels["utc12"].value is not None
+    # Sanity: UTC00 is Monday-local (00:00→10:00 = 600), UTC07 fired today (180).
+    assert out.levels["utc00"].n_bars_anchored == 600
+    assert out.levels["utc07"].n_bars_anchored == 180
+
+
+def test_utc12_reanchors_after_noon() -> None:
+    """Once today's 12:00 fires, UTC12 starts fresh (no longer Friday's)."""
+    eng = TripleVWAPEngine()
+    fri = _build_day(_FRI, [2000.0] * 480)
+    mon = _build_day(_MON, [2000.0] * 780)          # Mon 00:00 → 13:00
+    out = eng.compute(fri + mon, datetime(2026, 1, 12, 13, 0, tzinfo=UTC))
+    assert out.levels["utc12"].n_bars_anchored == 60   # only 12:00 → 13:00, fresh
+
+
+def test_utc12_no_carry_without_prior_bars() -> None:
+    """No Friday data → nothing to carry → UTC12 stays empty before noon."""
+    eng = TripleVWAPEngine()
+    mon = _build_day(_MON, [2000.0] * 600)          # Mon only
+    out = eng.compute(mon, datetime(2026, 1, 12, 10, 0, tzinfo=UTC))
+    assert out.levels["utc12"].n_bars_anchored == 0
+    assert out.levels["utc12"].value is None

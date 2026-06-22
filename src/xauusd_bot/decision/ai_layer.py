@@ -138,6 +138,7 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
 
     payload: dict[str, Any] = {
         "ts": bundle.ts.isoformat() if bundle.ts else None,
+        "price": _r(bundle.price),
         "atr": _r(bundle.atr, 3),
     }
     if bundle.session is not None:
@@ -237,6 +238,32 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                 }
                 for name, bar in m.by_tf.items()
             },
+        }
+    if bundle.fib is not None:
+        fb = bundle.fib
+        payload["fib"] = {
+            "direction": fb.direction,
+            "leg_low": _r(fb.leg_low),
+            "leg_high": _r(fb.leg_high),
+            "fib_236": _r(fb.fib_236),
+            "fib_382": _r(fb.fib_382),
+            "fib_500": _r(fb.fib_500),
+            "fib_618": _r(fb.fib_618),
+            "retracement_pct": _r(fb.retracement_pct, 3),
+            "price_zone": fb.price_zone,
+            "in_golden_pocket": fb.in_golden_pocket,
+            "trend_strength": fb.trend_strength,
+        }
+    if bundle.volume_trend is not None:
+        vt = bundle.volume_trend
+        payload["volume_trend"] = {
+            "ma_fast": _r(vt.ma_fast, 1),
+            "ma_slow": _r(vt.ma_slow, 1),
+            "last_volume": _r(vt.last_volume, 1),
+            "spike_ratio": _r(vt.spike_ratio, 2),
+            "is_spike": vt.is_spike,
+            "trend": vt.trend,
+            "slope_pct": _r(vt.slope_pct, 3),
         }
     if bundle.liquidity is not None:
         liq = bundle.liquidity

@@ -109,6 +109,7 @@ def make_bundle(
     momentum: CandleMomentumOutput | None = None,
     liquidity: LiquidityEngineOutput | None = None,
     news: NewsContextOutput | None = None,
+    price: float | None = 2373.0,
 ) -> FeatureSnapshotBundle:
     if ts is None:
         ts = datetime(2026, 4, 15, 13, 30, tzinfo=UTC)
@@ -276,6 +277,7 @@ def make_bundle(
         liquidity=liquidity,
         news=news,
         atr=atr,
+        price=price,
     )
 
 

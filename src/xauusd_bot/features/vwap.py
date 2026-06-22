@@ -44,6 +44,7 @@ before ``current_t``.
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -91,12 +92,45 @@ def _last_anchor_before(ts: datetime, anchor_time: time) -> datetime | None:
     return candidate
 
 
-def _previous_day_anchor(ts: datetime, anchor_time: time) -> datetime:
-    """Same time on the *previous* UTC day, used for the 00:00 carry-forward."""
+def _has_bar_in_window(bar_times: list[datetime], start: datetime, end: datetime) -> bool:
+    """True if any bar time is in ``[start, end)``. ``bar_times`` sorted ascending."""
 
-    ts_utc = ts.astimezone(UTC)
-    today = ts_utc.replace(hour=anchor_time.hour, minute=anchor_time.minute, second=0, microsecond=0)
-    return today - timedelta(days=1)
+    i = bisect.bisect_left(bar_times, start)
+    return i < len(bar_times) and bar_times[i] < end
+
+
+def _resolve_live_anchor(
+    anchor_time: time,
+    ct: datetime,
+    bar_times: list[datetime],
+    off: timedelta,
+    *,
+    max_lookback_days: int = 7,
+    tol_hours: float = 6.0,
+) -> datetime | None:
+    """Most recent occurrence of ``anchor_time`` (real-UTC) at/before ``ct`` that
+    had trading bars near it.
+
+    Implements the "Vortags-VWAP weiterführen bis Anker erreicht" rule for ALL
+    three anchors (Plan §8): on Monday before 12:00, the last *live* 12:00 anchor
+    is Friday's — Saturday/Sunday 12:00 occurred on the calendar but had no bars,
+    so we step back day-by-day until a candidate has a bar within ``tol_hours``
+    of it (i.e. the market was trading then). Returns a real-UTC datetime, or
+    None if nothing is found in the lookback. ``bar_times`` are native
+    (broker-frame), sorted ascending; ``off`` shifts the real-UTC candidate into
+    the broker frame for the bar check.
+    """
+
+    tol = timedelta(hours=tol_hours)
+    cand = ct.replace(hour=anchor_time.hour, minute=anchor_time.minute, second=0, microsecond=0)
+    if cand >= ct:
+        cand -= timedelta(days=1)
+    for _ in range(max_lookback_days + 1):
+        cand_broker = cand + off
+        if _has_bar_in_window(bar_times, cand_broker, cand_broker + tol):
+            return cand
+        cand -= timedelta(days=1)
+    return None
 
 
 @dataclass
@@ -167,13 +201,18 @@ class TripleVWAPEngine:
         # times below. MT5 bar times are broker-server time (e.g. UTC+3).
         off = timedelta(minutes=self._offset_min)
         ct = current_t - off
-        anchors: dict[VWAPLevel, datetime | None] = {
-            lvl: _last_anchor_before(ct, t) for lvl, t in _ANCHORS
-        }
-        # If today's 00:00 hasn't fired, fall back to yesterday's 00:00.
-        # This implements the "Vortags-VWAP weiterführen" rule from Plan §8.
-        if anchors[VWAPLevel.UTC00] is None:
-            anchors[VWAPLevel.UTC00] = _previous_day_anchor(ct, _ANCHORS[0][1])
+        bar_times = [b.time for b in bars]  # sorted ascending (bars sorted above)
+        anchors: dict[VWAPLevel, datetime | None] = {}
+        for lvl, t in _ANCHORS:
+            a = _last_anchor_before(ct, t)
+            if a is None:
+                # Carry forward: most recent anchor that actually had bars (skips
+                # weekend/holiday occurrences). Applies to ALL THREE anchors now —
+                # the "Vortags-VWAP weiterführen bis Anker erreicht" rule from
+                # Plan §8 (previously only the 00:00 anchor carried forward, so
+                # UTC07/UTC12 went blank before they fired today).
+                a = _resolve_live_anchor(t, ct, bar_times, off)
+            anchors[lvl] = a
         if self._offset_min:
             anchors = {lvl: (a + off if a is not None else None) for lvl, a in anchors.items()}
 

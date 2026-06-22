@@ -61,6 +61,7 @@ from xauusd_bot.execution import (
 )
 from xauusd_bot.execution.position_manager import ManagedPosition
 from xauusd_bot.execution.take_profit import DEFAULT_TP1_PCT, DEFAULT_TP2_PCT
+from xauusd_bot.execution.zone_lock import ZoneRegistry, band_from_price
 
 log = structlog.get_logger(__name__)
 
@@ -114,6 +115,37 @@ class ExecutionPipeline:
             get_positions=lambda: connector.positions_get(self.symbol),
             emergency=self.emergency,
         )
+        # Zone-lock: one entry per zone/setup (kills stacked entries into the
+        # same chop zone). In-memory state — resets on a service restart, which
+        # at worst permits one extra entry; persist to Redis later if needed.
+        self._zone_lock = bool(getattr(settings, "zone_lock_enabled", True))
+        self._zone_atr_mult = float(getattr(settings, "zone_lock_atr_mult", 0.5))
+        self.zones = ZoneRegistry()
+        self._zone_by_ticket: dict[str, int] = {}
+        self._last_bar_ts: datetime | None = None
+        self._last_close: float | None = None
+
+    def on_position_closed(self, ticket: str) -> None:
+        """Mark a closed position's zone 'used' (re-armable; H1 close kills it)."""
+
+        zid = self._zone_by_ticket.pop(str(ticket), None)
+        if zid is not None:
+            self.zones.close(zid)
+
+    def note_bar(self, price: float, ts: datetime) -> None:
+        """Per-bar zone bookkeeping: re-arm used zones + H1-close invalidation."""
+
+        if not self._zone_lock:
+            return
+        if (
+            self._last_bar_ts is not None
+            and self._last_close is not None
+            and (ts.hour != self._last_bar_ts.hour or ts.date() != self._last_bar_ts.date())
+        ):
+            self.zones.on_h1_close(self._last_close)
+        self.zones.note_price(float(price))
+        self._last_bar_ts = ts
+        self._last_close = float(price)
 
     def _flatten_position(self, position_id: str) -> OrderResult:
         # Live flattening (submit the closing order) is part of the
@@ -144,6 +176,16 @@ class ExecutionPipeline:
             else OrderSide.SELL
         )
         entry_price = Decimal(ref_price)
+
+        # --- Zone-lock: one entry per zone/setup (block stacked entries).
+        zside = "long" if side == OrderSide.BUY else "short"
+        z_low, z_high = band_from_price(
+            float(entry_price),
+            float(bundle.atr) if bundle.atr else None,
+            atr_mult=self._zone_atr_mult,
+        )
+        if self._zone_lock and not self.zones.can_enter(zside, float(entry_price)):
+            return ExecutionOutcome(submitted=False, blocked_reason="zone_locked")
 
         # --- Risk approval (daily/weekly caps, open-position + per-session limits).
         risk_verdict = self.risk_mgr.approve(qualification, now=now)
@@ -198,6 +240,11 @@ class ExecutionPipeline:
 
         self.risk_mgr.record_trade(now=now)
         fill_price = order_env.avg_fill_price or entry_price
+
+        # Zone-lock: register the opened position's zone (keyed by ticket so the
+        # manage loop can mark it 'used' on close).
+        if self._zone_lock and order_env.order_id:
+            self._zone_by_ticket[str(order_env.order_id)] = self.zones.open(zside, z_low, z_high)
 
         trade = TradeRecord(
             timestamp_open=now,

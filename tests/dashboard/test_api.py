@@ -775,8 +775,10 @@ class TestReasoningToggle:
         r = client.get("/api/ai/reasoning/state", cookies=login)
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["default"] is True
-        assert body["enabled"] is True
+        # Reasoning is OFF by default (ai_layer_reasoning_enabled=False): m3
+        # reasoning-ON blows the AI-layer timeout. State mirrors that default.
+        assert body["default"] is False
+        assert body["enabled"] is False
 
     def test_viewer_can_read_but_not_toggle(self, client) -> None:
         lr = client.post(
@@ -800,7 +802,7 @@ class TestReasoningToggle:
         assert r.json()["enabled"] is False
         s = client.get("/api/ai/reasoning/state", cookies=login).json()
         assert s["enabled"] is False
-        assert s["default"] is True
+        assert s["default"] is False  # static config default (reasoning off)
         r2 = client.post("/api/ai/reasoning/toggle", json={"enabled": True}, cookies=login)
         assert r2.json()["enabled"] is True
         assert client.get("/api/ai/reasoning/state", cookies=login).json()["enabled"] is True
