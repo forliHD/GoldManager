@@ -239,6 +239,21 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                 for name, bar in m.by_tf.items()
             },
         }
+    if bundle.fib is not None:
+        fb = bundle.fib
+        payload["fib"] = {
+            "direction": fb.direction,
+            "leg_low": _r(fb.leg_low),
+            "leg_high": _r(fb.leg_high),
+            "fib_236": _r(fb.fib_236),
+            "fib_382": _r(fb.fib_382),
+            "fib_500": _r(fb.fib_500),
+            "fib_618": _r(fb.fib_618),
+            "retracement_pct": _r(fb.retracement_pct, 3),
+            "price_zone": fb.price_zone,
+            "in_golden_pocket": fb.in_golden_pocket,
+            "trend_strength": fb.trend_strength,
+        }
     if bundle.volume_trend is not None:
         vt = bundle.volume_trend
         payload["volume_trend"] = {

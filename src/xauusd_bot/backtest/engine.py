@@ -128,6 +128,7 @@ from xauusd_bot.execution import (
 )
 from xauusd_bot.features._indicators import atr as compute_atr
 from xauusd_bot.features._indicators import bars_to_df
+from xauusd_bot.features.fib import FibRetracementEngine
 from xauusd_bot.features.fvg import FVGEngine
 from xauusd_bot.features.liquidity import LiquidityEngine
 from xauusd_bot.features.momentum import CandleMomentumEngine
@@ -323,6 +324,7 @@ class BacktestEngine:
         self._structure_eng = MarketStructureEngine()
         self._momentum_eng = CandleMomentumEngine()
         self._volume_trend_eng = VolumeTrendEngine()
+        self._fib_eng = FibRetracementEngine()
         self._liquidity_eng = LiquidityEngine()
         self._news_eng = NewsContextEngine(provider=StubNewsProvider())
 
@@ -630,6 +632,7 @@ class BacktestEngine:
         structure_out = self._structure_eng.compute(bars_so_far, current_t)
         momentum_out = self._momentum_eng.compute(bars_so_far, current_t)
         volume_trend_out = self._volume_trend_eng.compute(bars_so_far, current_t)
+        fib_out = self._fib_eng.compute(bars_so_far, current_t)
         liquidity_out = self._liquidity_eng.compute(
             structure_out.liquidity_pools, float(close), bars_so_far, current_t
         )
@@ -675,6 +678,7 @@ class BacktestEngine:
             liquidity=liquidity_out,
             news=news_out,
             volume_trend=volume_trend_out,
+            fib=fib_out,
             atr=atr_val,
             price=float(close),
         )

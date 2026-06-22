@@ -400,6 +400,44 @@ class NewsContextOutput(BaseModel):
 # ---------------------------------------------------------------- master snapshot
 
 
+class FibRetracementOutput(BaseModel):
+    """Fibonacci retracement of the last H1 impulse leg.
+
+    The strategy's structural entry filter (decision_agent.md §2): where does
+    the current price sit inside the last H1 impulse? Preferred reaction is the
+    golden pocket (0.5–0.618), best when it overlaps an FVG + supply/demand.
+    Shallow reactions (0.382 / 0.236) suit strong / extreme trends; pullbacks
+    deeper than 0.618 raise the odds of a trend change.
+
+    ``retracement_pct`` is how far price retraced into the leg: 0.0 = at the
+    impulse extreme (no pullback), 1.0 = all the way back to the leg's origin.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: Literal["up", "down", "none"] = Field(
+        default="none", description="Impulse leg direction (up = low→high)."
+    )
+    leg_low: float | None = Field(default=None, description="Low of the last H1 impulse leg.")
+    leg_high: float | None = Field(default=None, description="High of the last H1 impulse leg.")
+    fib_236: float | None = Field(default=None)
+    fib_382: float | None = Field(default=None)
+    fib_500: float | None = Field(default=None)
+    fib_618: float | None = Field(default=None)
+    retracement_pct: float | None = Field(
+        default=None, description="How far price retraced into the leg (0=extreme, 1=origin)."
+    )
+    price_zone: Literal["shallow", "0.382", "golden_pocket", "deep", "extended", "none"] = Field(
+        default="none", description="Which fib bracket the current price sits in."
+    )
+    in_golden_pocket: bool = Field(
+        default=False, description="Price within 0.5–0.618 of the last H1 impulse."
+    )
+    trend_strength: Literal["strong", "weak", "none"] = Field(
+        default="none", description="Impulse leg size vs H1 ATR (strong = >= strong_atr_mult)."
+    )
+
+
 class VolumeTrendOutput(BaseModel):
     """Tick-volume trend on M1 — for the AI's volume-confirmation step.
 
@@ -446,6 +484,7 @@ class FeatureSnapshotBundle(BaseModel):
     liquidity: LiquidityEngineOutput | None = None
     news: NewsContextOutput | None = None
     volume_trend: VolumeTrendOutput | None = None
+    fib: FibRetracementOutput | None = None
     atr: float | None = Field(default=None, ge=0, description="ATR(M1, 14) — the runtime ATR used by all engines.")
     price: float | None = Field(
         default=None,

@@ -21,6 +21,7 @@ from xauusd_bot.common.schemas.features import FeatureSnapshotBundle
 from xauusd_bot.connectors.schemas import Bar
 from xauusd_bot.features._indicators import atr as compute_atr
 from xauusd_bot.features._indicators import bars_to_df
+from xauusd_bot.features.fib import FibRetracementEngine
 from xauusd_bot.features.fvg import FVGEngine
 from xauusd_bot.features.liquidity import LiquidityEngine
 from xauusd_bot.features.momentum import CandleMomentumEngine
@@ -50,6 +51,7 @@ class FeaturePipeline:
         self.structure = MarketStructureEngine()
         self.momentum = CandleMomentumEngine()
         self.volume_trend = VolumeTrendEngine()
+        self.fib = FibRetracementEngine()
         self.liquidity = LiquidityEngine()
         self.news = NewsContextEngine(provider=news_provider or StubNewsProvider())
 
@@ -77,6 +79,7 @@ class FeaturePipeline:
         structure_out = self.structure.compute(bars, ts)
         momentum_out = self.momentum.compute(bars, ts)
         volume_trend_out = self.volume_trend.compute(bars, ts)
+        fib_out = self.fib.compute(bars, ts)
         close = float(bars[-1].close) if bars else 0.0
         liquidity_out = self.liquidity.compute(structure_out.liquidity_pools, close, bars, ts)
         news_out = self.news.compute(ts)
@@ -99,6 +102,7 @@ class FeaturePipeline:
             liquidity=liquidity_out,
             news=news_out,
             volume_trend=volume_trend_out,
+            fib=fib_out,
             atr=atr_val,
             price=(close if bars else None),
         )
