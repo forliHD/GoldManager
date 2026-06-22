@@ -15,9 +15,16 @@ anhand der gelieferten Features prüfen, ob hier ein echtes, zonen-basiertes Set
 allein rechtfertigt NIE einen Entry. Du bestätigst NICHT einfach den Score — du validierst das Setup.
 
 Du bekommst ein JSON mit vorverarbeiteten Features: 'price' (aktueller M1-Close), Session, Triple VWAP
-(mit cross/reclaim/loss), Higher-Timeframe Volume Profile (locked/developing), H1/M5-Zonen, Market
-Structure, Momentum (Body-Größe, Close-Position, Tick-Volumen-Perzentil je Timeframe), News, Liquidity
-und FVGs auf H1/M5/M1 (mit Timeframe-Tag, Typ, Ober-/Untergrenze, Status aktiv/mitigiert).
+(mit cross/reclaim/loss), Volume Profile (volume_range), H1/M5-Zonen, Market Structure, Momentum
+(Body-Größe, Close-Position, Tick-Volumen-Perzentil je Timeframe), News, Liquidity und FVGs auf
+H1/M5/M1 (mit Timeframe-Tag, Typ, Ober-/Untergrenze, Status aktiv/mitigiert).
+
+VOLUME PROFILE (volume_range): Die handelbaren Referenzen sind die LOCKED-Profile abgeschlossener
+Perioden — `locked.daily` (gestern), `locked.weekly` (letzte abgeschlossene Woche, gültig ab Fr-Close),
+`locked.monthly` (letzter abgeschlossener Monat). Deren VPOC/VAH/VAL sind FEST und ändern sich erst beim
+Perioden-Rollover. `developing.daily`/`developing.weekly` = laufende, unfertige Periode, nur Kontext.
+Ein `null`-Profil ist noch nicht verfügbar (z.B. `locked.daily` Montags) → nicht verwenden. Achte auf
+`n_bars`: ein dünnes Profil (wenige Bars) ist unzuverlässig.
 
 ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
 
@@ -40,8 +47,9 @@ ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
    H1, M5, M1.
 
 4. PULLBACK-LEVEL & MODUS:  An welches Schlüssel-Level läuft der Preis zurück und reagiert? Kandidaten:
-   Triple-VWAP (distance_atr, reclaim/loss) UND die Volume-Profile-Level (VPOC/VAH/VAL aus volume_range,
-   bevorzugt locked/Vorwoche). Diese Level sind sowohl Reaktions-/Pullback-Zonen als auch Ziele. Modus:
+   Triple-VWAP (distance_atr, reclaim/loss) UND die LOCKED Volume-Profile-Level (volume_range.locked
+   .daily/.weekly/.monthly — VPOC/VAH/VAL der abgeschlossenen Perioden). Diese locked-Level sind sowohl
+   Reaktions-/Pullback-Zonen als auch Ziele; developing nur als Kontext. Modus:
    (a) PULLBACK-Trade: Preis läuft an VWAP/VP-Level zurück und reagiert → Einstieg mit der übergeordneten Zone.
    (b) TREND-MITNAHME: Pullback an VWAP/VP-Level (z.B. VPOC im Trend) + erneuter RECROSS in Trendrichtung
        (cross_up/cross_down + reclaim) → weiter IN Trendrichtung mit. Das ist der bevorzugte Trend-Entry.
@@ -89,7 +97,7 @@ AUSGABE: Antworte mit GENAU einem JSON-Objekt, ohne Markdown, ohne Vor-/Nachtext
   "entry_type": "confirmation | pullback | breakout_retest | null",
   "entry_side": "long | short | null",
   "entry_zone": {"price_min": <float|null>, "price_max": <float|null>},
-  "confluence": {"in_zone": <bool>, "zones_at_entry": <int>, "fib_zone": "0.236 | 0.382 | golden_pocket | deep | null", "h1_trend": "strong | weak | none", "deeper_fvg_pending": <bool>, "vwap_mode": "pullback | trend | null", "volume_confirms": <bool|null>},
+  "confluence": {"in_zone": <bool>, "zones_at_entry": <int>, "fib_zone": "shallow | 0.236 | 0.382 | golden_pocket | deep | extended | null", "h1_trend": "strong | weak | none", "deeper_fvg_pending": <bool>, "vwap_mode": "pullback | trend | null", "volume_confirms": <bool|null>},
   "invalidations": ["<string>", ...],
   "management": {"tp1_rr": <float|null>, "tp2_rr": <float|null>, "runner_to": "<string|null>", "protect_before_news_min": <int|null>},
   "confidence": <0-100>,

@@ -56,25 +56,43 @@ class FeaturePipeline:
         self.news = NewsContextEngine(provider=news_provider or StubNewsProvider())
 
     def set_clock_offset(self, minutes: float) -> None:
-        """Fan the broker→UTC offset out to every time-of-day-anchored engine.
+        """Fan the broker→UTC offset out to the UTC-anchored engines.
 
-        MT5 bar times are broker-server time (e.g. UTC+3). Session windows,
-        the VWAP 00:00/07:00/12:00 anchors, the volume-profile period bounds
-        and the news calendar are all defined in real UTC, so each must
-        subtract this offset to classify/anchor correctly. 0 in replay/tests.
+        MT5 bar times are broker-server time (e.g. UTC+3). The session windows,
+        the VWAP 00:00/07:00/12:00 anchors and the news calendar are defined in
+        real UTC, so each subtracts this offset to classify/anchor correctly.
+
+        The Volume Profile is the EXCEPTION: its Daily/Weekly/Monthly ranges are
+        the BROKER's trading sessions (the strategy author trades off the broker
+        daily candle: ~22:00→20:57 UTC = broker 00:00→23:57, week opens Sun 22:00
+        UTC = broker Mon 00:00). Those are the broker CALENDAR periods, so
+        ``volume_range`` stays at offset 0 (broker frame) — applying the UTC
+        offset shifted every window by ~3h and produced wrong VAH/VPOC/VAL.
+        Verified live: offset 0 reproduces the author's weekly (4365/4340/4265)
+        and monthly (4685/4545/4430) levels; offset 180 did not.
         """
 
         self.session.set_clock_offset(minutes)
         self.vwap.set_clock_offset(minutes)
-        self.volume_range.set_clock_offset(minutes)
         self.news.set_clock_offset(minutes)
+        # NOT volume_range — see docstring (broker-calendar periods).
 
-    def assemble(self, bars: list[Bar], ts: datetime) -> FeatureSnapshotBundle:
-        """Run every engine over ``bars`` (PIT-filtered to ``ts``) and bundle it."""
+    def assemble(
+        self, bars: list[Bar], ts: datetime, vp_bars: list[Bar] | None = None
+    ) -> FeatureSnapshotBundle:
+        """Run every engine over ``bars`` (PIT-filtered to ``ts``) and bundle it.
+
+        ``vp_bars`` is an optional, deeper bar history used **only** for the
+        Volume Profile. The locked Daily/Weekly/Monthly profiles need weeks/months
+        of bars, but the other engines (esp. FVG, which is ~O(n²)) must stay on a
+        short window or assembly blows past the 1-bar/minute budget. volume_range
+        itself is cheap even over deep history (~0.7s/80k bars). Defaults to
+        ``bars`` (backtest/tests pass the full replay window directly).
+        """
 
         session_out = self.session.compute(bars, ts)
         vwap_out = self.vwap.compute(bars, ts)
-        vr_out = self.volume_range.compute(bars, ts)
+        vr_out = self.volume_range.compute(vp_bars if vp_bars is not None else bars, ts)
         fvg_out = self.fvg.compute(bars, ts)
         structure_out = self.structure.compute(bars, ts)
         momentum_out = self.momentum.compute(bars, ts)

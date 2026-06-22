@@ -180,6 +180,19 @@ _DIST_FUNCS: dict[VolumeDistribution, Callable[[Bar, int], list[tuple[float, flo
 # ---------------------------------------------------------------- period math
 
 
+def _daily_bounds(ts: datetime) -> tuple[datetime, datetime]:
+    """Calendar day: 00:00 UTC → next 00:00 UTC (exclusive).
+
+    Note: the previous-day profile is calendar-yesterday. On a Monday that is an
+    empty (weekend) Sunday → prev_day is omitted, which matches Joshua's rule
+    ("Montag nur die Vorwoche; ab Dienstag das vollendete Daily").
+    """
+
+    ts_utc = ts.astimezone(UTC)
+    start = ts_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
 def _weekly_bounds(ts: datetime) -> tuple[datetime, datetime]:
     """ISO week: Mon 00:00 UTC → next Mon 00:00 UTC (exclusive)."""
 
@@ -210,12 +223,14 @@ def _yearly_bounds(ts: datetime) -> tuple[datetime, datetime]:
 
 
 _PERIOD_FUNCS: dict[VolumeProfileName, Callable[[datetime], tuple[datetime, datetime]]] = {
+    VolumeProfileName.DAILY: _daily_bounds,
     VolumeProfileName.WEEKLY: _weekly_bounds,
     VolumeProfileName.MONTHLY: _monthly_bounds,
     VolumeProfileName.YEARLY: _yearly_bounds,
 }
 
 _DEFAULT_BIN_SIZES: dict[VolumeProfileName, float] = {
+    VolumeProfileName.DAILY: 0.5,     # intraday: finer than weekly
     VolumeProfileName.WEEKLY: 0.75,   # midpoint of 0.5–1.0
     VolumeProfileName.MONTHLY: 1.5,   # midpoint of 1.0–2.0
     VolumeProfileName.YEARLY: 3.5,    # midpoint of 2.0–5.0
@@ -488,16 +503,20 @@ class FixedVolumeRangeEngine:
                 n_bars=n_bars,
             )
 
+        out_daily = _to_output(developing[VolumeProfileName.DAILY], is_locked=False)
         out_weekly = _to_output(developing[VolumeProfileName.WEEKLY], is_locked=False)
         out_monthly = _to_output(developing[VolumeProfileName.MONTHLY], is_locked=False)
         out_yearly = _to_output(developing[VolumeProfileName.YEARLY], is_locked=False)
+        out_prev_day = _to_output(previous[VolumeProfileName.DAILY], is_locked=True)
         out_prev_week = _to_output(previous[VolumeProfileName.WEEKLY], is_locked=True)
         out_prev_month = _to_output(previous[VolumeProfileName.MONTHLY], is_locked=True)
         out_prev_year = _to_output(previous[VolumeProfileName.YEARLY], is_locked=True)
 
         # If any of the "previous" profiles are EMPTY (no bars in that
         # period were visible), we omit them. (e.g. on day 1 of a new
-        # year, prev_year has no bars yet.)
+        # year, prev_year has no bars yet; on a Monday prev_day = empty Sunday.)
+        daily: VolumeProfileOutput | None = out_daily if out_daily.n_bars > 0 else None
+        prev_day: VolumeProfileOutput | None = out_prev_day if out_prev_day.n_bars > 0 else None
         prev_week: VolumeProfileOutput | None = out_prev_week if out_prev_week.n_bars > 0 else None
         prev_month: VolumeProfileOutput | None = out_prev_month if out_prev_month.n_bars > 0 else None
         prev_year: VolumeProfileOutput | None = out_prev_year if out_prev_year.n_bars > 0 else None
@@ -506,6 +525,8 @@ class FixedVolumeRangeEngine:
             weekly=out_weekly,
             monthly=out_monthly,
             yearly=out_yearly,
+            daily=daily,
+            prev_day=prev_day,
             prev_week=prev_week,
             prev_month=prev_month,
             prev_year=prev_year,

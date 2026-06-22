@@ -258,7 +258,17 @@ class Settings(BaseSettings):
     max_history_bars: int = Field(
         default=200_000,
         ge=1,
-        description="Upper bound on the feature-engine's in-memory bar buffer. Note: yearly volume-range needs long history — see AGENTS.md.",
+        description="Upper bound on the feature-engine's MAIN in-memory bar buffer (FVG/structure/vwap/…). Keep modest: FVG is ~O(n²).",
+    )
+    volume_profile_history_bars: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Separate DEEP bar history fed only to the Volume Profile so its locked "
+            "Daily/Weekly/Monthly ranges span whole completed periods. 0 = off (volume_range "
+            "uses the main buffer). Live: ~90000 covers >2 months. volume_range is cheap even "
+            "over deep history (~0.7s/80k); the main buffer stays small so FVG doesn't blow up."
+        ),
     )
     stream_block_ms: int = Field(
         default=1000, ge=1, description="XREADGROUP block timeout (ms) for service consumers."

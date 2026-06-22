@@ -170,10 +170,22 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
         }
     if bundle.volume_range is not None:
         vr = bundle.volume_range
+        # LOCKED profiles (last COMPLETED period) are the tradeable references —
+        # fixed VPOC/VAH/VAL the strategy reacts off (Joshua: monthly = last month,
+        # weekly = last week after Fri close, daily = yesterday). The developing
+        # (current, in-progress) profiles are context only. ``null`` = not yet
+        # available (e.g. prev_day on a Monday). Yearly is omitted: it needs a
+        # full year of M1 the live buffer can't hold and is demoted in scoring.
         payload["volume_range"] = {
-            "weekly": _vp_to_dict(vr.weekly),
-            "monthly": _vp_to_dict(vr.monthly),
-            "yearly": _vp_to_dict(vr.yearly),
+            "locked": {
+                "daily": _vp_to_dict(vr.prev_day),
+                "weekly": _vp_to_dict(vr.prev_week),
+                "monthly": _vp_to_dict(vr.prev_month),
+            },
+            "developing": {
+                "daily": _vp_to_dict(vr.daily),
+                "weekly": _vp_to_dict(vr.weekly),
+            },
             "developing_vs_locked_clusters": vr.developing_vs_locked_clusters,
         }
     if bundle.fvg is not None:
@@ -283,7 +295,9 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
     return payload
 
 
-def _vp_to_dict(vp: Any) -> dict[str, Any]:
+def _vp_to_dict(vp: Any) -> dict[str, Any] | None:
+    if vp is None:
+        return None
     return {
         "state": vp.state.value,
         "vah": _r(vp.vah),
@@ -293,6 +307,7 @@ def _vp_to_dict(vp: Any) -> dict[str, Any]:
         "acceptance_count": vp.acceptance_count,
         "rotation": vp.rotation,
         "breakout": vp.breakout,
+        "n_bars": vp.n_bars,
     }
 
 

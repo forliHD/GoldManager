@@ -569,3 +569,37 @@ def test_rollover_preserves_prev_year_levels_across_year_boundary() -> None:
     # Developing yearly at the start of 2027 is empty (0 bars).
     assert out.yearly.n_bars == 0
     assert out.yearly.state == VolumeProfileState.EMPTY
+
+
+def test_daily_profile_locked_and_developing() -> None:
+    """The new DAILY profile: yesterday locks (full day), today develops."""
+
+    eng = FixedVolumeRangeEngine()
+    day1 = datetime(2026, 3, 10, 0, 0, tzinfo=UTC)
+    day2 = datetime(2026, 3, 11, 0, 0, tzinfo=UTC)
+    bars = _build_m1_day(day1, base_price=2000.0) + _build_m1_day(day2, base_price=2010.0)
+    ct = day2 + timedelta(hours=12)  # noon on day2
+    vr = eng.compute(bars, ct)
+
+    # prev_day = yesterday, fully locked.
+    assert vr.prev_day is not None
+    assert vr.prev_day.name == VolumeProfileName.DAILY
+    assert vr.prev_day.state == VolumeProfileState.LOCKED
+    assert vr.prev_day.n_bars == 1440
+    # Its VPOC sits in day1's band (~2000), not day2's (~2010).
+    assert 1999.0 <= vr.prev_day.vpoc <= 2002.0
+
+    # daily = today, developing, only the bars up to current_t.
+    assert vr.daily is not None
+    assert vr.daily.state == VolumeProfileState.DEVELOPING
+    assert vr.daily.n_bars == 721  # 00:00..12:00 inclusive
+
+
+def test_prev_day_none_when_yesterday_empty() -> None:
+    """No bars yesterday (e.g. Monday → empty Sunday) → prev_day omitted."""
+
+    eng = FixedVolumeRangeEngine()
+    day = datetime(2026, 3, 11, 0, 0, tzinfo=UTC)
+    bars = _build_m1_day(day, base_price=2000.0)  # only "today"
+    vr = eng.compute(bars, day + timedelta(hours=12))
+    assert vr.prev_day is None

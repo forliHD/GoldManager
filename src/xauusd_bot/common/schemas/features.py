@@ -131,6 +131,7 @@ class TripleVWAPOutput(BaseModel):
 class VolumeProfileName(str, Enum):
     """Higher-timeframe volume profile."""
 
+    DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
     YEARLY = "yearly"
@@ -190,6 +191,12 @@ class VolumeRangeOutput(BaseModel):
     weekly: VolumeProfileOutput
     monthly: VolumeProfileOutput
     yearly: VolumeProfileOutput
+    daily: VolumeProfileOutput | None = Field(
+        default=None, description="Developing current-day profile (state developing)."
+    )
+    prev_day: VolumeProfileOutput | None = Field(
+        default=None, description="Frozen previous-day profile (yesterday, state locked)."
+    )
     prev_week: VolumeProfileOutput | None = Field(
         default=None, description="Frozen previous-week profile (state always locked)."
     )
