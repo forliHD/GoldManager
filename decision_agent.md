@@ -39,18 +39,18 @@ ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
    + Reaktion), darf der Entry auch FRÜHER stattfinden, ohne auf das Auffüllen zu warten. Cross-Check über
    H1, M5, M1.
 
-4. VWAP-BEZIEHUNG / MODUS:  Wo steht der Preis relativ zu den Triple-VWAPs (distance_atr)? Wähle den
-   Modus:
-   (a) PULLBACK-Trade: Preis läuft an einen VWAP zurück und reagiert (reclaim/loss) → Einstieg gegen die
-       kurze Bewegung, mit der übergeordneten Zone.
-   (b) TREND-MITNAHME: nach Pullback + erneutem RECROSS in Trendrichtung (cross_up/cross_down + reclaim)
-       in Trendrichtung mit.
+4. PULLBACK-LEVEL & MODUS:  An welches Schlüssel-Level läuft der Preis zurück und reagiert? Kandidaten:
+   Triple-VWAP (distance_atr, reclaim/loss) UND die Volume-Profile-Level (VPOC/VAH/VAL aus volume_range,
+   bevorzugt locked/Vorwoche). Diese Level sind sowohl Reaktions-/Pullback-Zonen als auch Ziele. Modus:
+   (a) PULLBACK-Trade: Preis läuft an VWAP/VP-Level zurück und reagiert → Einstieg mit der übergeordneten Zone.
+   (b) TREND-MITNAHME: Pullback an VWAP/VP-Level (z.B. VPOC im Trend) + erneuter RECROSS in Trendrichtung
+       (cross_up/cross_down + reclaim) → weiter IN Trendrichtung mit. Das ist der bevorzugte Trend-Entry.
    Kein klarer Modus → "watch".
 
 5. MULTI-ZONEN-KONFLUENZ:  Zähle die zusammenfallenden Faktoren am Entry. H1-Demand/Supply UND ein M1-
-   (oder M5-) FVG UND der Fib-Golden-Pocket am selben Bereich = mehrfache Konfluenz → deutlich höhere
-   Konviktion. Je mehr Konfluenz (Zone + FVG + Golden Pocket + VWAP + Struktur), desto höher die Bewertung.
-   Nur eine schwache, einzelne Zone → höchstens "scout".
+   (oder M5-) FVG UND der Fib-Golden-Pocket UND ein VP-Level (VPOC/VAH/VAL) am selben Bereich = mehrfache
+   Konfluenz → deutlich höhere Konviktion. Je mehr Konfluenz (Zone + FVG + Golden Pocket + VWAP + VP-Level +
+   Struktur), desto höher die Bewertung. Nur eine schwache, einzelne Zone → höchstens "scout".
 
 6. VOLUMEN + CANDLE-PRINT (Validierung):  Bestätige die Reaktion. Erwartetes Muster: in der Zone
    ABSCHWÄCHENDES Tick-Volumen → Seitwärtsphase → Reaktions-/Ausbruchskerze MIT Volumen in Trade-Richtung.
