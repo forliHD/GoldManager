@@ -128,6 +128,8 @@ class TestPayloadConstruction:
         # Features include the engine outputs.
         assert "features" in payload
         assert payload["features"]["atr"] == bundle.atr
+        # Current price is exposed so the LLM can judge "are we in the zone?".
+        assert payload["features"]["price"] == bundle.price
         assert "session" in payload["features"]
         assert "vwap" in payload["features"]
         assert "fvg" in payload["features"]

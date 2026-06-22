@@ -415,3 +415,7 @@ class FeatureSnapshotBundle(BaseModel):
     liquidity: LiquidityEngineOutput | None = None
     news: NewsContextOutput | None = None
     atr: float | None = Field(default=None, ge=0, description="ATR(M1, 14) — the runtime ATR used by all engines.")
+    price: float | None = Field(
+        default=None,
+        description="Latest M1 close at snapshot time — lets the AI layer judge 'are we in the zone?' precisely.",
+    )

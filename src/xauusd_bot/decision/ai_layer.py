@@ -138,6 +138,7 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
 
     payload: dict[str, Any] = {
         "ts": bundle.ts.isoformat() if bundle.ts else None,
+        "price": _r(bundle.price),
         "atr": _r(bundle.atr, 3),
     }
     if bundle.session is not None:

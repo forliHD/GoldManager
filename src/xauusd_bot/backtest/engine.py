@@ -672,6 +672,7 @@ class BacktestEngine:
             liquidity=liquidity_out,
             news=news_out,
             atr=atr_val,
+            price=float(close),
         )
 
     # ----------------------------------------------------------- internals: trade lifecycle

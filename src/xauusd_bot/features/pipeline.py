@@ -96,6 +96,7 @@ class FeaturePipeline:
             liquidity=liquidity_out,
             news=news_out,
             atr=atr_val,
+            price=(close if bars else None),
         )
 
 
