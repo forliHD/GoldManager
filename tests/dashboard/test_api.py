@@ -490,6 +490,41 @@ class TestJournalEndpoints:
         r = client.get("/api/journal/aggregate?period=lifetime", cookies=login)
         assert r.status_code == 400
 
+    def test_aggregate_accepts_last_24h(self, client, login) -> None:
+        # The Live-tab KPI calls period=last_24h; it must not 400.
+        r = client.get("/api/journal/aggregate?period=last_24h", cookies=login)
+        assert r.status_code == 200
+        assert r.json()["period"] == "last_24h"
+
+
+class TestBrokerNow:
+    """Trade times are broker-stamped (UTC+3) — the aggregate window must follow
+    the broker clock or the most-recent trades fall 'in the future' and vanish
+    from Performance (the live bug)."""
+
+    async def test_detects_broker_offset_ahead(self) -> None:
+        import json
+
+        from xauusd_bot.dashboard.api import _broker_now
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        now = datetime.now(tz=UTC)
+        bar_time = (now + timedelta(hours=3)).isoformat()
+        await r.xadd(
+            "market_ticks",
+            {"payload": json.dumps({"bar": {"time": bar_time, "symbol": "XAUUSD+"}})},
+        )
+        bnow = await _broker_now(r)
+        assert timedelta(hours=2, minutes=50) < (bnow - now) < timedelta(hours=3, minutes=10)
+
+    async def test_no_bars_falls_back_to_utc(self) -> None:
+        from xauusd_bot.dashboard.api import _broker_now
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        now = datetime.now(tz=UTC)
+        bnow = await _broker_now(r)
+        assert abs((bnow - now).total_seconds()) < 5
+
 
 # ----------------------------------------------------------------- /api/backtest
 

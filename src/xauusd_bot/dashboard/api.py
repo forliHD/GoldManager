@@ -496,22 +496,58 @@ async def journal_trades(
     return out
 
 
+async def _broker_now(stream_redis: Any) -> datetime:
+    """Return 'now' in the broker's clock.
+
+    Trade ``timestamp_open``/``timestamp_close`` are stamped in broker-server
+    time (e.g. UTC+3) but labelled UTC — the same convention as the bars and the
+    chart. Windowing them against real-UTC ``datetime.now()`` silently excludes
+    the most recent trades (they look ~3h in the future), which is why they were
+    missing from the Performance aggregate. Detect the offset from the freshest
+    bar and return a broker-time 'now' so the windows line up with the data.
+    """
+
+    now = datetime.now(tz=UTC)
+    if stream_redis is None:
+        return now
+    try:
+        for stream_name in ("market_ticks", "chart_history"):
+            entries = await stream_redis.xrevrange(stream_name, count=1)
+            for _entry_id, fields in entries:
+                raw = fields.get("payload")
+                if not raw:
+                    continue
+                bar = (json.loads(raw).get("bar")) or {}
+                t = bar.get("time")
+                if not t:
+                    continue
+                bt = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+                offset_h = round((bt - now).total_seconds() / 3600.0)
+                return now + timedelta(hours=offset_h)
+    except Exception as exc:  # noqa: BLE001 - offset is best-effort; fall back to UTC
+        log.warning("broker_now_detect_failed", error=str(exc))
+    return now
+
+
 @router.get("/journal/aggregate")
 async def journal_aggregate(
+    request: Request,
     period: str = Query(default="last_week"),
     session: UserSession = Depends(current_session),
 ) -> dict[str, Any]:
     """Aggregate KPIs over the requested period.
 
-    Period tokens: ``today``, ``last_week``, ``last_month``,
-    ``ytd``, ``all``. We deliberately keep this simple — the
-    Block-9+ follow-up adds a real date-range picker.
+    Period tokens: ``today``, ``last_24h``, ``last_week``, ``last_month``,
+    ``ytd``, ``all``. Windows are computed in the BROKER clock (see
+    :func:`_broker_now`) so broker-stamped trade times bucket correctly.
     """
 
     store = _get_journal_store()
-    end = datetime.now(tz=UTC)
+    end = await _broker_now(_streams_redis(request))
     if period == "today":
         start = datetime(end.year, end.month, end.day, tzinfo=UTC)
+    elif period == "last_24h":
+        start = end - timedelta(hours=24)
     elif period == "last_week":
         start = end - timedelta(days=7)
     elif period == "last_month":
