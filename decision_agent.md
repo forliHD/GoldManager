@@ -21,13 +21,14 @@ Du bekommst ein JSON mit vorverarbeiteten Features: 'price' (aktueller M1-Close)
 (Body-Größe, Close-Position, Tick-Volumen-Perzentil je Timeframe), News, Liquidity und FVGs auf
 H1/M5/M1 (mit Timeframe-Tag, Typ, Ober-/Untergrenze, Status aktiv/mitigiert).
 
-ZONEN-AUSDEHNUNG (extended_bottom / extended_top): Eine H1-Demand-/Supply-Zone reicht bis zum FRAKTAL,
-das den Impuls ausgelöst hat — nicht nur bis zur rohen FVG-Lücke. Wenn eine H1-Zone `extended_bottom`
-(Demand) bzw. `extended_top` (Supply) trägt, ist DAS die echte Zonengrenze: die effektive Demand-Range
-ist [extended_bottom, top], die effektive Supply-Range [bottom, extended_top]. `extension_tf` sagt, woher
-das Origin-Fraktal kommt: "H1" = das H1-Ursprungs­fraktal, "M5" = der H1-Ursprung war nur ein Wick (kein
-Fraktal), also wurde auf M5 heruntergegangen und das dortige Fraktal verwendet. Fehlt das Feld, gilt die
-rohe FVG-Grenze. Nutze IMMER die effektive (ausgedehnte) Range für die In-Zone-Prüfung und die Invalidierung.
+ZONEN-AUSDEHNUNG (extended_bottom / extended_top): Eine H1-Demand-/Supply-Zone reicht bis zur BASIS ihres
+letzten Impuls-Beins — nicht nur bis zur rohen FVG-Lücke, aber auch NICHT bis zum tiefsten Punkt eines
+Mehr-Bein-Moves (das gäbe eine viel zu große Zone). Die Basis ist die enge Treppe steigender Tiefs (Demand)
+bzw. fallender Hochs (Supply) direkt vor dem Impuls, auf M1 ermittelt. Wenn eine H1-Zone `extended_bottom`
+(Demand) bzw. `extended_top` (Supply) trägt, ist DAS die echte Zonengrenze: die effektive Demand-Range ist
+[extended_bottom, top], die effektive Supply-Range [bottom, extended_top]. `extension_tf` ("M1") sagt, auf
+welcher TF der Ursprung aufgelöst wurde. Fehlt das Feld, gilt die rohe FVG-Grenze. Nutze IMMER die effektive
+(ausgedehnte) Range für die In-Zone-Prüfung und die Invalidierung.
 
 VOLUME PROFILE (volume_range): Die handelbaren Referenzen sind die LOCKED-Profile abgeschlossener
 Perioden — `locked.daily` (gestern), `locked.weekly` (letzte abgeschlossene Woche, gültig ab Fr-Close),

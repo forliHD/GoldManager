@@ -135,6 +135,7 @@ async def _run(settings: Settings) -> int:
         fvg_extend_to_fractal=settings.fvg_extend_to_fractal,
         fvg_extension_fractal_n=settings.fvg_extension_fractal_n,
         fvg_extension_max_atr=settings.fvg_extension_max_atr,
+        fvg_leg_step_atr=settings.fvg_leg_step_atr,
     )
     publisher = make_publisher(settings)
     await publisher.connect()

@@ -260,12 +260,12 @@ class FVGZone(BaseModel):
             "extension. The effective supply range is [bottom, extended_top or top]."
         ),
     )
-    extension_tf: Literal["H1", "M5"] | None = Field(
+    extension_tf: Literal["H1", "M5", "M1"] | None = Field(
         default=None,
         description=(
-            "Timeframe of the fractal the zone was extended to: 'H1' when the impulse "
-            "origin is itself an H1 fractal, 'M5' when the H1 origin is only a wick and "
-            "the precise fractal was found by dropping to M5."
+            "Timeframe the impulse-origin was resolved on. The zone is anchored to the "
+            "base of its final impulse leg — the tight rising-lows (demand) / "
+            "falling-highs (supply) staircase — found by drilling to 'M1'."
         ),
     )
 

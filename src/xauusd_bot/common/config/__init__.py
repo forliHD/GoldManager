@@ -273,23 +273,33 @@ class Settings(BaseSettings):
     fvg_extend_to_fractal: bool = Field(
         default=True,
         description=(
-            "Anchor each H1 demand/supply FVG to the fractal that launched the impulse: "
-            "extend the zone bottom (demand) / top (supply) to the H1 origin swing, or — "
-            "when the H1 origin is only a wick — drop to M5 and extend to the M5 fractal "
-            "(strategy author's zone methodology). False = raw FVG gap only."
+            "Anchor each H1 demand/supply FVG to the base of its final impulse leg — the "
+            "tight rising-lows (demand) / falling-highs (supply) staircase found by "
+            "drilling to M1 — and extend the zone bottom/top to it (strategy author's "
+            "zone methodology). False = raw FVG gap only."
         ),
     )
     fvg_extension_fractal_n: int = Field(
         default=2,
         ge=1,
-        description="N-bar fractal period used to locate the impulse-origin swing for zone extension.",
+        description="N-bar M1 fractal period used to locate the impulse-leg swings for zone extension.",
     )
     fvg_extension_max_atr: float = Field(
         default=2.0,
         ge=0,
         description=(
-            "Cap on how far a zone may be extended to its origin fractal, in H1-ATR "
-            "multiples (guards against absurd zones). 0 = uncapped."
+            "Hard safety cap on how far a zone may be extended to its leg base, in H1-ATR "
+            "multiples (backstop against absurd zones). 0 = uncapped."
+        ),
+    )
+    fvg_leg_step_atr: float = Field(
+        default=0.5,
+        ge=0,
+        description=(
+            "Max gap between consecutive staircase swings (in H1-ATR multiples) before a "
+            "LEG BOUNDARY is declared and the walk stops. This is what keeps multi-leg "
+            "moves from dragging the zone to the absolute bottom (the 'too-large zone' "
+            "problem). Smaller = tighter zones."
         ),
     )
     stream_block_ms: int = Field(

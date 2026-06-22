@@ -7,7 +7,11 @@ from decimal import Decimal
 
 from xauusd_bot.common.schemas.features import FVGStatus, FVGType, FVGZone
 from xauusd_bot.connectors.schemas import Bar
-from xauusd_bot.features.fvg import FVGEngine, _extend_zones_to_fractal_origin
+from xauusd_bot.features.fvg import (
+    FVGEngine,
+    _extend_zones_to_fractal_origin,
+    _final_leg_base,
+)
 
 
 def _bar(time: datetime, o: float, h: float, low: float, c: float, tv: int = 100) -> Bar:
@@ -272,7 +276,7 @@ def test_top_zones_limited_to_three() -> None:
         assert a.rank_score >= b.rank_score
 
 
-# ---------------------------------------------------------------- M5-fractal zone extension
+# ---------------------------------------------------------------- leg-base zone extension
 
 
 _H = timedelta(hours=1)
@@ -310,143 +314,177 @@ def _supply_zone(created_at: datetime, bottom: float, top: float) -> FVGZone:
     )
 
 
-def _bullish_h1_wick_origin() -> list[Bar]:
-    """H1 bars where the demand-origin candle (idx2) is NOT a fractal low.
+def _h1_window() -> list[Bar]:
+    """4 hourly H1 bars; a zone created_at idx 2 → impulse window = [idx0, idx3)."""
 
-    idx1 dips to 4180 (below idx2's 4181), so idx2 is not a 2-bar fractal low →
-    the engine must drop to M5 to find the origin fractal.
+    return [_h1(_EXT_BASE + i * _H, 4195.0, 4185.0) for i in range(4)]
+
+
+def _m1_flat(
+    n: int,
+    *,
+    lows: dict[int, float] | None = None,
+    highs: dict[int, float] | None = None,
+    base_low: float = 4188.0,
+    base_high: float = 4189.0,
+) -> list[Bar]:
+    """M1 bars on a flat baseline with explicit lows/highs at given indices.
+
+    Indices not in ``lows``/``highs`` get the (flat) baseline, so the explicit
+    points stand out as fractal swing lows/highs (their ±n neighbours are flat).
     """
 
-    return [
-        _h1(_EXT_BASE + 0 * _H, 4185, 4184),  # idx0
-        _h1(_EXT_BASE + 1 * _H, 4184, 4180),  # idx1 (lower low → idx2 not a fractal)
-        _h1(_EXT_BASE + 2 * _H, 4182.21, 4181),  # idx2 = b0, high=zone.bottom
-        _h1(_EXT_BASE + 3 * _H, 4190, 4181.5),  # idx3 = b1
-        _h1(_EXT_BASE + 4 * _H, 4195, 4191.26),  # idx4 = b2 (gap), low=zone.top
-        _h1(_EXT_BASE + 5 * _H, 4196, 4193),  # idx5
-    ]
-
-
-def _m5_with_low_fractal(low_price: float, at_k: int = 10) -> list[Bar]:
-    """24 M5 bars across the [idx2, idx4) window; one fractal low at ``low_price``."""
-
+    lows = lows or {}
+    highs = highs or {}
     bars: list[Bar] = []
-    for k in range(24):
-        t = _EXT_BASE + 2 * _H + timedelta(minutes=5 * k)
-        low = low_price if k == at_k else 4185.0
-        bars.append(_bar(t, low + 1, low + 2, low, low + 1))
+    for i in range(n):
+        t = _EXT_BASE + timedelta(minutes=i)
+        lo = lows.get(i, base_low)
+        hi = highs.get(i, base_high)
+        if hi <= lo:
+            hi = lo + 1.0
+        mid = round((lo + hi) / 2, 2)
+        bars.append(_bar(t, mid, hi, lo, mid))
     return bars
 
 
-def test_extension_bullish_drops_to_m5_when_h1_origin_is_wick() -> None:
-    """Josh's rule: H1 origin is only a wick (no fractal) → extend to the M5 fractal."""
+# ---------------------------------------------------------------- _final_leg_base
 
-    h1_bars = _bullish_h1_wick_origin()
-    m5_bars = _m5_with_low_fractal(4179.4)
-    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+
+def test_final_leg_base_low_stops_at_leg_boundary() -> None:
+    """The base is the lowest of the FINAL tight rising-lows run, not the deep low."""
+
+    # chronological swing lows: a deep prior leg (4165) then a tight staircase.
+    lows = [(0, 4165.0), (50, 4179.4), (60, 4180.5), (70, 4181.5)]
+    assert _final_leg_base(lows, kind="low", max_step=5.0) == 4179.4
+    # A generous step swallows the deep leg too.
+    assert _final_leg_base(lows, kind="low", max_step=20.0) == 4165.0
+
+
+def test_final_leg_base_high_mirror() -> None:
+    highs = [(0, 4221.0), (50, 4200.3), (60, 4199.0), (70, 4198.0)]
+    assert _final_leg_base(highs, kind="high", max_step=5.0) == 4200.3
+    assert _final_leg_base(highs, kind="high", max_step=30.0) == 4221.0
+
+
+def test_final_leg_base_empty_and_single() -> None:
+    assert _final_leg_base([], kind="low", max_step=5.0) is None
+    assert _final_leg_base([(3, 4180.0)], kind="low", max_step=5.0) == 4180.0
+
+
+# ---------------------------------------------------------------- extension on M1
+
+
+def test_extension_bullish_anchors_to_final_leg_not_deep_low() -> None:
+    """The too-large-zone fix: extend to the tight rising-lows base, not the deep leg."""
+
+    h1_bars = _h1_window()
+    # Deep prior leg low at idx 60 (4165); tight staircase 4179.4/4180.5/4181.5.
+    m1_bars = _m1_flat(180, lows={30: 4165.0, 90: 4179.4, 100: 4180.5, 110: 4181.5})
+    zone = _demand_zone(h1_bars[2].time, bottom=4182.21, top=4191.26)
     out = _extend_zones_to_fractal_origin(
-        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+        [zone], h1_bars, m1_bars, fractal_n=2, leg_step=5.0, max_extension=None
     )
     z = out[0]
-    assert z.extension_tf == "M5"
-    assert z.extended_bottom == 4179.4
+    assert z.extension_tf == "M1"
+    assert z.extended_bottom == 4179.4  # NOT the deep 4165
     assert z.extended_top is None
-    # Raw FVG edges are untouched.
-    assert z.bottom == 4182.21
-    assert z.top == 4191.26
+    assert z.bottom == 4182.21  # raw FVG edge untouched
 
 
-def test_extension_bullish_uses_h1_fractal_when_origin_is_a_swing() -> None:
-    """When the H1 origin candle IS a fractal low, extend to it (no M5 drilldown)."""
+def test_extension_ignores_post_breakout_gap_candle() -> None:
+    """Swing lows in the gap candle b2 (price already broken away) must be ignored.
 
-    h1_bars = [
-        _h1(_EXT_BASE + 0 * _H, 4185, 4185),
-        _h1(_EXT_BASE + 1 * _H, 4184, 4184),
-        _h1(_EXT_BASE + 2 * _H, 4182.21, 4180),  # idx2 = b0, clean fractal low 4180
-        _h1(_EXT_BASE + 3 * _H, 4190, 4181),  # idx3 = b1
-        _h1(_EXT_BASE + 4 * _H, 4195, 4191.26),  # idx4 = b2
-        _h1(_EXT_BASE + 5 * _H, 4196, 4193),
-    ]
-    # M5 has an even deeper fractal, but the H1 path takes priority.
-    m5_bars = _m5_with_low_fractal(4179.4)
-    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+    Regression: anchoring the leg base on the *most recent* swing low while the
+    window still included b2 picked a swing low ABOVE the impulse (price had
+    already run up), corrupting the base. The window must end at b2.time.
+    """
+
+    h1_bars = _h1_window()
+    # Tight staircase in [b0,b2) → base 4179.4; plus high swing lows in the GAP
+    # candle region (minutes 130-150, i.e. >= created_at) that must be excluded.
+    m1_bars = _m1_flat(
+        180,
+        lows={90: 4179.4, 100: 4180.5, 110: 4181.5, 130: 4192.0, 140: 4193.0, 150: 4194.0},
+    )
+    zone = _demand_zone(h1_bars[2].time, bottom=4182.21, top=4191.26)
     out = _extend_zones_to_fractal_origin(
-        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+        [zone], h1_bars, m1_bars, fractal_n=2, leg_step=5.0, max_extension=None
+    )
+    assert out[0].extended_bottom == 4179.4  # not corrupted by the 4192+ gap-candle lows
+
+
+def test_extension_bullish_includes_deep_leg_with_large_leg_step() -> None:
+    """A looser leg_step lets the walk cross into the deeper leg."""
+
+    h1_bars = _h1_window()
+    m1_bars = _m1_flat(180, lows={30: 4165.0, 90: 4179.4, 100: 4180.5, 110: 4181.5})
+    zone = _demand_zone(h1_bars[2].time, bottom=4182.21, top=4191.26)
+    out = _extend_zones_to_fractal_origin(
+        [zone], h1_bars, m1_bars, fractal_n=2, leg_step=20.0, max_extension=None
+    )
+    assert out[0].extended_bottom == 4165.0
+
+
+def test_extension_bearish_anchors_to_final_leg() -> None:
+    h1_bars = _h1_window()
+    m1_bars = _m1_flat(
+        180,
+        highs={30: 4221.0, 90: 4200.3, 100: 4199.0, 110: 4198.0},
+        base_low=4188.0,
+        base_high=4193.0,
+    )
+    zone = _supply_zone(h1_bars[2].time, bottom=4195.0, top=4197.0)
+    out = _extend_zones_to_fractal_origin(
+        [zone], h1_bars, m1_bars, fractal_n=2, leg_step=5.0, max_extension=None
     )
     z = out[0]
-    assert z.extension_tf == "H1"
-    assert z.extended_bottom == 4180.0
-
-
-def test_extension_bearish_drops_to_m5() -> None:
-    """Mirror for supply: extend the zone top UP to the M5 fractal high."""
-
-    h1_bars = [
-        _h1(_EXT_BASE + 0 * _H, 4196, 4194),  # idx0
-        _h1(_EXT_BASE + 1 * _H, 4208, 4200),  # idx1 (higher high → idx2 not a fractal)
-        _h1(_EXT_BASE + 2 * _H, 4205, 4200),  # idx2 = b0, low=zone.top
-        _h1(_EXT_BASE + 3 * _H, 4203, 4196),  # idx3 = b1 (down displacement)
-        _h1(_EXT_BASE + 4 * _H, 4195, 4193),  # idx4 = b2 (gap), high=zone.bottom
-        _h1(_EXT_BASE + 5 * _H, 4194, 4192),  # idx5
-    ]
-    m5_bars: list[Bar] = []
-    for k in range(24):
-        t = _EXT_BASE + 2 * _H + timedelta(minutes=5 * k)
-        high = 4221.0 if k == 10 else 4196.0
-        m5_bars.append(_bar(t, high - 2, high, high - 3, high - 2))
-    zone = _supply_zone(h1_bars[4].time, bottom=4195.0, top=4200.0)
-    out = _extend_zones_to_fractal_origin(
-        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
-    )
-    z = out[0]
-    assert z.extension_tf == "M5"
-    assert z.extended_top == 4221.0
+    assert z.extension_tf == "M1"
+    assert z.extended_top == 4200.3  # NOT the deep 4221
     assert z.extended_bottom is None
 
 
-def test_extension_skipped_when_fractal_inside_zone() -> None:
-    """No extension when the origin fractal isn't below (demand) the FVG bottom."""
+def test_extension_skipped_when_leg_base_inside_zone() -> None:
+    """No extension when the leg base isn't below (demand) the FVG bottom."""
 
-    h1_bars = _bullish_h1_wick_origin()
-    # M5 fractal at 4183 is ABOVE the zone bottom (4182.21) → not an extension.
-    m5_bars = _m5_with_low_fractal(4183.0)
-    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+    h1_bars = _h1_window()
+    # Staircase lows all ABOVE the FVG bottom 4182.21.
+    m1_bars = _m1_flat(180, lows={90: 4183.0, 100: 4184.0, 110: 4185.0}, base_low=4190.0)
+    zone = _demand_zone(h1_bars[2].time, bottom=4182.21, top=4191.26)
     out = _extend_zones_to_fractal_origin(
-        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+        [zone], h1_bars, m1_bars, fractal_n=2, leg_step=5.0, max_extension=None
     )
     assert out[0].extended_bottom is None
     assert out[0].extension_tf is None
 
 
-def test_extension_respects_max_atr_cap() -> None:
-    """An M5 fractal further than max_extension is rejected."""
+def test_extension_respects_max_cap() -> None:
+    """A leg base further than max_extension is rejected."""
 
-    h1_bars = _bullish_h1_wick_origin()
-    m5_bars = _m5_with_low_fractal(4179.4)  # 2.81 points below the bottom
-    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+    h1_bars = _h1_window()
+    m1_bars = _m1_flat(180, lows={90: 4179.4, 100: 4180.5, 110: 4181.5})
+    zone = _demand_zone(h1_bars[2].time, bottom=4182.21, top=4191.26)
     out = _extend_zones_to_fractal_origin(
-        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=1.0
+        [zone], h1_bars, m1_bars, fractal_n=2, leg_step=5.0, max_extension=1.0
     )
-    assert out[0].extended_bottom is None
+    assert out[0].extended_bottom is None  # 2.81 > 1.0 cap
 
 
 def test_extension_leaves_non_h1_zones_untouched() -> None:
-    """Only H1 zones get extended; M5/M1 zones pass through."""
-
-    h1_bars = _bullish_h1_wick_origin()
-    m5_bars = _m5_with_low_fractal(4179.4)
+    h1_bars = _h1_window()
+    m1_bars = _m1_flat(180, lows={90: 4179.4, 100: 4180.5, 110: 4181.5})
     m5_zone = FVGZone(
         tf="M5",
         type=FVGType.BULLISH,
         top=4191.26,
         bottom=4182.21,
         size_points=9.05,
-        created_at=h1_bars[4].time,
+        created_at=h1_bars[2].time,
         age_seconds=0,
         status=FVGStatus.OPEN,
     )
     out = _extend_zones_to_fractal_origin(
-        [m5_zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+        [m5_zone], h1_bars, m1_bars, fractal_n=2, leg_step=5.0, max_extension=None
     )
     assert out[0].extended_bottom is None
     assert out[0].extension_tf is None

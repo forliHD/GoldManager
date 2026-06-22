@@ -50,6 +50,7 @@ class FeaturePipeline:
         fvg_extend_to_fractal: bool = True,
         fvg_extension_fractal_n: int = 2,
         fvg_extension_max_atr: float = 2.0,
+        fvg_leg_step_atr: float = 0.5,
     ) -> None:
         self.session = SessionEngine()
         self.vwap = TripleVWAPEngine()
@@ -58,6 +59,7 @@ class FeaturePipeline:
             extend_to_fractal=fvg_extend_to_fractal,
             extension_fractal_n=fvg_extension_fractal_n,
             extension_max_atr=fvg_extension_max_atr,
+            leg_step_atr=fvg_leg_step_atr,
         )
         self.structure = MarketStructureEngine()
         self.momentum = CandleMomentumEngine()
