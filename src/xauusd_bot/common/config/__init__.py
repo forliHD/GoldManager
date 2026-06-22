@@ -270,6 +270,28 @@ class Settings(BaseSettings):
             "over deep history (~0.7s/80k); the main buffer stays small so FVG doesn't blow up."
         ),
     )
+    fvg_extend_to_fractal: bool = Field(
+        default=True,
+        description=(
+            "Anchor each H1 demand/supply FVG to the fractal that launched the impulse: "
+            "extend the zone bottom (demand) / top (supply) to the H1 origin swing, or — "
+            "when the H1 origin is only a wick — drop to M5 and extend to the M5 fractal "
+            "(strategy author's zone methodology). False = raw FVG gap only."
+        ),
+    )
+    fvg_extension_fractal_n: int = Field(
+        default=2,
+        ge=1,
+        description="N-bar fractal period used to locate the impulse-origin swing for zone extension.",
+    )
+    fvg_extension_max_atr: float = Field(
+        default=2.0,
+        ge=0,
+        description=(
+            "Cap on how far a zone may be extended to its origin fractal, in H1-ATR "
+            "multiples (guards against absurd zones). 0 = uncapped."
+        ),
+    )
     stream_block_ms: int = Field(
         default=1000, ge=1, description="XREADGROUP block timeout (ms) for service consumers."
     )

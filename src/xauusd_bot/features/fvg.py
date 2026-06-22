@@ -178,6 +178,123 @@ def _refine_mitigation(
     return out
 
 
+def _fractal_extrema(
+    bars: list[Bar], n: int, kind: Literal["low", "high"]
+) -> list[tuple[int, float]]:
+    """N-bar fractal swing lows/highs → list of ``(index, price)``.
+
+    A swing low at index ``i`` requires the ``n`` bars on each side to have a
+    strictly higher low (mirror for highs). Same definition the structure and
+    fib engines use.
+    """
+
+    out: list[tuple[int, float]] = []
+    for i in range(n, len(bars) - n):
+        if kind == "low":
+            low = float(bars[i].low)
+            if all(float(bars[i - j].low) > low for j in range(1, n + 1)) and all(
+                float(bars[i + j].low) > low for j in range(1, n + 1)
+            ):
+                out.append((i, low))
+        else:
+            h = float(bars[i].high)
+            if all(float(bars[i - j].high) < h for j in range(1, n + 1)) and all(
+                float(bars[i + j].high) < h for j in range(1, n + 1)
+            ):
+                out.append((i, h))
+    return out
+
+
+def _extend_zones_to_fractal_origin(
+    zones: list[FVGZone],
+    h1_bars: list[Bar],
+    m5_bars: list[Bar],
+    *,
+    fractal_n: int,
+    max_extension: float | None,
+) -> list[FVGZone]:
+    """Anchor each H1 demand/supply zone to the fractal that launched the impulse.
+
+    The strategy author's zone methodology: the raw FVG gap (``b0.high..b2.low``)
+    is a conservative bound, but the *true* demand/supply zone reaches the swing
+    point the impulse originated from. For each H1 FVG, the origin window is the
+    two H1 candles before the gap is confirmed (``b0``, ``b1``):
+
+    * Bullish (demand): if the origin low is itself an H1 fractal swing below the
+      FVG bottom → extend ``extended_bottom`` to it (``extension_tf='H1'``).
+      Otherwise the H1 origin is "just a wick" (no fractal) → drop to M5, take the
+      lowest M5 fractal swing low in the window, extend to it (``extension_tf='M5'``).
+    * Bearish (supply): mirror — extend ``extended_top`` up to the origin fractal
+      high (H1, else the highest M5 fractal high in the window).
+
+    The extension only applies when it actually deepens the zone and stays within
+    ``max_extension`` price units (``None`` = uncapped). Non-H1 zones pass through
+    untouched.
+    """
+
+    if not h1_bars:
+        return zones
+
+    h1_time_idx = {b.time: i for i, b in enumerate(h1_bars)}
+    h1_low_idx = {i for i, _ in _fractal_extrema(h1_bars, fractal_n, "low")}
+    h1_high_idx = {i for i, _ in _fractal_extrema(h1_bars, fractal_n, "high")}
+
+    out: list[FVGZone] = []
+    for z in zones:
+        if z.tf != "H1":
+            out.append(z)
+            continue
+        b2_idx = h1_time_idx.get(z.created_at)
+        if b2_idx is None or b2_idx < 2:
+            out.append(z)
+            continue
+        i0, i1 = b2_idx - 2, b2_idx - 1
+        b0, b1 = h1_bars[i0], h1_bars[i1]
+        win_start, win_end = b0.time, h1_bars[b2_idx].time  # [b0, b1] candles
+        m5_win = [b for b in m5_bars if win_start <= b.time < win_end]
+
+        if z.type == FVGType.BULLISH:
+            origin_idx = i0 if float(b0.low) <= float(b1.low) else i1
+            new_bottom: float | None = None
+            ext_tf: str | None = None
+            if origin_idx in h1_low_idx and float(h1_bars[origin_idx].low) < z.bottom:
+                new_bottom, ext_tf = float(h1_bars[origin_idx].low), "H1"
+            else:
+                m5_lows = [p for _, p in _fractal_extrema(m5_win, fractal_n, "low")]
+                if m5_lows and min(m5_lows) < z.bottom:
+                    new_bottom, ext_tf = min(m5_lows), "M5"
+            if new_bottom is not None and (
+                max_extension is None or (z.bottom - new_bottom) <= max_extension
+            ):
+                out.append(
+                    z.model_copy(
+                        update={"extended_bottom": new_bottom, "extension_tf": ext_tf}
+                    )
+                )
+                continue
+
+        elif z.type == FVGType.BEARISH:
+            origin_idx = i0 if float(b0.high) >= float(b1.high) else i1
+            new_top: float | None = None
+            ext_tf = None
+            if origin_idx in h1_high_idx and float(h1_bars[origin_idx].high) > z.top:
+                new_top, ext_tf = float(h1_bars[origin_idx].high), "H1"
+            else:
+                m5_highs = [p for _, p in _fractal_extrema(m5_win, fractal_n, "high")]
+                if m5_highs and max(m5_highs) > z.top:
+                    new_top, ext_tf = max(m5_highs), "M5"
+            if new_top is not None and (
+                max_extension is None or (new_top - z.top) <= max_extension
+            ):
+                out.append(
+                    z.model_copy(update={"extended_top": new_top, "extension_tf": ext_tf})
+                )
+                continue
+
+        out.append(z)
+    return out
+
+
 def _rank(zones: list[FVGZone]) -> list[FVGZone]:
     """Composite rank: size × freshness × displacement, sorted desc."""
 
@@ -198,8 +315,18 @@ def _rank(zones: list[FVGZone]) -> list[FVGZone]:
 class FVGEngine:
     """Compute FVG zones for the configured timeframes."""
 
-    def __init__(self, timeframes: tuple[Literal["H1", "M5", "M1"], ...] = ("H1", "M5", "M1")) -> None:
+    def __init__(
+        self,
+        timeframes: tuple[Literal["H1", "M5", "M1"], ...] = ("H1", "M5", "M1"),
+        *,
+        extend_to_fractal: bool = True,
+        extension_fractal_n: int = 2,
+        extension_max_atr: float = 2.0,
+    ) -> None:
         self._tfs = timeframes
+        self._extend = extend_to_fractal
+        self._ext_n = extension_fractal_n
+        self._ext_max_atr = extension_max_atr
 
     def compute(self, bars: Iterable[Bar], current_t: datetime) -> FVGOutput:
         bars_m1 = sorted([b for b in bars if b.time <= current_t], key=lambda b: b.time)
@@ -211,14 +338,18 @@ class FVGEngine:
         atr_val = compute_atr(df, period=14)
 
         all_zones: list[FVGZone] = []
+        h1_bars: list[Bar] = []
+        m5_bars: list[Bar] = []
         # Build higher-TF bars from M1.
         for tf in self._tfs:
             if tf == "M1":
                 tf_bars = bars_m1
             elif tf == "M5":
                 tf_bars = round_bars_by_time(bars_m1, 5)
+                m5_bars = tf_bars
             elif tf == "H1":
                 tf_bars = round_bars_by_time(bars_m1, 60)
+                h1_bars = tf_bars
             else:
                 continue
             if not tf_bars:
@@ -226,6 +357,23 @@ class FVGEngine:
             raw_zones = _detect_fvgs_on_series(tf_bars, tf, atr_val, current_t)
             refined = _refine_mitigation(raw_zones, tf_bars)
             all_zones.extend(refined)
+
+        # Anchor H1 zones to their impulse-origin fractal (H1, else drop to M5).
+        # Needs both H1 and M5 series; skipped if either TF isn't configured.
+        if self._extend and h1_bars and m5_bars:
+            atr_h1 = compute_atr(bars_to_df(h1_bars), period=14)
+            max_ext = (
+                self._ext_max_atr * atr_h1
+                if (self._ext_max_atr > 0 and atr_h1 and atr_h1 > 0)
+                else None
+            )
+            all_zones = _extend_zones_to_fractal_origin(
+                all_zones,
+                h1_bars,
+                m5_bars,
+                fractal_n=self._ext_n,
+                max_extension=max_ext,
+            )
 
         ranked = _rank(all_zones)
         return FVGOutput(zones=ranked, top_zones=ranked[:3])

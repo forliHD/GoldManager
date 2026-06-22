@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from xauusd_bot.common.schemas.features import FVGStatus, FVGType
+from xauusd_bot.common.schemas.features import FVGStatus, FVGType, FVGZone
 from xauusd_bot.connectors.schemas import Bar
-from xauusd_bot.features.fvg import FVGEngine
+from xauusd_bot.features.fvg import FVGEngine, _extend_zones_to_fractal_origin
 
 
 def _bar(time: datetime, o: float, h: float, low: float, c: float, tv: int = 100) -> Bar:
@@ -270,6 +270,198 @@ def test_top_zones_limited_to_three() -> None:
     # And zones[0] (highest rank) has rank_score >= zones[1] >= ...
     for a, b in zip(out.zones, out.zones[1:], strict=False):
         assert a.rank_score >= b.rank_score
+
+
+# ---------------------------------------------------------------- M5-fractal zone extension
+
+
+_H = timedelta(hours=1)
+_EXT_BASE = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+
+
+def _h1(time: datetime, h: float, low: float) -> Bar:
+    mid = round((h + low) / 2, 2)
+    return _bar(time, mid, h, low, mid)
+
+
+def _demand_zone(created_at: datetime, bottom: float, top: float) -> FVGZone:
+    return FVGZone(
+        tf="H1",
+        type=FVGType.BULLISH,
+        top=top,
+        bottom=bottom,
+        size_points=round(top - bottom, 2),
+        created_at=created_at,
+        age_seconds=0,
+        status=FVGStatus.OPEN,
+    )
+
+
+def _supply_zone(created_at: datetime, bottom: float, top: float) -> FVGZone:
+    return FVGZone(
+        tf="H1",
+        type=FVGType.BEARISH,
+        top=top,
+        bottom=bottom,
+        size_points=round(top - bottom, 2),
+        created_at=created_at,
+        age_seconds=0,
+        status=FVGStatus.OPEN,
+    )
+
+
+def _bullish_h1_wick_origin() -> list[Bar]:
+    """H1 bars where the demand-origin candle (idx2) is NOT a fractal low.
+
+    idx1 dips to 4180 (below idx2's 4181), so idx2 is not a 2-bar fractal low →
+    the engine must drop to M5 to find the origin fractal.
+    """
+
+    return [
+        _h1(_EXT_BASE + 0 * _H, 4185, 4184),  # idx0
+        _h1(_EXT_BASE + 1 * _H, 4184, 4180),  # idx1 (lower low → idx2 not a fractal)
+        _h1(_EXT_BASE + 2 * _H, 4182.21, 4181),  # idx2 = b0, high=zone.bottom
+        _h1(_EXT_BASE + 3 * _H, 4190, 4181.5),  # idx3 = b1
+        _h1(_EXT_BASE + 4 * _H, 4195, 4191.26),  # idx4 = b2 (gap), low=zone.top
+        _h1(_EXT_BASE + 5 * _H, 4196, 4193),  # idx5
+    ]
+
+
+def _m5_with_low_fractal(low_price: float, at_k: int = 10) -> list[Bar]:
+    """24 M5 bars across the [idx2, idx4) window; one fractal low at ``low_price``."""
+
+    bars: list[Bar] = []
+    for k in range(24):
+        t = _EXT_BASE + 2 * _H + timedelta(minutes=5 * k)
+        low = low_price if k == at_k else 4185.0
+        bars.append(_bar(t, low + 1, low + 2, low, low + 1))
+    return bars
+
+
+def test_extension_bullish_drops_to_m5_when_h1_origin_is_wick() -> None:
+    """Josh's rule: H1 origin is only a wick (no fractal) → extend to the M5 fractal."""
+
+    h1_bars = _bullish_h1_wick_origin()
+    m5_bars = _m5_with_low_fractal(4179.4)
+    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+    out = _extend_zones_to_fractal_origin(
+        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+    )
+    z = out[0]
+    assert z.extension_tf == "M5"
+    assert z.extended_bottom == 4179.4
+    assert z.extended_top is None
+    # Raw FVG edges are untouched.
+    assert z.bottom == 4182.21
+    assert z.top == 4191.26
+
+
+def test_extension_bullish_uses_h1_fractal_when_origin_is_a_swing() -> None:
+    """When the H1 origin candle IS a fractal low, extend to it (no M5 drilldown)."""
+
+    h1_bars = [
+        _h1(_EXT_BASE + 0 * _H, 4185, 4185),
+        _h1(_EXT_BASE + 1 * _H, 4184, 4184),
+        _h1(_EXT_BASE + 2 * _H, 4182.21, 4180),  # idx2 = b0, clean fractal low 4180
+        _h1(_EXT_BASE + 3 * _H, 4190, 4181),  # idx3 = b1
+        _h1(_EXT_BASE + 4 * _H, 4195, 4191.26),  # idx4 = b2
+        _h1(_EXT_BASE + 5 * _H, 4196, 4193),
+    ]
+    # M5 has an even deeper fractal, but the H1 path takes priority.
+    m5_bars = _m5_with_low_fractal(4179.4)
+    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+    out = _extend_zones_to_fractal_origin(
+        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+    )
+    z = out[0]
+    assert z.extension_tf == "H1"
+    assert z.extended_bottom == 4180.0
+
+
+def test_extension_bearish_drops_to_m5() -> None:
+    """Mirror for supply: extend the zone top UP to the M5 fractal high."""
+
+    h1_bars = [
+        _h1(_EXT_BASE + 0 * _H, 4196, 4194),  # idx0
+        _h1(_EXT_BASE + 1 * _H, 4208, 4200),  # idx1 (higher high → idx2 not a fractal)
+        _h1(_EXT_BASE + 2 * _H, 4205, 4200),  # idx2 = b0, low=zone.top
+        _h1(_EXT_BASE + 3 * _H, 4203, 4196),  # idx3 = b1 (down displacement)
+        _h1(_EXT_BASE + 4 * _H, 4195, 4193),  # idx4 = b2 (gap), high=zone.bottom
+        _h1(_EXT_BASE + 5 * _H, 4194, 4192),  # idx5
+    ]
+    m5_bars: list[Bar] = []
+    for k in range(24):
+        t = _EXT_BASE + 2 * _H + timedelta(minutes=5 * k)
+        high = 4221.0 if k == 10 else 4196.0
+        m5_bars.append(_bar(t, high - 2, high, high - 3, high - 2))
+    zone = _supply_zone(h1_bars[4].time, bottom=4195.0, top=4200.0)
+    out = _extend_zones_to_fractal_origin(
+        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+    )
+    z = out[0]
+    assert z.extension_tf == "M5"
+    assert z.extended_top == 4221.0
+    assert z.extended_bottom is None
+
+
+def test_extension_skipped_when_fractal_inside_zone() -> None:
+    """No extension when the origin fractal isn't below (demand) the FVG bottom."""
+
+    h1_bars = _bullish_h1_wick_origin()
+    # M5 fractal at 4183 is ABOVE the zone bottom (4182.21) → not an extension.
+    m5_bars = _m5_with_low_fractal(4183.0)
+    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+    out = _extend_zones_to_fractal_origin(
+        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+    )
+    assert out[0].extended_bottom is None
+    assert out[0].extension_tf is None
+
+
+def test_extension_respects_max_atr_cap() -> None:
+    """An M5 fractal further than max_extension is rejected."""
+
+    h1_bars = _bullish_h1_wick_origin()
+    m5_bars = _m5_with_low_fractal(4179.4)  # 2.81 points below the bottom
+    zone = _demand_zone(h1_bars[4].time, bottom=4182.21, top=4191.26)
+    out = _extend_zones_to_fractal_origin(
+        [zone], h1_bars, m5_bars, fractal_n=2, max_extension=1.0
+    )
+    assert out[0].extended_bottom is None
+
+
+def test_extension_leaves_non_h1_zones_untouched() -> None:
+    """Only H1 zones get extended; M5/M1 zones pass through."""
+
+    h1_bars = _bullish_h1_wick_origin()
+    m5_bars = _m5_with_low_fractal(4179.4)
+    m5_zone = FVGZone(
+        tf="M5",
+        type=FVGType.BULLISH,
+        top=4191.26,
+        bottom=4182.21,
+        size_points=9.05,
+        created_at=h1_bars[4].time,
+        age_seconds=0,
+        status=FVGStatus.OPEN,
+    )
+    out = _extend_zones_to_fractal_origin(
+        [m5_zone], h1_bars, m5_bars, fractal_n=2, max_extension=None
+    )
+    assert out[0].extended_bottom is None
+    assert out[0].extension_tf is None
+
+
+def test_extension_can_be_disabled_on_engine() -> None:
+    """extend_to_fractal=False leaves all zones with raw FVG edges."""
+
+    eng = FVGEngine(extend_to_fractal=False)
+    bars = _bullish_fvg_bars()
+    out = eng.compute(bars, bars[-1].time + timedelta(minutes=1))
+    for z in out.zones:
+        assert z.extended_bottom is None
+        assert z.extended_top is None
+        assert z.extension_tf is None
 
 
 def test_rank_score_demotes_mitigated_zones() -> None:

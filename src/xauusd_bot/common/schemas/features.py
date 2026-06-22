@@ -242,6 +242,32 @@ class FVGZone(BaseModel):
     status: FVGStatus
     mitigation_pct: float = Field(default=0.0, ge=0, le=100, description="How much of the zone has been filled (0..100).")
     rank_score: float = Field(default=0.0, ge=0, description="Composite rank (size × freshness × displacement).")
+    extended_bottom: float | None = Field(
+        default=None,
+        description=(
+            "Demand zones (bullish H1 FVG): the zone bottom extended DOWN to the "
+            "impulse-origin fractal — the H1 swing low if the origin candle forms a "
+            "fractal, otherwise the M5 swing low that launched the impulse. None = no "
+            "extension; the raw FVG bottom is the zone edge. The effective demand range "
+            "is [extended_bottom or bottom, top]."
+        ),
+    )
+    extended_top: float | None = Field(
+        default=None,
+        description=(
+            "Supply zones (bearish H1 FVG): the zone top extended UP to the "
+            "impulse-origin fractal (H1 swing high, else the M5 swing high). None = no "
+            "extension. The effective supply range is [bottom, extended_top or top]."
+        ),
+    )
+    extension_tf: Literal["H1", "M5"] | None = Field(
+        default=None,
+        description=(
+            "Timeframe of the fractal the zone was extended to: 'H1' when the impulse "
+            "origin is itself an H1 fractal, 'M5' when the H1 origin is only a wick and "
+            "the precise fractal was found by dropping to M5."
+        ),
+    )
 
 
 class FVGOutput(BaseModel):

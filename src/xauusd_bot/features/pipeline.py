@@ -43,11 +43,22 @@ class FeaturePipeline:
     reuse for every bar.
     """
 
-    def __init__(self, *, news_provider: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        news_provider: object | None = None,
+        fvg_extend_to_fractal: bool = True,
+        fvg_extension_fractal_n: int = 2,
+        fvg_extension_max_atr: float = 2.0,
+    ) -> None:
         self.session = SessionEngine()
         self.vwap = TripleVWAPEngine()
         self.volume_range = FixedVolumeRangeEngine()
-        self.fvg = FVGEngine()
+        self.fvg = FVGEngine(
+            extend_to_fractal=fvg_extend_to_fractal,
+            extension_fractal_n=fvg_extension_fractal_n,
+            extension_max_atr=fvg_extension_max_atr,
+        )
         self.structure = MarketStructureEngine()
         self.momentum = CandleMomentumEngine()
         self.volume_trend = VolumeTrendEngine()

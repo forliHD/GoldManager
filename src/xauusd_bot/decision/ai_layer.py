@@ -206,6 +206,21 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                     "displacement_atr": _r(z.displacement_atr, 3),
                     "status": z.status.value,
                     "rank_score": _r(z.rank_score, 3),
+                    **(
+                        {"extended_bottom": _r(z.extended_bottom)}
+                        if z.extended_bottom is not None
+                        else {}
+                    ),
+                    **(
+                        {"extended_top": _r(z.extended_top)}
+                        if z.extended_top is not None
+                        else {}
+                    ),
+                    **(
+                        {"extension_tf": z.extension_tf}
+                        if z.extension_tf is not None
+                        else {}
+                    ),
                 }
                 for z in ranked
             ],
@@ -353,7 +368,9 @@ def _zone_within_snapshot(
     * If only one bound is set: that bound must be inside some zone.
     * If both bounds are set: at least one of them must be inside
       some zone.
-    * "Inside" = ``zone.bottom <= price <= zone.top``.
+    * "Inside" = ``low <= price <= high`` where the zone's effective edges
+      honour the M5-fractal extension: a demand zone reaches down to
+      ``extended_bottom`` and a supply zone up to ``extended_top`` when set.
     """
 
     if price_min is None and price_max is None:
@@ -363,9 +380,11 @@ def _zone_within_snapshot(
         # entry_zone. This is a violation.
         return False
     for zone in bundle.fvg.zones:
-        if price_min is not None and zone.bottom <= price_min <= zone.top:
+        low = zone.extended_bottom if zone.extended_bottom is not None else zone.bottom
+        high = zone.extended_top if zone.extended_top is not None else zone.top
+        if price_min is not None and low <= price_min <= high:
             return True
-        if price_max is not None and zone.bottom <= price_max <= zone.top:
+        if price_max is not None and low <= price_max <= high:
             return True
     return False
 

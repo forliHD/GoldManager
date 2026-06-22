@@ -414,6 +414,28 @@
       const bull = (z.type === 'bullish');
       const partial = (z.status === 'partially_mitigated');
       const col = bull ? '63,185,80' : '248,81,73';
+      // M5-fractal extension: the zone reaches past the raw FVG gap to the
+      // impulse-origin fractal. Demand → extend the bottom down to extended_bottom;
+      // supply → extend the top up to extended_top. Shade it lighter + dashed so the
+      // raw gap and its extension are distinguishable.
+      const extPx = bull
+        ? (z.extended_bottom != null ? Number(z.extended_bottom) : null)
+        : (z.extended_top != null ? Number(z.extended_top) : null);
+      const yExt = (extPx != null) ? series.priceToCoordinate(extPx) : null;
+      if (yExt != null) {
+        const edge = bull ? yBot : yTop;          // the raw FVG edge we extend from
+        const eTop = Math.min(edge, yExt), eh = Math.max(2, Math.abs(yExt - edge));
+        const ebox = document.createElement('div');
+        ebox.className = 'fvg-box fvg-ext';
+        ebox.style.left = xl + 'px';
+        ebox.style.top = eTop + 'px';
+        ebox.style.width = Math.max(2, paneW - xl) + 'px';
+        ebox.style.height = eh + 'px';
+        ebox.style.background = `rgba(${col},0.05)`;
+        const estyle = `1px dashed rgba(${col},0.6)`;
+        ebox.style.borderTop = estyle; ebox.style.borderBottom = estyle;
+        layer.appendChild(ebox);
+      }
       const box = document.createElement('div');
       box.className = 'fvg-box';
       box.style.left = xl + 'px';
@@ -425,7 +447,8 @@
       box.style.borderTop = bstyle; box.style.borderBottom = bstyle;
       const tag = document.createElement('div');
       tag.className = 'fvg-tag';
-      tag.textContent = `FVG ${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}`;
+      const extTag = z.extension_tf ? ` +${z.extension_tf}` : '';
+      tag.textContent = `FVG ${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}${extTag}`;
       tag.style.background = `rgba(${col},0.9)`;
       box.appendChild(tag);
       layer.appendChild(box);

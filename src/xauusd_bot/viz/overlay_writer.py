@@ -110,6 +110,9 @@ def build_overlay_payload(
                 "created_at": z.created_at.isoformat(),
                 "status": z.status.value,
                 "rank_score": z.rank_score,
+                "extended_bottom": z.extended_bottom,
+                "extended_top": z.extended_top,
+                "extension_tf": z.extension_tf,
             }
         )
 
