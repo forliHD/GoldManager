@@ -443,6 +443,19 @@
     const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
     const series = o.vwap_series || {};
     state.vwapLines = state.vwapLines || {};
+    // Bucket the M1 VWAP series onto the CHART's timeframe grid. lightweight-charts
+    // shares ONE time axis across all series — an M1 point between two M5 candles
+    // creates an empty slot and spreads the candles apart. One point per timeframe
+    // bucket (last value wins) keeps the VWAP curve on the candle grid.
+    const tfSec = ({ M1: 60, M5: 300, M15: 900, H1: 3600 })[state.timeframe] || 300;
+    const bucket = (pts) => {
+      const m = new Map();
+      for (const p of (pts || [])) {
+        if (!p || p.value == null) continue;
+        m.set(Math.floor(p.time / tfSec) * tfSec, p.value);
+      }
+      return Array.from(m, ([time, value]) => ({ time, value })).sort((a, b) => a.time - b.time);
+    };
     for (const k of ['utc00', 'utc07', 'utc12']) {
       if (!state.vwapLines[k]) {
         state.vwapLines[k] = state.chart.addLineSeries({
@@ -451,8 +464,7 @@
           crosshairMarkerVisible: false,
         });
       }
-      const data = (series[k] || []).filter(p => p && p.value != null);
-      try { state.vwapLines[k].setData(data); } catch (e) {}
+      try { state.vwapLines[k].setData(bucket(series[k])); } catch (e) {}
     }
     // Volume Profile — LOCKED references only (the tradeable levels).
     // VAH red / VPOC yellow / VAL green. Monthly always; the "daily slot" is
