@@ -43,6 +43,14 @@ dev = [
 # RPyC wire protocols are incompatible. NOTE: install mt5linux with --no-deps
 # (its declared deps include the Windows-only MetaTrader5 package, which cannot
 # install on Linux): `pip install --no-deps mt5linux && pip install -e .[live]`.
+#
+# SECURITY (rpyc GHSA-h5cg-53g7-gqjw, HIGH — RCE via numpy.array server-side,
+# fixed in rpyc 6.0.0): we CANNOT bump to >=6.0.0 yet. mt5linux 1.0.3 (latest)
+# hard-pins rpyc==5.2.3 and the vulnerable side is its bundled *server*; the 6.0.0
+# fix also breaks the __array__/numpy transfer the bridge depends on. Mitigated by
+# binding the bridge to loopback only (not the LAN) — see docs/SECURITY.md. Bump
+# in lockstep with the Dockerfile + scripts/mt5_bridge_up.sh once mt5linux supports
+# rpyc>=6, and verify on the VM.
 live = [
     "rpyc==5.2.3",
     "plumbum>=1.7",

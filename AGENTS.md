@@ -10,8 +10,10 @@
   über Wine-Bridge auf Ubuntu-VM (Prod). Siehe `00_FINAL_PLAN.md` für die
   komplette Spezifikation — dies hier ist die **operative Kurzfassung**.
 - **Stack:** Python 3.11+ (lokal 3.14), pydantic v2, pydantic-settings,
-  pandas, pyarrow, redis, structlog, fastapi, pytest, **rpyc 6.0+**
-  (Live-Connector). Docker: redis, timescaledb, service-images,
+  pandas, pyarrow, redis, structlog, fastapi, pytest, **rpyc==5.2.3**
+  (Live-Connector — auf die mt5linux-Bridge gepinnt; kann wg.
+  GHSA-h5cg-53g7-gqjw noch nicht auf 6.x, siehe `docs/SECURITY.md`).
+  Docker: redis, timescaledb, service-images,
   mt5-terminal (Wine + MT5 + Windows-Python RPyC-Bridge).
 - **Roadmap:** 16 Schritte in `00_FINAL_PLAN.md §9`. Build-Status siehe
   Abschnitt 2 unten.
