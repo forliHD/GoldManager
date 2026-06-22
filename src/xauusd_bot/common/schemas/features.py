@@ -520,6 +520,14 @@ class FeatureSnapshotBundle(BaseModel):
     volume_range: VolumeRangeOutput | None = None
     fvg: FVGOutput | None = None
     structure: MarketStructureOutput | None = None
+    structure_h1: MarketStructureOutput | None = Field(
+        default=None,
+        description=(
+            "Market structure computed on the H1 timeframe — the higher-timeframe BIAS "
+            "(trend, last BOS/CHoCH). `structure` (M5) is the lower-timeframe refinement "
+            "used for entry character and liquidity. Consistent with the H1 fib leg."
+        ),
+    )
     momentum: CandleMomentumOutput | None = None
     liquidity: LiquidityEngineOutput | None = None
     news: NewsContextOutput | None = None

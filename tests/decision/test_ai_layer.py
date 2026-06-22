@@ -37,7 +37,10 @@ from xauusd_bot.common.schemas.features import (
     FVGStatus,
     FVGType,
     FVGZone,
+    MarketStructureOutput,
     NewsContextOutput,
+    StructureEvent,
+    StructureEventType,
 )
 from xauusd_bot.connectors.schemas import AccountInfo
 from xauusd_bot.decision.ai_layer import (
@@ -189,6 +192,47 @@ class TestPayloadConstruction:
         # zone validation) must still return every zone in the bundle.
         bundle = self._bundle_with_n_zones(60)
         assert len(default_zones_provider(bundle)) == 60
+
+    def test_structure_payload_splits_h1_bias_from_m5_entry(self):
+        # The H1 structure (bias) and the M5 structure (entry character) must reach
+        # the LLM as separate sub-objects so it can't confuse a M5-CHoCH for an
+        # H1 trend change.
+        h1 = MarketStructureOutput(
+            swings=[],
+            last_bos=StructureEvent(
+                type=StructureEventType.BOS_DOWN,
+                level=4180.89,
+                time=datetime(2026, 6, 22, 20, 30, tzinfo=UTC),
+                bar_index=10,
+                close=4178.97,
+                distance_atr=1.5,
+            ),
+            last_choch=None,
+            liquidity_pools=[],
+            trend="down",
+            fractal_n=2,
+        )
+        m5 = MarketStructureOutput(
+            swings=[],
+            last_bos=None,
+            last_choch=StructureEvent(
+                type=StructureEventType.CHOCH_UP,
+                level=4181.0,
+                time=datetime(2026, 6, 22, 20, 45, tzinfo=UTC),
+                bar_index=50,
+                close=4182.0,
+                distance_atr=0.8,
+            ),
+            liquidity_pools=[],
+            trend="up",
+            fractal_n=3,
+        )
+        bundle = make_bundle(structure=m5, structure_h1=h1)
+        payload = _bundle_to_payload(bundle)
+        assert payload["structure"]["h1"]["trend"] == "down"
+        assert payload["structure"]["h1"]["last_bos"]["type"] == "bos_down"
+        assert payload["structure"]["ltf_m5"]["trend"] == "up"
+        assert payload["structure"]["ltf_m5"]["last_choch"]["type"] == "choch_up"
 
     @pytest.mark.asyncio
     async def test_strips_account_pii(self):

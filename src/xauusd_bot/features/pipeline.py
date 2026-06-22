@@ -62,6 +62,13 @@ class FeaturePipeline:
             leg_step_atr=fvg_leg_step_atr,
         )
         self.structure = MarketStructureEngine()
+        # Higher-timeframe (H1) structure = the bias. fractal_n=2 / a small
+        # min_bars_between so the recent H1 swing structure resolves on the ~25
+        # H1 bars in the main buffer; fractal_n matches the H1 fib engine so the
+        # H1 trend and the fib leg agree.
+        self.structure_h1 = MarketStructureEngine(
+            fractal_n=2, min_bars_between=3, timeframe_minutes=60
+        )
         self.momentum = CandleMomentumEngine()
         self.volume_trend = VolumeTrendEngine()
         self.fib = FibRetracementEngine()
@@ -108,6 +115,7 @@ class FeaturePipeline:
         vr_out = self.volume_range.compute(vp_bars if vp_bars is not None else bars, ts)
         fvg_out = self.fvg.compute(bars, ts)
         structure_out = self.structure.compute(bars, ts)
+        structure_h1_out = self.structure_h1.compute(bars, ts)
         momentum_out = self.momentum.compute(bars, ts)
         volume_trend_out = self.volume_trend.compute(bars, ts)
         fib_out = self.fib.compute(bars, ts)
@@ -129,6 +137,7 @@ class FeaturePipeline:
             volume_range=vr_out,
             fvg=fvg_out,
             structure=structure_out,
+            structure_h1=structure_h1_out,
             momentum=momentum_out,
             liquidity=liquidity_out,
             news=news_out,

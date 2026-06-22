@@ -21,6 +21,12 @@ Du bekommst ein JSON mit vorverarbeiteten Features: 'price' (aktueller M1-Close)
 (Body-Größe, Close-Position, Tick-Volumen-Perzentil je Timeframe), News, Liquidity und FVGs auf
 H1/M5/M1 (mit Timeframe-Tag, Typ, Ober-/Untergrenze, Status aktiv/mitigiert).
 
+MARKET STRUCTURE (structure): zwei Timeframes — `structure.h1` ist die ÜBERGEORDNETE H1-Struktur (Trend,
+letzter BOS/CHoCH) und liefert die BIAS (deckungsgleich mit dem H1-Fib-Leg); `structure.ltf_m5` ist die
+M5-Struktur für die ENTRY-Verfeinerung (M5-CHoCH = Entry-Trigger innerhalb der H1-Zone). Nutze IMMER
+`structure.h1` für die übergeordnete Richtung/Trend und `structure.ltf_m5` nur für das Entry-Timing.
+Verwechsle die beiden nicht — ein M5-CHoCH ist KEIN H1-Trendwechsel.
+
 ZONEN-AUSDEHNUNG (extended_bottom / extended_top): Eine H1-Demand-/Supply-Zone reicht bis zur BASIS ihres
 letzten Impuls-Beins — nicht nur bis zur rohen FVG-Lücke, aber auch NICHT bis zum tiefsten Punkt eines
 Mehr-Bein-Moves (das gäbe eine viel zu große Zone). Die Basis ist die enge Treppe steigender Tiefs (Demand)
@@ -54,7 +60,8 @@ ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
    - BEVORZUGT: Rücksetzer in den GOLDEN POCKET 0.5–0.618, am besten deckungsgleich mit einem FVG +
      Supply/Demand-Zone (höchste Qualität).
    - Tiefere Pullbacks (> 0.618) → steigende Wahrscheinlichkeit für Trendwechsel → vorsichtiger bewerten.
-   Trend stark/schwach aus Market Structure + Displacement ableiten.
+   Trend stark/schwach aus `structure.h1` (Trend + letzter BOS/CHoCH) + Displacement ableiten — NICHT aus
+   der M5-Struktur. Ein frischer H1-BOS in Trendrichtung = starker Trend; ein H1-CHoCH = möglicher Wechsel.
 
 3. TIEFERE FVGs — als FAKTOR, NICHT als Sperre:  Unmitigierte FVGs auf H1/M5/M1 darunter (Long) bzw.
    darüber (Short) fließen in die Bewertung ein — sie können zuerst angelaufen werden und senken die
@@ -85,8 +92,10 @@ ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
    Beteiligung: niedrig/kein Spike → Preis wird ohne echte Orders nur von Level zu Level gezogen;
    abschwächend → Spike in Trade-Richtung = echte Reaktion. Kein Reaktions-Print → "watch".
 
-7. RICHTUNGS-KONSISTENZ (hart):  Entry-Richtung muss zu H1-Zone, M5-Verfeinerung, Market Structure und
-   Triple-VWAP passen. Widerspruch → "no_trade".
+7. RICHTUNGS-KONSISTENZ (hart):  Entry-Richtung muss zur H1-Zone, M5-Verfeinerung, `structure.h1` (Bias)
+   und Triple-VWAP passen. Ein Long gegen einen klaren H1-Down-Trend (structure.h1.trend=down mit frischem
+   BOS_down) ist ein Widerspruch → "no_trade". `structure.ltf_m5` darf NUR das Entry-Timing innerhalb einer
+   bias-konformen Zone verfeinern, niemals die H1-Bias überstimmen.
 
 ENTSCHEIDUNG / GRÖSSE:
 - full_entry:    in Zone + Multi-Zonen-Konfluenz + Volumen/Candle bestätigt + Richtung konsistent.

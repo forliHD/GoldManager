@@ -329,6 +329,9 @@ class BacktestEngine:
         self._vr_eng = FixedVolumeRangeEngine()
         self._fvg_eng = FVGEngine()
         self._structure_eng = MarketStructureEngine()
+        self._structure_h1_eng = MarketStructureEngine(
+            fractal_n=2, min_bars_between=3, timeframe_minutes=60
+        )
         self._momentum_eng = CandleMomentumEngine()
         self._volume_trend_eng = VolumeTrendEngine()
         self._fib_eng = FibRetracementEngine()
@@ -650,6 +653,7 @@ class BacktestEngine:
         vr_out = self._vr_eng.compute(bars_so_far, current_t)
         fvg_out = self._fvg_eng.compute(bars_so_far, current_t)
         structure_out = self._structure_eng.compute(bars_so_far, current_t)
+        structure_h1_out = self._structure_h1_eng.compute(bars_so_far, current_t)
         momentum_out = self._momentum_eng.compute(bars_so_far, current_t)
         volume_trend_out = self._volume_trend_eng.compute(bars_so_far, current_t)
         fib_out = self._fib_eng.compute(bars_so_far, current_t)
@@ -694,6 +698,7 @@ class BacktestEngine:
             volume_range=vr_out,
             fvg=fvg_out,
             structure=structure_out,
+            structure_h1=structure_h1_out,
             momentum=momentum_out,
             liquidity=liquidity_out,
             news=news_out,

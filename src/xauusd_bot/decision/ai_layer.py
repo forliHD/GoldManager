@@ -235,22 +235,13 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                 for z in f.top_zones
             ],
         }
-    if bundle.structure is not None:
-        st = bundle.structure
-        last_bos = (
-            {"type": st.last_bos.type.value, "level": _r(st.last_bos.level), "close": _r(st.last_bos.close)}
-            if st.last_bos is not None
-            else None
-        )
-        last_choch = (
-            {"type": st.last_choch.type.value, "level": _r(st.last_choch.level), "close": _r(st.last_choch.close)}
-            if st.last_choch is not None
-            else None
-        )
+    if bundle.structure is not None or bundle.structure_h1 is not None:
+        # H1 = the higher-timeframe BIAS (consistent with the H1 fib leg);
+        # ltf_m5 = the lower-timeframe (M5) entry character. Sending both keeps
+        # the bias and the entry-trigger structure from being confused.
         payload["structure"] = {
-            "trend": st.trend,
-            "last_bos": last_bos,
-            "last_choch": last_choch,
+            "h1": _structure_dict(bundle.structure_h1),
+            "ltf_m5": _structure_dict(bundle.structure),
         }
     if bundle.momentum is not None:
         m = bundle.momentum
@@ -309,6 +300,23 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
             "upcoming_events_count": len(n.upcoming_events),
         }
     return payload
+
+
+def _structure_dict(st: Any) -> dict[str, Any] | None:
+    """Serialize a MarketStructureOutput to {trend, last_bos, last_choch}."""
+    if st is None:
+        return None
+    lb = (
+        {"type": st.last_bos.type.value, "level": _r(st.last_bos.level), "close": _r(st.last_bos.close)}
+        if st.last_bos is not None
+        else None
+    )
+    lc = (
+        {"type": st.last_choch.type.value, "level": _r(st.last_choch.level), "close": _r(st.last_choch.close)}
+        if st.last_choch is not None
+        else None
+    )
+    return {"trend": st.trend, "last_bos": lb, "last_choch": lc}
 
 
 def _vp_to_dict(vp: Any) -> dict[str, Any] | None:
