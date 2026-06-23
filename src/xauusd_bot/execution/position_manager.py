@@ -22,6 +22,8 @@ persists the updated state.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Literal
 
@@ -54,6 +56,14 @@ class ManagedPosition(BaseModel):
     tp1_taken: bool = False
     tp2_taken: bool = False
     breakeven_done: bool = False
+    initial_risk: Decimal | None = Field(
+        default=None,
+        description=(
+            "Entry-time risk distance |entry − initial_sl| (price units). Used to gate "
+            "structure-trailing on a real ≥R profit buffer (Phase D). None = trail as soon "
+            "as TP1 arms it (legacy)."
+        ),
+    )
 
 
 class ManagementAction(BaseModel):
@@ -98,10 +108,16 @@ class PositionManager:
         spec: SymbolSpec,
         *,
         breakeven_at_tp1: bool = False,
+        trail_activate_r: float = 0.0,
+        weekend_flat: Callable[[datetime, float], bool] | None = None,
     ) -> None:
         self._stop = stop_mgr
         self._tp = tp_mgr
         self._spec = spec
+        # Weekend-flat predicate (ts, broker_offset_min) → bool. When it fires we
+        # close the whole position before the weekend gap (Joshua: never hold over
+        # a weekend). None = disabled. Overnight holds are unaffected.
+        self._weekend_flat = weekend_flat
         # Lever #1 (exit tuning): the old logic snapped the SL to break-even the
         # instant TP1 was hit, choking the 70% runner at entry and capping the
         # average winner near +0.45R while losers ran a full −1R. Default OFF now:
@@ -109,6 +125,27 @@ class PositionManager:
         # the runner pushes toward TP3 / the far pool) instead of dead-locking it
         # at entry. Set True to restore the old behaviour.
         self._breakeven_at_tp1 = breakeven_at_tp1
+        # Phase D: only start trailing once the trade is ≥ this many R in profit,
+        # so an unproven trade is never tightened prematurely. 0 = legacy (trail
+        # as soon as TP1 arms it).
+        self._trail_activate_r = trail_activate_r
+
+    def _trail_armed(self, mp: ManagedPosition, current_price: Decimal) -> bool:
+        """True once the trade is ≥ ``trail_activate_r`` R in profit (Phase D).
+
+        Needs ``initial_risk`` to measure R; if it is absent or zero we don't
+        arm on profit (TP1 still arms trailing via ``breakeven_done``).
+        """
+
+        if self._trail_activate_r <= 0:
+            return True
+        if mp.initial_risk is None or mp.initial_risk <= 0:
+            return False
+        if mp.side == OrderSide.BUY:
+            profit = current_price - mp.entry_price
+        else:
+            profit = mp.entry_price - current_price
+        return profit >= mp.initial_risk * Decimal(str(self._trail_activate_r))
 
     def plan(
         self,
@@ -124,6 +161,14 @@ class PositionManager:
         actions: list[ManagementAction] = []
         mp = mp.model_copy(deep=True)
         vol_min = self._spec.volume_min if self._spec.volume_min else Decimal("0.01")
+
+        # --- Weekend flat: close the whole position before the weekend gap.
+        # Pre-empts all other management — we just want flat. Overnight (weekday)
+        # holds are NOT affected (the predicate only fires Fri-late / weekend).
+        if self._weekend_flat is not None and self._weekend_flat(
+            bundle.ts, getattr(bundle, "broker_offset_minutes", 0.0)
+        ):
+            return [ManagementAction(kind="close_all", reason="weekend_flat")], mp
 
         # --- TP1: partial close + move SL to break-even.
         if not mp.tp1_taken and mp.tp1_price is not None and _reached(mp.side, current_price, mp.tp1_price):
@@ -144,8 +189,10 @@ class PositionManager:
                 actions.append(ManagementAction(kind="partial_close", volume=vol, reason="tp2_hit"))
             mp.tp2_taken = True
 
-        # --- Trailing SL behind structure (only after break-even, ratchet only).
-        if mp.breakeven_done:
+        # --- Trailing SL behind structure (ratchet only). Arms once TP1 was
+        # taken OR the trade has earned a ≥ trail_activate_r profit buffer, so an
+        # unproven trade is never tightened prematurely (Phase D).
+        if mp.breakeven_done or self._trail_armed(mp, current_price):
             trail = self._stop.trail(mp.side, mp.sl_price, mp.entry_price, bundle)
             if trail.sl_price is not None and _tighter(mp.side, trail.sl_price, mp.sl_price):
                 actions.append(ManagementAction(kind="modify_sl", price=trail.sl_price, reason="structure_trail"))

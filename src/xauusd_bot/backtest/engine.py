@@ -535,6 +535,17 @@ class BacktestEngine:
                 )
             else:
                 decision = self._fallback.decide(score, agg, account=account)
+            # Per-decision trace so a backtest captures the AI's behaviour (action
+            # + veto reason + which engine decided), not just the trade summary —
+            # otherwise a 0-trade run tells us nothing about WHY.
+            log.info(
+                "bt_decision",
+                ts=bar.time.isoformat(),
+                score=round(score.total_score, 1),
+                action=decision.action.value,
+                block_reason=decision.block_reason,
+                src=getattr(decision, "source_engine", None),
+            )
             qualification = self._qualifier.qualify(
                 decision, score, agg, bundle, account=account
             )

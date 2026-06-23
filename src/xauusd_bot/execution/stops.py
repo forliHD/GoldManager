@@ -33,6 +33,7 @@ and the connector's :class:`SymbolSpec`. No ``MetaTrader5`` import.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -45,6 +46,51 @@ from xauusd_bot.connectors.schemas import OrderSide, SymbolSpec
 
 log = structlog.get_logger(__name__)
 
+# Gold-plausible price band for extracting an SL level from the LLM's free-form
+# invalidation strings. Filters out fib ratios (0.382), R-multiples, pip counts,
+# etc. — only a real XAUUSD price (~hundreds to tens-of-thousands) qualifies.
+_PRICE_RE = re.compile(r"\d{3,6}(?:[.,]\d+)?")
+_PRICE_MIN = 500.0
+_PRICE_MAX = 99_999.0
+
+
+def parse_sl_from_invalidations(
+    invalidations: list[str], side: OrderSide, entry_price: float
+) -> float | None:
+    """Extract an SL-level hint from the LLM's invalidation strings.
+
+    The LLM emits "trade is dead if X" lines like ``"H1-Close unter 4179.4"``.
+    We pull every gold-plausible price out of those strings, keep only the ones
+    on the correct side of entry (below for a long, above for a short) and
+    return the **nearest** such level — the first place the setup invalidates.
+    The deterministic SL floor + max-risk cap still bound it downstream, so a
+    too-tight or too-wide AI level can never produce an unsafe stop.
+
+    Returns ``None`` when no plausible level is found (executor uses the
+    structure SL).
+    """
+
+    candidates: list[float] = []
+    for line in invalidations:
+        for m in _PRICE_RE.findall(str(line)):
+            try:
+                val = float(m.replace(",", "."))
+            except ValueError:
+                continue
+            if not (_PRICE_MIN <= val <= _PRICE_MAX):
+                continue
+            on_correct_side = (side == OrderSide.BUY and val < entry_price) or (
+                side == OrderSide.SELL and val > entry_price
+            )
+            if on_correct_side:
+                candidates.append(val)
+    if not candidates:
+        return None
+    # Nearest to entry = the operative invalidation level.
+    if side == OrderSide.BUY:
+        return max(candidates)
+    return min(candidates)
+
 
 # Multipliers — the canonical numbers from 05_execution_risk.md.
 # Lever #2 (exit tuning): the initial SL buffer behind structure was 1.0×ATR,
@@ -52,6 +98,10 @@ log = structlog.get_logger(__name__)
 # the risk per trade shrinks (better R:R); backtested against 1.0 before live.
 DEFAULT_INITIAL_SL_ATR = 0.5
 DEFAULT_TRAIL_MIN_ATR = 1.0
+# Phase D (let winners run): the trail now sits BEHIND the protective swing
+# (long: swing_low − buffer×ATR), not above it, so a pullback to structure does
+# not stop the runner out near break-even. Default 0.5×ATR of room.
+DEFAULT_TRAIL_BUFFER_ATR = 0.5
 DEFAULT_BE_BONUS_POINTS = 5.0  # tiny buffer so commission+spread is covered
 # SL floor: a structure stop closer to entry than this is pushed out, so the
 # lot size (risk / sl_distance) can't explode on a tiny stop. floor =
@@ -105,6 +155,7 @@ class StopManager:
         *,
         initial_sl_atr: float = DEFAULT_INITIAL_SL_ATR,
         trail_min_atr: float = DEFAULT_TRAIL_MIN_ATR,
+        trail_buffer_atr: float = DEFAULT_TRAIL_BUFFER_ATR,
         be_bonus_points: float = DEFAULT_BE_BONUS_POINTS,
         min_sl_atr: float = DEFAULT_MIN_SL_ATR,
         min_sl_points: float = DEFAULT_MIN_SL_POINTS,
@@ -112,6 +163,9 @@ class StopManager:
         self._spec = spec
         self._initial_sl_atr = initial_sl_atr
         self._trail_min_atr = trail_min_atr
+        # Room BEHIND the swing for the trailing SL (Phase D). Kept separate from
+        # trail_min_atr (legacy) so the direction flip is explicit and tunable.
+        self._trail_buffer_atr = trail_buffer_atr
         self._be_bonus_points = be_bonus_points
         self._min_sl_atr = min_sl_atr
         self._min_sl_points = min_sl_points
@@ -135,8 +189,16 @@ class StopManager:
         bundle: FeatureSnapshotBundle,
         *,
         now: datetime | None = None,
+        sl_hint: Decimal | None = None,
     ) -> StopsAndTPs:
-        """Compute the initial SL behind structure + ATR buffer."""
+        """Compute the initial SL behind structure + ATR buffer.
+
+        ``sl_hint`` (Phase C) is the LLM's invalidation level. When set and on
+        the correct side of entry, it REPLACES the structure swing as the
+        anchor (the SL is placed an ATR buffer beyond it, exactly like a swing).
+        The SL floor below still enforces a minimum distance, so an AI level
+        that is too tight can never explode the lot size — I-4 holds.
+        """
 
         ts = (now or datetime.now(tz=UTC))
         if ts.tzinfo is None:
@@ -146,20 +208,31 @@ class StopManager:
 
         atr = _atr_safe(bundle)
         reasoning: list[str] = []
+        # AI invalidation level (if usable) takes precedence over the structure
+        # swing as the SL anchor; otherwise fall back to the most-recent swing.
+        hint_ok = (
+            sl_hint is not None
+            and (
+                (side == OrderSide.BUY and sl_hint < entry_price)
+                or (side == OrderSide.SELL and sl_hint > entry_price)
+            )
+        )
         if side == OrderSide.BUY:
-            swing = _last_swing(bundle, "low")
+            swing = float(sl_hint) if hint_ok else _last_swing(bundle, "low")
+            anchor = "AI invalidation" if hint_ok else "M5 swing low"
             if swing is not None and atr > 0:
                 sl = Decimal(str(swing)) - Decimal(str(self._initial_sl_atr * atr))
-                reasoning.append(f"long SL behind M5 swing low {swing} minus {self._initial_sl_atr}×ATR")
+                reasoning.append(f"long SL behind {anchor} {swing} minus {self._initial_sl_atr}×ATR")
             else:
                 # Fallback: ATR-only distance from entry.
                 sl = entry_price - Decimal(str(self._initial_sl_atr * atr or 0.5))
                 reasoning.append("long SL fallback: entry minus 1×ATR (no swing low available)")
         else:
-            swing = _last_swing(bundle, "high")
+            swing = float(sl_hint) if hint_ok else _last_swing(bundle, "high")
+            anchor = "AI invalidation" if hint_ok else "M5 swing high"
             if swing is not None and atr > 0:
                 sl = Decimal(str(swing)) + Decimal(str(self._initial_sl_atr * atr))
-                reasoning.append(f"short SL behind M5 swing high {swing} plus {self._initial_sl_atr}×ATR")
+                reasoning.append(f"short SL behind {anchor} {swing} plus {self._initial_sl_atr}×ATR")
             else:
                 sl = entry_price + Decimal(str(self._initial_sl_atr * atr or 0.5))
                 reasoning.append("short SL fallback: entry plus 1×ATR (no swing high available)")
@@ -248,16 +321,19 @@ class StopManager:
         *,
         now: datetime | None = None,
     ) -> StopsAndTPs:
-        """Trail the SL behind the latest swing point in the trade's favour.
+        """Trail the SL BEHIND the latest swing point in the trade's favour.
 
-        Rule
-        ----
-        * Long trade: new SL = max(current_sl, latest_swing_low + 1×ATR).
-          The SL can only ratchet **up** (in the long's favour); it
-          never moves back down.
-        * Short trade: mirror — new SL = min(current_sl, latest_swing_high - 1×ATR).
+        Rule (Phase D — let winners run)
+        --------------------------------
+        * Long trade: new SL = max(current_sl, latest_swing_low − buffer×ATR).
+          The SL sits a buffer BELOW the protective swing low (room for a
+          pullback to structure), and can only ratchet **up**; it never moves
+          back down.
+        * Short trade: mirror — new SL = min(current_sl, latest_swing_high + buffer×ATR).
 
-        If no fresh swing is available, the SL stays put.
+        The old logic placed the SL *above* the swing (swing + ATR), which
+        stopped the runner out on the first pullback to structure → "baby
+        trades". If no fresh swing is available, the SL stays put.
         """
 
         ts = (now or datetime.now(tz=UTC))
@@ -267,7 +343,7 @@ class StopManager:
             ts = ts.astimezone(UTC)
 
         atr = _atr_safe(bundle)
-        reasoning: list[str] = [f"trail: min distance {self._trail_min_atr}×ATR"]
+        reasoning: list[str] = [f"trail: {self._trail_buffer_atr}×ATR behind the swing"]
 
         if side == OrderSide.BUY:
             swing = _last_swing(bundle, "low")
@@ -279,10 +355,10 @@ class StopManager:
                     reasoning=reasoning + ["no swing low / no ATR — SL unchanged"],
                     timestamp=ts,
                 )
-            candidate = Decimal(str(swing)) + Decimal(str(self._trail_min_atr * atr))
+            candidate = Decimal(str(swing)) - Decimal(str(self._trail_buffer_atr * atr))
             new_sl = max(current_sl, candidate)
             if new_sl > current_sl:
-                reasoning.append(f"long trail: SL raised from {current_sl} to {new_sl} (swing low {swing})")
+                reasoning.append(f"long trail: SL raised from {current_sl} to {new_sl} (behind swing low {swing})")
             else:
                 reasoning.append(f"long trail: candidate {candidate} ≤ current SL {current_sl} — unchanged")
         else:
@@ -295,10 +371,10 @@ class StopManager:
                     reasoning=reasoning + ["no swing high / no ATR — SL unchanged"],
                     timestamp=ts,
                 )
-            candidate = Decimal(str(swing)) - Decimal(str(self._trail_min_atr * atr))
+            candidate = Decimal(str(swing)) + Decimal(str(self._trail_buffer_atr * atr))
             new_sl = min(current_sl, candidate)
             if new_sl < current_sl:
-                reasoning.append(f"short trail: SL lowered from {current_sl} to {new_sl} (swing high {swing})")
+                reasoning.append(f"short trail: SL lowered from {current_sl} to {new_sl} (behind swing high {swing})")
             else:
                 reasoning.append(f"short trail: candidate {candidate} ≥ current SL {current_sl} — unchanged")
 
@@ -317,4 +393,5 @@ __all__ = [
     "DEFAULT_TRAIL_MIN_ATR",
     "StopManager",
     "TrailingMode",
+    "parse_sl_from_invalidations",
 ]

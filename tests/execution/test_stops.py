@@ -173,8 +173,9 @@ def test_break_even_short_moves_sl_below_entry() -> None:
 
 def test_long_trail_ratchets_up_only() -> None:
     spec = make_symbol_spec()
-    mgr = StopManager(spec=spec, trail_min_atr=1.0)
-    # Swing low 2380, ATR 0.5 → candidate = 2380.5. Current SL 2370 → 2380.5 is higher.
+    mgr = StopManager(spec=spec, trail_buffer_atr=0.5)
+    # Phase D: SL sits BEHIND (below) the swing low. Swing 2380, ATR 0.5, buffer
+    # 0.5 → candidate = 2380 − 0.25 = 2379.75. Current SL 2370 → ratchets up.
     bundle = _bundle_with_low_swing(
         datetime(2026, 4, 15, 13, 30, tzinfo=UTC), swing_low=2380.0
     )
@@ -184,7 +185,8 @@ def test_long_trail_ratchets_up_only() -> None:
         entry_price=Decimal("2375.00"),
         bundle=bundle,
     )
-    assert result.sl_price == Decimal("2380.50")
+    assert result.sl_price == Decimal("2379.75")
+    assert result.sl_price < Decimal("2380.0")  # behind the swing, not above it
     assert result.trail_active is True
     assert result.trailing_mode == TrailingMode.STRUCTURE_TRAIL
 
@@ -210,8 +212,9 @@ def test_long_trail_does_not_lower_sl() -> None:
 
 def test_short_trail_ratchets_down_only() -> None:
     spec = make_symbol_spec()
-    mgr = StopManager(spec=spec, trail_min_atr=1.0)
-    # Swing high 2370, ATR 0.5 → candidate 2369.5. Current SL 2380 → 2369.5 is lower.
+    mgr = StopManager(spec=spec, trail_buffer_atr=0.5)
+    # Phase D: SL sits BEHIND (above) the swing high. Swing 2370, ATR 0.5, buffer
+    # 0.5 → candidate = 2370 + 0.25 = 2370.25. Current SL 2380 → ratchets down.
     bundle = _bundle_with_high_swing(
         datetime(2026, 4, 15, 13, 30, tzinfo=UTC), swing_high=2370.0
     )
@@ -221,7 +224,8 @@ def test_short_trail_ratchets_down_only() -> None:
         entry_price=Decimal("2375.00"),
         bundle=bundle,
     )
-    assert result.sl_price == Decimal("2369.50")
+    assert result.sl_price == Decimal("2370.25")
+    assert result.sl_price > Decimal("2370.0")  # behind the swing, not below it
 
 
 # ----------------------------------------------------------------- 7. trail without data

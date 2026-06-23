@@ -74,6 +74,11 @@ class FeaturePipeline:
         self.fib = FibRetracementEngine()
         self.liquidity = LiquidityEngine()
         self.news = NewsContextEngine(provider=news_provider or StubNewsProvider())
+        # Broker→UTC offset (minutes). Stamped onto every assembled bundle so
+        # downstream time-of-day gates (trading-hours window) can recover real
+        # UTC from the broker-stamped ``ts`` without re-detecting it. 0 until
+        # the feature-engine calls set_clock_offset (replay/backtest stay at 0).
+        self._clock_offset_min: float = 0.0
 
     def set_clock_offset(self, minutes: float) -> None:
         """Fan the broker→UTC offset out to the UTC-anchored engines.
@@ -92,6 +97,7 @@ class FeaturePipeline:
         and monthly (4685/4545/4430) levels; offset 180 did not.
         """
 
+        self._clock_offset_min = float(minutes)
         self.session.set_clock_offset(minutes)
         self.vwap.set_clock_offset(minutes)
         self.news.set_clock_offset(minutes)
@@ -145,6 +151,7 @@ class FeaturePipeline:
             fib=fib_out,
             atr=atr_val,
             price=(close if bars else None),
+            broker_offset_minutes=self._clock_offset_min,
         )
 
 

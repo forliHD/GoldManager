@@ -29,6 +29,7 @@ dependencies = [
     "python-multipart>=0.0.9",  # Block 9 — FastAPI Form data for /api/auth/login.
     "pyjwt[crypto]>=2.8",  # Cloudflare Access JWT (RS256) verification for dashboard SSO.
     "pywebpush>=2.0",  # Web Push (VAPID) for the mobile PWA — phone alert notifications.
+    "tzdata>=2024.1",  # IANA tz DB for zoneinfo (Europe/Berlin trading-hours gate) — python:slim has no system tzdata.
 ]
 
 [project.optional-dependencies]

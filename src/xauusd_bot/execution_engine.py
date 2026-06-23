@@ -44,6 +44,7 @@ from xauusd_bot.common.webpush import WebPushNotifier
 from xauusd_bot.common.schemas.journal import ExitReasonTag, TradeCloseUpdate
 from xauusd_bot.common.service import make_consumer, make_publisher, service_runtime
 from xauusd_bot.connectors.factory import make_connector
+from xauusd_bot.decision.trading_hours import TradingWindow
 from xauusd_bot.connectors.schemas import OrderSide
 from xauusd_bot.execution.pipeline import ExecutionPipeline
 from xauusd_bot.execution.position_manager import ManagedPosition, PositionManager
@@ -361,7 +362,18 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
 
 
 def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_client, settings: Settings, notifier=None):
-    pos_mgr = PositionManager(pipeline.stop_mgr, pipeline.tp_mgr, pipeline.spec)
+    _trading_window = TradingWindow.from_settings(settings)
+    pos_mgr = PositionManager(
+        pipeline.stop_mgr,
+        pipeline.tp_mgr,
+        pipeline.spec,
+        trail_activate_r=settings.exec_trail_activate_r,
+        weekend_flat=(
+            _trading_window.should_flatten_for_weekend
+            if settings.exec_weekend_flat_enabled
+            else None
+        ),
+    )
 
     async def handle(msg: StreamMessage) -> None:
         ev = msg.payload

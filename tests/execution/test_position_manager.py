@@ -173,3 +173,53 @@ def test_partial_below_volume_min_skips_close_but_marks_taken():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---------------------------------------------------------------- Phase D: trail activation
+
+
+def _mgr_activate(trail_sl, trail_activate_r):
+    return PositionManager(
+        _FakeStop(trail_sl), _FakeTP(False), _spec(), trail_activate_r=trail_activate_r
+    )
+
+
+def test_trail_does_not_arm_below_activation_r():
+    # TP1 far away (not hit) so only the profit-R gate can arm trailing.
+    # entry 4250, initial_risk 10 → 1R at price 4260. At 4255 (0.5R) → no trail.
+    mgr = _mgr_activate(trail_sl=Decimal("4248.00"), trail_activate_r=1.0)
+    pos = _pos(tp1_price=Decimal("4300.00"), initial_risk=Decimal("10.0"))
+    actions, mp = mgr.plan(pos, _BUNDLE, current_price=Decimal("4255.00"))
+    assert all(a.kind != "modify_sl" for a in actions)
+    assert mp.sl_price == Decimal("4240.00")  # unchanged
+
+
+def test_trail_arms_at_activation_r():
+    # At 4262 (1.2R ≥ 1R) the trail arms and ratchets the SL up to 4248.
+    mgr = _mgr_activate(trail_sl=Decimal("4248.00"), trail_activate_r=1.0)
+    pos = _pos(tp1_price=Decimal("4300.00"), initial_risk=Decimal("10.0"))
+    actions, mp = mgr.plan(pos, _BUNDLE, current_price=Decimal("4262.00"))
+    assert ("modify_sl", "structure_trail") in [(a.kind, a.reason) for a in actions]
+    assert mp.sl_price == Decimal("4248.00")
+
+
+# ---------------------------------------------------------------- weekend flat
+
+
+def _bundle_at(ts_iso: str):
+    from datetime import datetime
+    return SimpleNamespace(ts=datetime.fromisoformat(ts_iso), broker_offset_minutes=0.0)
+
+
+def test_weekend_flat_closes_whole_position():
+    mgr = PositionManager(_FakeStop(), _FakeTP(), _spec(), weekend_flat=lambda ts, off: True)
+    # Even sitting at TP1, the weekend flat pre-empts everything → just close_all.
+    actions, _ = mgr.plan(_pos(), _bundle_at("2026-01-02T21:00:00+00:00"), Decimal("4255.50"))
+    assert [(a.kind, a.reason) for a in actions] == [("close_all", "weekend_flat")]
+
+
+def test_no_weekend_flat_runs_normal_management():
+    mgr = PositionManager(_FakeStop(), _FakeTP(), _spec(), weekend_flat=lambda ts, off: False)
+    actions, _ = mgr.plan(_pos(), _bundle_at("2026-01-01T12:00:00+00:00"), Decimal("4255.50"))
+    reasons = [a.reason for a in actions]
+    assert "tp1_hit" in reasons and "weekend_flat" not in reasons
