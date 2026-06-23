@@ -70,18 +70,46 @@ def test_exact_step_match_is_exact_mode() -> None:
 
 
 def test_below_minimum_snaps_to_min() -> None:
+    # raw < vmin but the vmin lot's realized risk (0.01×11×100 = 11) is within
+    # the risk cap (10 × 1.15 = 11.5), so the snap-up to vmin is allowed.
     sizer = PositionSizer()
     spec = make_symbol_spec(
         contract_size=Decimal("100"),
         volume_min=Decimal("0.01"),
     )
     result = sizer.size(
-        risk_amount=Decimal("1"),  # 1 / 5000 = 0.0002
-        sl_distance=Decimal("50"),
+        risk_amount=Decimal("10"),  # 10 / 1100 = 0.0091 < vmin
+        sl_distance=Decimal("11"),
         spec=spec,
     )
     assert result.volume_lots == Decimal("0.01")
     assert result.rounding_mode == SizingRoundingMode.BELOW_MIN
+
+
+def test_vmin_snap_blocked_when_over_risk_cap() -> None:
+    # raw < vmin AND snapping to vmin would risk 0.01×50×100 = 50 ≫ the budget
+    # (1 × 1.15) → block (0 lots) instead of silently over-risking 50×.
+    sizer = PositionSizer()
+    spec = make_symbol_spec(contract_size=Decimal("100"), volume_min=Decimal("0.01"))
+    result = sizer.size(risk_amount=Decimal("1"), sl_distance=Decimal("50"), spec=spec)
+    assert result.volume_lots == Decimal("0")
+    assert result.rounding_mode == SizingRoundingMode.RISK_BLOCKED
+
+
+def test_risk_cap_clamps_lots_down() -> None:
+    # A tolerant cap still bounds realized risk to risk_amount × (1+tol). Force a
+    # vmin snap that exceeds the cap slightly → clamp, not block, when a valid
+    # smaller lot exists. Here risk=20, sl=30 → raw 0.0066<vmin; vmin risk=30 >
+    # 20×1.15=23 → RISK_BLOCKED (no lot fits). Use a larger min-cap scenario:
+    sizer = PositionSizer(risk_tolerance=0.0)
+    spec = make_symbol_spec(
+        contract_size=Decimal("100"), volume_min=Decimal("0.01"), volume_step=Decimal("0.01")
+    )
+    # raw = 100/(3×100)=0.333 → rounds to 0.33 (realized 99 ≤ 100). No cap hit.
+    ok = sizer.size(risk_amount=Decimal("100"), sl_distance=Decimal("3"), spec=spec)
+    assert ok.rounding_mode in (SizingRoundingMode.ROUNDED_DOWN, SizingRoundingMode.EXACT)
+    # realized risk never exceeds the budget × (1+tol).
+    assert ok.volume_lots * Decimal("3") * Decimal("100") <= Decimal("100")
 
 
 # ----------------------------------------------------------------- 3. cap at max

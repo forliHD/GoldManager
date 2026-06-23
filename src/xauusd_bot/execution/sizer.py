@@ -65,8 +65,15 @@ class PositionSizer:
         a real broker, so this is essentially a test-time safety net).
     """
 
-    def __init__(self, default_contract_size: Decimal = Decimal("100")) -> None:
+    def __init__(
+        self,
+        default_contract_size: Decimal = Decimal("100"),
+        *,
+        risk_tolerance: float = 0.15,
+    ) -> None:
         self._default_contract_size = Decimal(default_contract_size)
+        # Hard max-risk cap: realized risk may not exceed risk_amount × (1 + tol).
+        self._risk_tolerance = Decimal(str(risk_tolerance))
 
     # ---------------------------------------------------------------- size
 
@@ -114,6 +121,23 @@ class PositionSizer:
 
         # Apply the lot-step / min / max constraints.
         rounded, mode = self._apply_constraints(raw_lots, spec)
+
+        # HARD MAX-RISK CAP (backstop independent of the SL floor). The realized
+        # risk of `rounded` lots is rounded × risk_per_lot. If that exceeds the
+        # budget × (1 + tolerance) — e.g. because volume_min snapped a tiny size
+        # UP, or sl_distance was tighter than expected — clamp lots DOWN to the
+        # cap (rounded to the step). If even volume_min breaches the cap, block
+        # (0 lots) rather than silently over-risk.
+        max_risk = (risk_amount * (Decimal("1") + self._risk_tolerance)).quantize(Decimal("0.01"))
+        if rounded > 0 and (rounded * risk_per_lot) > max_risk:
+            step = Decimal(spec.volume_step)
+            capped = ((max_risk / risk_per_lot) / step).to_integral_value(
+                rounding=ROUND_DOWN
+            ) * step
+            if capped < Decimal(spec.volume_min):
+                rounded, mode = Decimal("0"), SizingRoundingMode.RISK_BLOCKED
+            else:
+                rounded, mode = capped, SizingRoundingMode.RISK_CAPPED
 
         formula = (
             f"lots = risk_amount / (sl_distance * contract_size) "

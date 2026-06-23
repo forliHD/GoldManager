@@ -62,12 +62,16 @@ class SizingRoundingMode(str, Enum):
     * ``rounded_down`` — rounded down to the nearest lot step.
     * ``below_min``   — calculated < volume_min → snapped to volume_min.
     * ``above_max``   — calculated > volume_max → capped at volume_max.
+    * ``risk_capped`` — clamped DOWN so realized risk ≤ the max-risk cap.
+    * ``risk_blocked``— even volume_min would exceed the cap → 0 lots (block).
     """
 
     EXACT = "exact"
     ROUNDED_DOWN = "rounded_down"
     BELOW_MIN = "below_min"
     ABOVE_MAX = "above_max"
+    RISK_CAPPED = "risk_capped"
+    RISK_BLOCKED = "risk_blocked"
 
 
 class OrderTag(str, Enum):
