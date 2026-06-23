@@ -92,6 +92,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--symbol", type=str, default="XAUUSD")
     parser.add_argument("--sample", type=Path, default=DEFAULT_SAMPLE)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--clock-offset-minutes",
+        type=float,
+        default=0.0,
+        help="Broker→UTC offset of the data (e.g. 180 for UTC+3 MT5 data). Aligns the "
+        "session/VWAP engines + the trading-hours gate with real UTC. 0 for synthetic UTC samples.",
+    )
     return parser.parse_args(argv)
 
 
@@ -179,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         spread_model=spread,
         context_window_bars=args.context_window_bars,
         orchestrator=orchestrator,
+        clock_offset_minutes=args.clock_offset_minutes,
     )
     backtest_result: BacktestResult = engine.run(
         start_date=start_date,

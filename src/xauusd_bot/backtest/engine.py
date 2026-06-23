@@ -297,6 +297,7 @@ class BacktestEngine:
         zone_lock: bool = True,
         zone_atr_mult: float = 0.5,
         orchestrator: Any | None = None,
+        clock_offset_minutes: float = 0.0,
     ) -> None:
         """..."""
         self._connector = connector
@@ -338,6 +339,16 @@ class BacktestEngine:
         self._fib_eng = FibRetracementEngine()
         self._liquidity_eng = LiquidityEngine()
         self._news_eng = NewsContextEngine(provider=StubNewsProvider())
+
+        # Broker→UTC clock offset (minutes). Real MT5 data is broker time (UTC+3);
+        # mirror the live feature-engine so the time-of-day engines classify in
+        # true UTC and the bundle carries the offset for the trading-hours gate.
+        # NOT volume_range (broker-calendar periods, like pipeline.set_clock_offset).
+        self._clock_offset_min = float(clock_offset_minutes)
+        if clock_offset_minutes:
+            self._session_eng.set_clock_offset(clock_offset_minutes)
+            self._vwap_eng.set_clock_offset(clock_offset_minutes)
+            self._news_eng.set_clock_offset(clock_offset_minutes)
 
         self._aggregator = FeatureAggregator()
         self._scoring = ScoringEngine()
@@ -732,6 +743,7 @@ class BacktestEngine:
             fib=fib_out,
             atr=atr_val,
             price=float(close),
+            broker_offset_minutes=self._clock_offset_min,
         )
 
     # ----------------------------------------------------------- internals: trade lifecycle
