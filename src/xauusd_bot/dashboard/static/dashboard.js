@@ -215,6 +215,7 @@
       upColor: '#3fb950', downColor: '#f85149', borderVisible: false,
       wickUpColor: '#3fb950', wickDownColor: '#f85149',
     });
+    state.vwapLines = {};  // VWAP curve line-series, recreated with the chart
     // FVG box layer — HTML rectangles positioned via the chart's coordinate API.
     const fvgLayer = document.createElement('div');
     fvgLayer.className = 'fvg-layer';
@@ -233,7 +234,7 @@
     try {
       const sym = encodeURIComponent(state.symbol);
       const [candles, overlays] = await Promise.all([
-        api(`/api/chart/candles?symbol=${sym}&timeframe=${state.timeframe}&count=500`),
+        api(`/api/chart/candles?symbol=${sym}&timeframe=${state.timeframe}&count=2000`),
         api(`/api/chart/overlays?symbol=${sym}`),
       ]);
       const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: c.open, high: c.high, low: c.low, close: c.close }));
@@ -413,6 +414,28 @@
       const bull = (z.type === 'bullish');
       const partial = (z.status === 'partially_mitigated');
       const col = bull ? '63,185,80' : '248,81,73';
+      // M5-fractal extension: the zone reaches past the raw FVG gap to the
+      // impulse-origin fractal. Demand → extend the bottom down to extended_bottom;
+      // supply → extend the top up to extended_top. Shade it lighter + dashed so the
+      // raw gap and its extension are distinguishable.
+      const extPx = bull
+        ? (z.extended_bottom != null ? Number(z.extended_bottom) : null)
+        : (z.extended_top != null ? Number(z.extended_top) : null);
+      const yExt = (extPx != null) ? series.priceToCoordinate(extPx) : null;
+      if (yExt != null) {
+        const edge = bull ? yBot : yTop;          // the raw FVG edge we extend from
+        const eTop = Math.min(edge, yExt), eh = Math.max(2, Math.abs(yExt - edge));
+        const ebox = document.createElement('div');
+        ebox.className = 'fvg-box fvg-ext';
+        ebox.style.left = xl + 'px';
+        ebox.style.top = eTop + 'px';
+        ebox.style.width = Math.max(2, paneW - xl) + 'px';
+        ebox.style.height = eh + 'px';
+        ebox.style.background = `rgba(${col},0.05)`;
+        const estyle = `1px dashed rgba(${col},0.6)`;
+        ebox.style.borderTop = estyle; ebox.style.borderBottom = estyle;
+        layer.appendChild(ebox);
+      }
       const box = document.createElement('div');
       box.className = 'fvg-box';
       box.style.left = xl + 'px';
@@ -424,7 +447,8 @@
       box.style.borderTop = bstyle; box.style.borderBottom = bstyle;
       const tag = document.createElement('div');
       tag.className = 'fvg-tag';
-      tag.textContent = `FVG ${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}`;
+      const extTag = z.extension_tf ? ` +${z.extension_tf}` : '';
+      tag.textContent = `FVG ${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}${extTag}`;
       tag.style.background = `rgba(${col},0.9)`;
       box.appendChild(tag);
       layer.appendChild(box);
@@ -437,23 +461,49 @@
     const S = LightweightCharts.LineStyle;
     const lines = [];
     const add = (...a) => { const pl = priceLine(...a); if (pl) lines.push(pl); };
-    // VWAPs — distinct colours, solid, labelled (e.g. "VWAP 12").
-    const vwaps = o.vwaps || o.vwap || {};
+    // VWAPs as evolving CURVES (connected points over time), not flat lines.
+    // The backend sends the current anchor-period series per level.
     const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
+    const series = o.vwap_series || {};
+    state.vwapLines = state.vwapLines || {};
+    // Bucket the M1 VWAP series onto the CHART's timeframe grid. lightweight-charts
+    // shares ONE time axis across all series — an M1 point between two M5 candles
+    // creates an empty slot and spreads the candles apart. One point per timeframe
+    // bucket (last value wins) keeps the VWAP curve on the candle grid.
+    const tfSec = ({ M1: 60, M5: 300, M15: 900, H1: 3600 })[state.timeframe] || 300;
+    const bucket = (pts) => {
+      const m = new Map();
+      for (const p of (pts || [])) {
+        if (!p || p.value == null) continue;
+        m.set(Math.floor(p.time / tfSec) * tfSec, p.value);
+      }
+      return Array.from(m, ([time, value]) => ({ time, value })).sort((a, b) => a.time - b.time);
+    };
     for (const k of ['utc00', 'utc07', 'utc12']) {
-      if (vwaps[k] != null) add(vwaps[k], { color: vwCol[k], style: S.Solid, width: 1, title: 'VWAP ' + k.slice(3) });
+      if (!state.vwapLines[k]) {
+        state.vwapLines[k] = state.chart.addLineSeries({
+          color: vwCol[k], lineWidth: 2, priceLineVisible: false,
+          lastValueVisible: true, title: 'VWAP ' + k.slice(3),
+          crosshairMarkerVisible: false,
+        });
+      }
+      try { state.vwapLines[k].setData(bucket(series[k])); } catch (e) {}
     }
-    // Value areas — keep the chart readable: weekly (developing, dotted) +
-    // previous week (locked, dashed). VAH red / VPOC yellow / VAL green.
+    // Volume Profile — LOCKED references only (the tradeable levels).
+    // VAH red / VPOC yellow / VAL green. Monthly always; the "daily slot" is
+    // yesterday's profile (prev_day, Tue–Fri) or — on Monday, when there is no
+    // completed prior day — the whole previous week (prev_week).
     const vp = o.volume_profile || {};
     const drawVA = (key, label, style, width) => {
-      const p = vp[key]; if (!p) return;
+      const p = vp[key]; if (!p || p.vpoc == null) return;
       add(p.vah, { color: '#ef4444', style, width, title: label + ' VAH' });
       add(p.vpoc, { color: '#eab308', style, width, title: label + ' VPOC' });
       add(p.val, { color: '#22c55e', style, width, title: label + ' VAL' });
     };
-    drawVA('weekly', 'W', S.Dotted, 1);
-    drawVA('prev_week', 'pW', S.Dashed, 2);
+    drawVA('prev_month', 'M', S.Dashed, 2);
+    const hasDay = vp.prev_day && vp.prev_day.vpoc != null;
+    if (hasDay) drawVA('prev_day', 'D', S.Solid, 2);
+    else drawVA('prev_week', 'W', S.Dashed, 2);
     state.overlayLines = lines;
     renderFvgZones(o.fvg_zones || o.fvgZones || []);
   }

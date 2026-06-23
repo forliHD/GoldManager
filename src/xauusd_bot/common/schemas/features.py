@@ -131,6 +131,7 @@ class TripleVWAPOutput(BaseModel):
 class VolumeProfileName(str, Enum):
     """Higher-timeframe volume profile."""
 
+    DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
     YEARLY = "yearly"
@@ -190,6 +191,12 @@ class VolumeRangeOutput(BaseModel):
     weekly: VolumeProfileOutput
     monthly: VolumeProfileOutput
     yearly: VolumeProfileOutput
+    daily: VolumeProfileOutput | None = Field(
+        default=None, description="Developing current-day profile (state developing)."
+    )
+    prev_day: VolumeProfileOutput | None = Field(
+        default=None, description="Frozen previous-day profile (yesterday, state locked)."
+    )
     prev_week: VolumeProfileOutput | None = Field(
         default=None, description="Frozen previous-week profile (state always locked)."
     )
@@ -235,6 +242,32 @@ class FVGZone(BaseModel):
     status: FVGStatus
     mitigation_pct: float = Field(default=0.0, ge=0, le=100, description="How much of the zone has been filled (0..100).")
     rank_score: float = Field(default=0.0, ge=0, description="Composite rank (size × freshness × displacement).")
+    extended_bottom: float | None = Field(
+        default=None,
+        description=(
+            "Demand zones (bullish H1 FVG): the zone bottom extended DOWN to the "
+            "impulse-origin fractal — the H1 swing low if the origin candle forms a "
+            "fractal, otherwise the M5 swing low that launched the impulse. None = no "
+            "extension; the raw FVG bottom is the zone edge. The effective demand range "
+            "is [extended_bottom or bottom, top]."
+        ),
+    )
+    extended_top: float | None = Field(
+        default=None,
+        description=(
+            "Supply zones (bearish H1 FVG): the zone top extended UP to the "
+            "impulse-origin fractal (H1 swing high, else the M5 swing high). None = no "
+            "extension. The effective supply range is [bottom, extended_top or top]."
+        ),
+    )
+    extension_tf: Literal["H1", "M5", "M1"] | None = Field(
+        default=None,
+        description=(
+            "Timeframe the impulse-origin was resolved on. The zone is anchored to the "
+            "base of its final impulse leg — the tight rising-lows (demand) / "
+            "falling-highs (supply) staircase — found by drilling to 'M1'."
+        ),
+    )
 
 
 class FVGOutput(BaseModel):
@@ -324,6 +357,13 @@ class CandleMomentumPerBar(BaseModel):
         ge=0,
         le=100,
         description="This bar's tick_volume percentile vs last 100 bars (relative, AGENTS.md I-5).",
+    )
+    tick_volume: float = Field(
+        default=0.0,
+        ge=0,
+        description="This bar's RAW tick_volume (absolute participation). A percentile of 0 means "
+        "'quietest of the last 100 bars', NOT zero volume — read this to tell low participation "
+        "(price drifting level-to-level) from a genuine reaction.",
     )
 
 
@@ -480,6 +520,14 @@ class FeatureSnapshotBundle(BaseModel):
     volume_range: VolumeRangeOutput | None = None
     fvg: FVGOutput | None = None
     structure: MarketStructureOutput | None = None
+    structure_h1: MarketStructureOutput | None = Field(
+        default=None,
+        description=(
+            "Market structure computed on the H1 timeframe — the higher-timeframe BIAS "
+            "(trend, last BOS/CHoCH). `structure` (M5) is the lower-timeframe refinement "
+            "used for entry character and liquidity. Consistent with the H1 fib leg."
+        ),
+    )
     momentum: CandleMomentumOutput | None = None
     liquidity: LiquidityEngineOutput | None = None
     news: NewsContextOutput | None = None

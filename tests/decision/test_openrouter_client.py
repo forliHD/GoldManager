@@ -562,3 +562,13 @@ def _valid_llm_body() -> dict[str, Any]:
         "id": "gen-1",
         "choices": [{"message": {"role": "assistant", "content": json.dumps(content)}}],
     }
+
+
+def test_loads_lenient_strips_fences_and_prose():
+    """The model sometimes wraps JSON in ```json fences or prose — parse anyway."""
+    from xauusd_bot.decision.openrouter_client import _loads_lenient
+
+    assert _loads_lenient('{"a": 1}') == {"a": 1}
+    assert _loads_lenient('```json\n{"a": 1}\n```') == {"a": 1}
+    assert _loads_lenient('```\n{"a": 1}\n```') == {"a": 1}
+    assert _loads_lenient('Here is the decision:\n{"a": 1, "b": "x"}\nDone.') == {"a": 1, "b": "x"}

@@ -43,8 +43,15 @@ log = structlog.get_logger(__name__)
 GROUP = "feature-engine-v1"
 
 
-def _make_handler(settings: Settings, pipeline: FeaturePipeline, publisher: Publisher, buffer: list[Bar]):
+def _make_handler(
+    settings: Settings,
+    pipeline: FeaturePipeline,
+    publisher: Publisher,
+    buffer: list[Bar],
+    vp_buffer: list[Bar],
+):
     max_hist = settings.max_history_bars
+    vp_max = settings.volume_profile_history_bars
 
     async def handle(msg: StreamMessage) -> None:
         ev = msg.payload
@@ -55,7 +62,13 @@ def _make_handler(settings: Settings, pipeline: FeaturePipeline, publisher: Publ
         buffer.append(ev.bar)
         if len(buffer) > max_hist:
             del buffer[: len(buffer) - max_hist]
-        full_bundle = pipeline.assemble(buffer, ev.bar.time)
+        vp_bars: list[Bar] | None = None
+        if vp_max > 0:
+            vp_buffer.append(ev.bar)
+            if len(vp_buffer) > vp_max:
+                del vp_buffer[: len(vp_buffer) - vp_max]
+            vp_bars = vp_buffer
+        full_bundle = pipeline.assemble(buffer, ev.bar.time, vp_bars=vp_bars)
         # Emit the chart-overlay snapshot (VWAP / value area / FVG) to the
         # journal from the FULL bundle, before compaction strips the rich
         # fvg/structure detail. The dashboard reads the latest one to draw
@@ -117,10 +130,17 @@ async def _publish_overlay_snapshot(
 async def _run(settings: Settings) -> int:
     from xauusd_bot.features.news import make_news_provider
 
-    pipeline = FeaturePipeline(news_provider=make_news_provider(settings))
+    pipeline = FeaturePipeline(
+        news_provider=make_news_provider(settings),
+        fvg_extend_to_fractal=settings.fvg_extend_to_fractal,
+        fvg_extension_fractal_n=settings.fvg_extension_fractal_n,
+        fvg_extension_max_atr=settings.fvg_extension_max_atr,
+        fvg_leg_step_atr=settings.fvg_leg_step_atr,
+    )
     publisher = make_publisher(settings)
     await publisher.connect()
     buffer: list[Bar] = []
+    vp_buffer: list[Bar] = []  # deep history for the Volume Profile only
 
     # Live mode: seed the buffer with warmup history so the first
     # streamed bar already has context. Replay mode fills from the
@@ -130,9 +150,16 @@ async def _run(settings: Settings) -> int:
 
         connector = make_connector(settings)
         try:
-            warm = connector.get_rates(settings.symbol, "M1", count=settings.warmup_bars)
-            buffer.extend(warm)
-            log.info("feature_engine_warmup_loaded", bars=len(warm))
+            # One fetch deep enough for the Volume Profile; the main buffer is
+            # the recent tail (kept small so FVG/structure stay fast).
+            fetch_n = max(settings.warmup_bars, settings.volume_profile_history_bars)
+            warm = connector.get_rates(settings.symbol, "M1", count=fetch_n)
+            if settings.volume_profile_history_bars > 0:
+                vp_buffer.extend(warm)
+                buffer.extend(warm[-settings.warmup_bars:])
+            else:
+                buffer.extend(warm)
+            log.info("feature_engine_warmup_loaded", bars=len(buffer), vp_bars=len(vp_buffer))
             # Detect the broker→UTC clock offset from the freshest bar so the
             # news blackout aligns broker-time bars with UTC calendar events.
             if warm:
@@ -153,7 +180,7 @@ async def _run(settings: Settings) -> int:
             with contextlib.suppress(Exception):
                 connector.shutdown()
 
-    handler = _make_handler(settings, pipeline, publisher, buffer)
+    handler = _make_handler(settings, pipeline, publisher, buffer, vp_buffer)
     return await run_consumer_service(
         ServiceRole.FEATURE_ENGINE,
         settings,

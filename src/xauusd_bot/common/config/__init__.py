@@ -258,7 +258,49 @@ class Settings(BaseSettings):
     max_history_bars: int = Field(
         default=200_000,
         ge=1,
-        description="Upper bound on the feature-engine's in-memory bar buffer. Note: yearly volume-range needs long history — see AGENTS.md.",
+        description="Upper bound on the feature-engine's MAIN in-memory bar buffer (FVG/structure/vwap/…). Keep modest: FVG is ~O(n²).",
+    )
+    volume_profile_history_bars: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Separate DEEP bar history fed only to the Volume Profile so its locked "
+            "Daily/Weekly/Monthly ranges span whole completed periods. 0 = off (volume_range "
+            "uses the main buffer). Live: ~90000 covers >2 months. volume_range is cheap even "
+            "over deep history (~0.7s/80k); the main buffer stays small so FVG doesn't blow up."
+        ),
+    )
+    fvg_extend_to_fractal: bool = Field(
+        default=True,
+        description=(
+            "Anchor each H1 demand/supply FVG to the base of its final impulse leg — the "
+            "tight rising-lows (demand) / falling-highs (supply) staircase found by "
+            "drilling to M1 — and extend the zone bottom/top to it (strategy author's "
+            "zone methodology). False = raw FVG gap only."
+        ),
+    )
+    fvg_extension_fractal_n: int = Field(
+        default=2,
+        ge=1,
+        description="N-bar M1 fractal period used to locate the impulse-leg swings for zone extension.",
+    )
+    fvg_extension_max_atr: float = Field(
+        default=2.0,
+        ge=0,
+        description=(
+            "Hard safety cap on how far a zone may be extended to its leg base, in H1-ATR "
+            "multiples (backstop against absurd zones). 0 = uncapped."
+        ),
+    )
+    fvg_leg_step_atr: float = Field(
+        default=0.5,
+        ge=0,
+        description=(
+            "Max gap between consecutive staircase swings (in H1-ATR multiples) before a "
+            "LEG BOUNDARY is declared and the walk stops. This is what keeps multi-leg "
+            "moves from dragging the zone to the absolute bottom (the 'too-large zone' "
+            "problem). Smaller = tighter zones."
+        ),
     )
     stream_block_ms: int = Field(
         default=1000, ge=1, description="XREADGROUP block timeout (ms) for service consumers."

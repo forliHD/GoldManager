@@ -34,7 +34,20 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Some models (notably minimax-m3) serialize a JSON null as the *string* "null"
+# for optional fields — e.g. ``"entry_type": "null"``, ``"vwap_mode": "null"``.
+# That fails the strict Literal validation and drops the whole decision to the
+# rule fallback. Coerce these stringy-nulls back to None before field validation.
+_NULLISH = {"null", "none", "nil", "n/a", "na", "undefined", ""}
+
+
+def _coerce_nullish(v: object) -> object:
+    if isinstance(v, str) and v.strip().lower() in _NULLISH:
+        return None
+    return v
+
 
 # ---------------------------------------------------------------- entry zone
 
@@ -69,6 +82,8 @@ class EntryZone(BaseModel):
         allow_inf_nan=False,
         description="Upper bound of the entry zone (USD). None = no upper bound.",
     )
+
+    _nullish = field_validator("price_min", "price_max", mode="before")(_coerce_nullish)
 
 
 # ---------------------------------------------------------------- management
@@ -121,6 +136,10 @@ class ManagementBlock(BaseModel):
         ),
     )
 
+    _nullish = field_validator(
+        "tp1_rr", "tp2_rr", "runner_to", "protect_before_news_min", mode="before"
+    )(_coerce_nullish)
+
 
 # ---------------------------------------------------------------- confluence
 
@@ -148,9 +167,13 @@ class ConfluenceBlock(BaseModel):
         ge=0,
         description="Count of confluent zones at the entry (H1 zone + M1 FVG + golden pocket …).",
     )
-    fib_zone: Literal["0.236", "0.382", "golden_pocket", "deep"] | None = Field(
+    fib_zone: str | None = Field(
         default=None,
-        description="Which fib bracket of the last H1 impulse price sits in. None = not assessed.",
+        description=(
+            "Which fib bracket the price sits in (echoes the fib engine's price_zone: "
+            "shallow / 0.236 / 0.382 / golden_pocket / deep / extended). Advisory free-text — "
+            "kept permissive so an unexpected value never drops the whole decision to fallback."
+        ),
     )
     h1_trend: Literal["strong", "weak", "none"] = Field(
         default="none",
@@ -168,6 +191,10 @@ class ConfluenceBlock(BaseModel):
         default=None,
         description="Did volume + candle print confirm the reaction? None = not assessable yet.",
     )
+
+    _nullish = field_validator(
+        "fib_zone", "vwap_mode", "volume_confirms", mode="before"
+    )(_coerce_nullish)
 
 
 # ---------------------------------------------------------------- main LLMDecision
@@ -223,6 +250,8 @@ class LLMDecision(BaseModel):
         default=None,
         description="Trade side. None = no direction (no_trade / watch).",
     )
+
+    _nullish = field_validator("entry_type", "entry_side", mode="before")(_coerce_nullish)
     entry_zone: EntryZone = Field(
         default_factory=EntryZone,
         description="Proposed entry price range, validated against the snapshot zones.",

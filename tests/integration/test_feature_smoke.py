@@ -210,9 +210,10 @@ def test_overlay_levels_json_has_required_sections(sample_path: Path, tmp_path: 
 
     # VWAP has all three anchors.
     assert set(ov["vwap"].keys()) == {"utc00", "utc07", "utc12"}
-    # Volume profile has the 6 sub-profiles (3 current + 3 prev).
+    # Volume profile has the 8 sub-profiles (4 developing + 4 prev/locked).
     assert set(ov["volume_profile"].keys()) == {
-        "weekly", "monthly", "yearly", "prev_week", "prev_month", "prev_year",
+        "daily", "weekly", "monthly", "yearly",
+        "prev_day", "prev_week", "prev_month", "prev_year",
     }
 
 

@@ -152,6 +152,41 @@ class TestLLMDecisionRejects:
         assert "protect_before_news_min" in str(exc_info.value).lower() or "protect" in str(exc_info.value).lower()
 
 
+class TestStringyNullCoercion:
+    """minimax-m3 serializes JSON null as the string "null" for optional fields.
+
+    Without coercion this drops the whole decision to the rule fallback
+    (seen live: entry_type="null" + vwap_mode="null").
+    """
+
+    def test_stringy_null_on_entry_fields(self):
+        d = LLMDecision.model_validate(
+            _valid_payload(decision="watch", entry_type="null", entry_side="null")
+        )
+        assert d.entry_type is None
+        assert d.entry_side is None
+
+    def test_stringy_null_in_confluence_and_management(self):
+        d = LLMDecision.model_validate(
+            _valid_payload(
+                confluence={"vwap_mode": "null", "volume_confirms": "null", "fib_zone": "null"},
+                management={"tp1_rr": "null", "runner_to": "none"},
+                entry_zone={"price_min": 4182.0, "price_max": "null"},
+            )
+        )
+        assert d.confluence.vwap_mode is None
+        assert d.confluence.volume_confirms is None
+        assert d.confluence.fib_zone is None
+        assert d.management.tp1_rr is None
+        assert d.management.runner_to is None
+        assert d.entry_zone.price_max is None
+
+    def test_real_values_still_pass(self):
+        # Coercion must not eat legitimate values.
+        d = LLMDecision.model_validate(_valid_payload(entry_type="pullback"))
+        assert d.entry_type == "pullback"
+
+
 class TestEntryZone:
     def test_both_bounds(self):
         z = EntryZone(price_min=2370.0, price_max=2375.0)
@@ -216,6 +251,16 @@ class TestConfluenceBlock:
         assert d.confluence.vwap_mode is None
         assert d.confluence.volume_confirms is None
 
+    def test_fib_zone_accepts_engine_values(self):
+        # The fib engine emits 'shallow'/'extended'; the LLM echoes them into the
+        # advisory confluence trace. These MUST validate — a too-strict Literal
+        # here used to drop the whole decision to RuleBasedFallback.
+        for z in ("shallow", "extended", "0.236", "golden_pocket", "deep", None):
+            p = _valid_payload()
+            p["confluence"] = {"in_zone": True, "fib_zone": z}
+            d = LLMDecision.model_validate(p)
+            assert d.confluence.fib_zone == z
+
     def test_parses_full_confluence(self):
         d = LLMDecision.model_validate(
             _valid_payload(
@@ -241,9 +286,12 @@ class TestConfluenceBlock:
         with pytest.raises(ValidationError):
             ConfluenceBlock.model_validate({"in_zone": True, "bogus": 1})
 
-    def test_rejects_invalid_fib_literal(self):
-        with pytest.raises(ValidationError):
-            LLMDecision.model_validate(_valid_payload(confluence={"fib_zone": "0.99"}))
+    def test_fib_zone_is_permissive(self):
+        # fib_zone is advisory free-text now (it echoes the fib engine's
+        # price_zone vocabulary). An unexpected value must NOT raise — a strict
+        # Literal here previously dropped the whole decision to RuleBasedFallback.
+        d = LLMDecision.model_validate(_valid_payload(confluence={"fib_zone": "0.99"}))
+        assert d.confluence.fib_zone == "0.99"
 
     def test_rejects_negative_zones(self):
         with pytest.raises(ValidationError):

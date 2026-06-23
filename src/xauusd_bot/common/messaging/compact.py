@@ -107,9 +107,9 @@ def compact_bundle(
 ) -> FeatureSnapshotBundle:
     """Return a transport-slimmed copy of ``bundle`` (pure, idempotent).
 
-    Only ``fvg`` and ``structure`` are reshaped; every other engine output
-    is carried through unchanged. Compacting an already-compact bundle
-    returns an equivalent bundle.
+    Only ``fvg``, ``structure`` and ``structure_h1`` are reshaped; every other
+    engine output is carried through unchanged. Compacting an already-compact
+    bundle returns an equivalent bundle.
     """
 
     updates: dict[str, object] = {}
@@ -117,6 +117,8 @@ def compact_bundle(
         updates["fvg"] = _compact_zones(bundle.fvg, max_mitigated_zones_per_tf)
     if bundle.structure is not None:
         updates["structure"] = _compact_swings(bundle.structure, max_swings)
+    if bundle.structure_h1 is not None:
+        updates["structure_h1"] = _compact_swings(bundle.structure_h1, max_swings)
     if not updates:
         return bundle
     return bundle.model_copy(update=updates)

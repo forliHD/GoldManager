@@ -43,12 +43,32 @@ class FeaturePipeline:
     reuse for every bar.
     """
 
-    def __init__(self, *, news_provider: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        news_provider: object | None = None,
+        fvg_extend_to_fractal: bool = True,
+        fvg_extension_fractal_n: int = 2,
+        fvg_extension_max_atr: float = 2.0,
+        fvg_leg_step_atr: float = 0.5,
+    ) -> None:
         self.session = SessionEngine()
         self.vwap = TripleVWAPEngine()
         self.volume_range = FixedVolumeRangeEngine()
-        self.fvg = FVGEngine()
+        self.fvg = FVGEngine(
+            extend_to_fractal=fvg_extend_to_fractal,
+            extension_fractal_n=fvg_extension_fractal_n,
+            extension_max_atr=fvg_extension_max_atr,
+            leg_step_atr=fvg_leg_step_atr,
+        )
         self.structure = MarketStructureEngine()
+        # Higher-timeframe (H1) structure = the bias. fractal_n=2 / a small
+        # min_bars_between so the recent H1 swing structure resolves on the ~25
+        # H1 bars in the main buffer; fractal_n matches the H1 fib engine so the
+        # H1 trend and the fib leg agree.
+        self.structure_h1 = MarketStructureEngine(
+            fractal_n=2, min_bars_between=3, timeframe_minutes=60
+        )
         self.momentum = CandleMomentumEngine()
         self.volume_trend = VolumeTrendEngine()
         self.fib = FibRetracementEngine()
@@ -56,27 +76,46 @@ class FeaturePipeline:
         self.news = NewsContextEngine(provider=news_provider or StubNewsProvider())
 
     def set_clock_offset(self, minutes: float) -> None:
-        """Fan the broker→UTC offset out to every time-of-day-anchored engine.
+        """Fan the broker→UTC offset out to the UTC-anchored engines.
 
-        MT5 bar times are broker-server time (e.g. UTC+3). Session windows,
-        the VWAP 00:00/07:00/12:00 anchors, the volume-profile period bounds
-        and the news calendar are all defined in real UTC, so each must
-        subtract this offset to classify/anchor correctly. 0 in replay/tests.
+        MT5 bar times are broker-server time (e.g. UTC+3). The session windows,
+        the VWAP 00:00/07:00/12:00 anchors and the news calendar are defined in
+        real UTC, so each subtracts this offset to classify/anchor correctly.
+
+        The Volume Profile is the EXCEPTION: its Daily/Weekly/Monthly ranges are
+        the BROKER's trading sessions (the strategy author trades off the broker
+        daily candle: ~22:00→20:57 UTC = broker 00:00→23:57, week opens Sun 22:00
+        UTC = broker Mon 00:00). Those are the broker CALENDAR periods, so
+        ``volume_range`` stays at offset 0 (broker frame) — applying the UTC
+        offset shifted every window by ~3h and produced wrong VAH/VPOC/VAL.
+        Verified live: offset 0 reproduces the author's weekly (4365/4340/4265)
+        and monthly (4685/4545/4430) levels; offset 180 did not.
         """
 
         self.session.set_clock_offset(minutes)
         self.vwap.set_clock_offset(minutes)
-        self.volume_range.set_clock_offset(minutes)
         self.news.set_clock_offset(minutes)
+        # NOT volume_range — see docstring (broker-calendar periods).
 
-    def assemble(self, bars: list[Bar], ts: datetime) -> FeatureSnapshotBundle:
-        """Run every engine over ``bars`` (PIT-filtered to ``ts``) and bundle it."""
+    def assemble(
+        self, bars: list[Bar], ts: datetime, vp_bars: list[Bar] | None = None
+    ) -> FeatureSnapshotBundle:
+        """Run every engine over ``bars`` (PIT-filtered to ``ts``) and bundle it.
+
+        ``vp_bars`` is an optional, deeper bar history used **only** for the
+        Volume Profile. The locked Daily/Weekly/Monthly profiles need weeks/months
+        of bars, but the other engines (esp. FVG, which is ~O(n²)) must stay on a
+        short window or assembly blows past the 1-bar/minute budget. volume_range
+        itself is cheap even over deep history (~0.7s/80k bars). Defaults to
+        ``bars`` (backtest/tests pass the full replay window directly).
+        """
 
         session_out = self.session.compute(bars, ts)
         vwap_out = self.vwap.compute(bars, ts)
-        vr_out = self.volume_range.compute(bars, ts)
+        vr_out = self.volume_range.compute(vp_bars if vp_bars is not None else bars, ts)
         fvg_out = self.fvg.compute(bars, ts)
         structure_out = self.structure.compute(bars, ts)
+        structure_h1_out = self.structure_h1.compute(bars, ts)
         momentum_out = self.momentum.compute(bars, ts)
         volume_trend_out = self.volume_trend.compute(bars, ts)
         fib_out = self.fib.compute(bars, ts)
@@ -98,6 +137,7 @@ class FeaturePipeline:
             volume_range=vr_out,
             fvg=fvg_out,
             structure=structure_out,
+            structure_h1=structure_h1_out,
             momentum=momentum_out,
             liquidity=liquidity_out,
             news=news_out,

@@ -155,6 +155,19 @@ def test_windows_swings_to_most_recent() -> None:
     assert out.structure.swings[-1].bar_index == 199
 
 
+def test_structure_h1_is_windowed_too() -> None:
+    # The H1 structure must be slimmed the same way as the M5 structure.
+    swings = [_swing("high" if i % 2 else "low", i, 2400.0 + i) for i in range(200)]
+    bundle = FeatureSnapshotBundle(
+        ts=_T0,
+        structure_h1=MarketStructureOutput(swings=swings, fractal_n=2),
+        atr=2.0,
+    )
+    out = compact_bundle(bundle, max_swings=50)
+    assert len(out.structure_h1.swings) == 50
+    assert out.structure_h1.swings[-1].bar_index == 199
+
+
 def test_latest_high_and_low_preserved_for_execution() -> None:
     # Execution's _last_swing reads the latest high and the latest low.
     swings = [_swing("high" if i % 2 else "low", i, 2400.0 + i) for i in range(200)]

@@ -170,10 +170,22 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
         }
     if bundle.volume_range is not None:
         vr = bundle.volume_range
+        # LOCKED profiles (last COMPLETED period) are the tradeable references —
+        # fixed VPOC/VAH/VAL the strategy reacts off (Joshua: monthly = last month,
+        # weekly = last week after Fri close, daily = yesterday). The developing
+        # (current, in-progress) profiles are context only. ``null`` = not yet
+        # available (e.g. prev_day on a Monday). Yearly is omitted: it needs a
+        # full year of M1 the live buffer can't hold and is demoted in scoring.
         payload["volume_range"] = {
-            "weekly": _vp_to_dict(vr.weekly),
-            "monthly": _vp_to_dict(vr.monthly),
-            "yearly": _vp_to_dict(vr.yearly),
+            "locked": {
+                "daily": _vp_to_dict(vr.prev_day),
+                "weekly": _vp_to_dict(vr.prev_week),
+                "monthly": _vp_to_dict(vr.prev_month),
+            },
+            "developing": {
+                "daily": _vp_to_dict(vr.daily),
+                "weekly": _vp_to_dict(vr.weekly),
+            },
             "developing_vs_locked_clusters": vr.developing_vs_locked_clusters,
         }
     if bundle.fvg is not None:
@@ -194,6 +206,21 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                     "displacement_atr": _r(z.displacement_atr, 3),
                     "status": z.status.value,
                     "rank_score": _r(z.rank_score, 3),
+                    **(
+                        {"extended_bottom": _r(z.extended_bottom)}
+                        if z.extended_bottom is not None
+                        else {}
+                    ),
+                    **(
+                        {"extended_top": _r(z.extended_top)}
+                        if z.extended_top is not None
+                        else {}
+                    ),
+                    **(
+                        {"extension_tf": z.extension_tf}
+                        if z.extension_tf is not None
+                        else {}
+                    ),
                 }
                 for z in ranked
             ],
@@ -208,22 +235,13 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                 for z in f.top_zones
             ],
         }
-    if bundle.structure is not None:
-        st = bundle.structure
-        last_bos = (
-            {"type": st.last_bos.type.value, "level": _r(st.last_bos.level), "close": _r(st.last_bos.close)}
-            if st.last_bos is not None
-            else None
-        )
-        last_choch = (
-            {"type": st.last_choch.type.value, "level": _r(st.last_choch.level), "close": _r(st.last_choch.close)}
-            if st.last_choch is not None
-            else None
-        )
+    if bundle.structure is not None or bundle.structure_h1 is not None:
+        # H1 = the higher-timeframe BIAS (consistent with the H1 fib leg);
+        # ltf_m5 = the lower-timeframe (M5) entry character. Sending both keeps
+        # the bias and the entry-trigger structure from being confused.
         payload["structure"] = {
-            "trend": st.trend,
-            "last_bos": last_bos,
-            "last_choch": last_choch,
+            "h1": _structure_dict(bundle.structure_h1),
+            "ltf_m5": _structure_dict(bundle.structure),
         }
     if bundle.momentum is not None:
         m = bundle.momentum
@@ -235,6 +253,7 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
                     "close_position": _r(bar.close_position, 3),
                     "displacement": _r(bar.displacement, 3),
                     "tick_volume_percentile": _r(bar.tick_volume_percentile, 1),
+                    "tick_volume": _r(bar.tick_volume, 1),
                 }
                 for name, bar in m.by_tf.items()
             },
@@ -283,7 +302,26 @@ def _bundle_to_payload(bundle: FeatureSnapshotBundle, max_fvg_zones: int = 25) -
     return payload
 
 
-def _vp_to_dict(vp: Any) -> dict[str, Any]:
+def _structure_dict(st: Any) -> dict[str, Any] | None:
+    """Serialize a MarketStructureOutput to {trend, last_bos, last_choch}."""
+    if st is None:
+        return None
+    lb = (
+        {"type": st.last_bos.type.value, "level": _r(st.last_bos.level), "close": _r(st.last_bos.close)}
+        if st.last_bos is not None
+        else None
+    )
+    lc = (
+        {"type": st.last_choch.type.value, "level": _r(st.last_choch.level), "close": _r(st.last_choch.close)}
+        if st.last_choch is not None
+        else None
+    )
+    return {"trend": st.trend, "last_bos": lb, "last_choch": lc}
+
+
+def _vp_to_dict(vp: Any) -> dict[str, Any] | None:
+    if vp is None:
+        return None
     return {
         "state": vp.state.value,
         "vah": _r(vp.vah),
@@ -293,6 +331,7 @@ def _vp_to_dict(vp: Any) -> dict[str, Any]:
         "acceptance_count": vp.acceptance_count,
         "rotation": vp.rotation,
         "breakout": vp.breakout,
+        "n_bars": vp.n_bars,
     }
 
 
@@ -337,7 +376,9 @@ def _zone_within_snapshot(
     * If only one bound is set: that bound must be inside some zone.
     * If both bounds are set: at least one of them must be inside
       some zone.
-    * "Inside" = ``zone.bottom <= price <= zone.top``.
+    * "Inside" = ``low <= price <= high`` where the zone's effective edges
+      honour the M5-fractal extension: a demand zone reaches down to
+      ``extended_bottom`` and a supply zone up to ``extended_top`` when set.
     """
 
     if price_min is None and price_max is None:
@@ -347,9 +388,11 @@ def _zone_within_snapshot(
         # entry_zone. This is a violation.
         return False
     for zone in bundle.fvg.zones:
-        if price_min is not None and zone.bottom <= price_min <= zone.top:
+        low = zone.extended_bottom if zone.extended_bottom is not None else zone.bottom
+        high = zone.extended_top if zone.extended_top is not None else zone.top
+        if price_min is not None and low <= price_min <= high:
             return True
-        if price_max is not None and zone.bottom <= price_max <= zone.top:
+        if price_max is not None and low <= price_max <= high:
             return True
     return False
 
