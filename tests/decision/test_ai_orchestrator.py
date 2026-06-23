@@ -252,6 +252,9 @@ class TestLLMCallSuccess:
         layer.decide.assert_called_once()
         assert decision.action == DecisionAction.ENTER_LONG
         assert decision.entry_type == EntryType.SCOUT
+        # The entry came from the LLM → tagged 'ai' so journal_trades.engine_source
+        # is accurate (every order was previously mis-tagged 'rule').
+        assert decision.source_engine == "ai"
 
     @pytest.mark.asyncio
     async def test_llm_reduced_entry_returns_reduced(self):

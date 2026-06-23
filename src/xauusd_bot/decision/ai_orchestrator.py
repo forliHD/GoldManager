@@ -375,6 +375,7 @@ class AIDecisionOrchestrator:
             source_score=score.total_score,
             source_band=score.band,
             source_direction=score.direction,
+            source_engine="ai",
             timestamp=score.timestamp,
         )
 

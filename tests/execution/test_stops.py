@@ -105,17 +105,37 @@ def test_short_initial_sl_behind_swing_high_with_atr_buffer() -> None:
 
 def test_long_initial_sl_fallback_when_no_structure() -> None:
     spec = make_symbol_spec()
+    # ATR=5 so the 1×ATR fallback (5 pts) exceeds the SL floor (3 pts) and the
+    # floor doesn't interfere — this test exercises the fallback distance.
     mgr = StopManager(spec=spec, initial_sl_atr=1.0)
     bundle = _empty_bundle(datetime(2026, 4, 15, 13, 30, tzinfo=UTC))
-    bundle.atr = 0.5
+    bundle.atr = 5.0
     result = mgr.compute_initial(
         side=OrderSide.BUY,
         entry_price=Decimal("2375.00"),
         bundle=bundle,
     )
-    # Fallback uses entry - 1×ATR = 2375 - 0.5 = 2374.5
-    assert result.sl_price == Decimal("2374.50")
+    # Fallback uses entry - 1×ATR = 2375 - 5 = 2370
+    assert result.sl_price == Decimal("2370.00")
     assert any("fallback" in r for r in result.reasoning)
+
+
+def test_sl_floor_pushes_out_a_too_tight_structure_stop() -> None:
+    # Regression for the −6.7× sizing blowup (trade #7): when price enters just
+    # above the swing low, the structure stop is microscopic. The floor pushes
+    # it to at least max(min_sl_atr×ATR, min_sl_points) from entry.
+    spec = make_symbol_spec()
+    mgr = StopManager(spec=spec, initial_sl_atr=0.5, min_sl_atr=0.6, min_sl_points=3.0)
+    # Swing low ≈ entry → structure SL lands a fraction of a point below entry
+    # (the #7 case: entry 4191.36 just above a 4191.10 swing).
+    bundle = _bundle_with_low_swing(datetime(2026, 4, 15, 13, 30, tzinfo=UTC), 4191.10)
+    result = mgr.compute_initial(
+        side=OrderSide.BUY, entry_price=Decimal("4191.36"), bundle=bundle
+    )
+    sl_distance = Decimal("4191.36") - result.sl_price
+    # Floor = max(0.6×1.78, 3.0) = 3.0 → SL at least 3 pts away (not 0.26).
+    assert sl_distance >= Decimal("3.0")
+    assert any("floor" in r for r in result.reasoning)
 
 
 # ----------------------------------------------------------------- 4. break-even

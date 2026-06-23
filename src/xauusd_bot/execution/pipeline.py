@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 import structlog
 
@@ -36,7 +36,7 @@ from xauusd_bot.common.schemas.decision import (
     Score,
     TradeQualification,
 )
-from xauusd_bot.common.schemas.execution import OrderTag
+from xauusd_bot.common.schemas.execution import OrderTag, SizingRoundingMode
 from xauusd_bot.common.schemas.features import FeatureSnapshotBundle
 from xauusd_bot.common.schemas.journal import (
     OrderRecord,
@@ -99,8 +99,12 @@ class ExecutionPipeline:
             is_connected=connector.is_connected,
         )
         self.order_mgr = OrderManager(connector=connector, safety=self.safety)
-        self.sizer = PositionSizer()
-        self.stop_mgr = StopManager(spec=self.spec)
+        self.sizer = PositionSizer(risk_tolerance=settings.exec_risk_tolerance)
+        self.stop_mgr = StopManager(
+            spec=self.spec,
+            min_sl_atr=settings.exec_min_sl_atr,
+            min_sl_points=settings.exec_min_sl_points,
+        )
         self.tp_mgr = TakeProfitManager(spec=self.spec)
         self.emergency = EmergencyStopManager(
             settings=settings,
@@ -218,7 +222,12 @@ class ExecutionPipeline:
             now=now,
         )
         if sizing.volume_lots <= 0:
-            return ExecutionOutcome(submitted=False, blocked_reason="zero_volume")
+            reason = (
+                "risk_cap"
+                if sizing.rounding_mode == SizingRoundingMode.RISK_BLOCKED
+                else "zero_volume"
+            )
+            return ExecutionOutcome(submitted=False, blocked_reason=reason)
 
         # --- Submit the order.
         order_env = self.order_mgr.send(
@@ -231,6 +240,9 @@ class ExecutionPipeline:
                 tp=stops.tp1_price,
             ),
             setup_id=qualification.qualification_id,
+            engine_source=(
+                OrderTag.AI_ASSISTED if decision.source_engine == "ai" else OrderTag.RULE_BASED
+            ),
             now=now,
         )
         if order_env.state == "rejected":
@@ -240,6 +252,43 @@ class ExecutionPipeline:
 
         self.risk_mgr.record_trade(now=now)
         fill_price = order_env.avg_fill_price or entry_price
+
+        # POST-FILL RISK TRIM: a market order can fill away from the intended
+        # entry, inflating the realized SL distance (|fill − sl|) vs the distance
+        # we sized for → realized risk above the budget. Re-check against the cap
+        # and, if breached, trim the just-opened position back with a partial
+        # close (best-effort; on failure we keep the position and log).
+        final_volume = sizing.volume_lots
+        contract = self.spec.trade_contract_size or Decimal("100")
+        realized_sl_dist = abs(fill_price - stops.sl_price)
+        max_risk = risk_verdict.risk_amount * (
+            Decimal("1") + Decimal(str(self.settings.exec_risk_tolerance))
+        )
+        close_fn = getattr(self.connector, "close_position", None)
+        if (
+            order_env.order_id
+            and realized_sl_dist > 0
+            and close_fn is not None
+            and (final_volume * realized_sl_dist * contract) > max_risk
+        ):
+            step = Decimal(self.spec.volume_step)
+            target = (
+                (max_risk / (realized_sl_dist * contract)) / step
+            ).to_integral_value(rounding=ROUND_DOWN) * step
+            excess = final_volume - target
+            if excess >= step and target >= Decimal(self.spec.volume_min):
+                try:
+                    close_fn(str(order_env.order_id), excess)
+                    log.warning(
+                        "execution_risk_trim_on_slip",
+                        ticket=str(order_env.order_id),
+                        from_lots=str(final_volume),
+                        to_lots=str(target),
+                        realized_sl=str(realized_sl_dist),
+                    )
+                    final_volume = target
+                except Exception as exc:  # noqa: BLE001 - best-effort; keep position
+                    log.warning("execution_risk_trim_failed", error=str(exc))
 
         # Zone-lock: register the opened position's zone (keyed by ticket so the
         # manage loop can mark it 'used' on close).
@@ -254,7 +303,7 @@ class ExecutionPipeline:
             take_profits=[
                 p for p in (stops.tp1_price, stops.tp2_price, stops.tp3_price) if p is not None
             ],
-            volume_lots=sizing.volume_lots,
+            volume_lots=final_volume,
             risk_amount=risk_verdict.risk_amount,
             setup_id=qualification.qualification_id,
             strategy_version="service-v1",
@@ -283,7 +332,7 @@ class ExecutionPipeline:
             symbol=self.symbol,
             side=side,
             type=order_env.type,
-            volume=sizing.volume_lots,
+            volume=final_volume,
             requested_price=order_env.requested_price,
             fill_price=order_env.avg_fill_price,
             slippage_pips=trade.slippage_pips,
@@ -300,7 +349,7 @@ class ExecutionPipeline:
         log.info(
             "execution_order_submitted",
             side=side.value,
-            volume=str(sizing.volume_lots),
+            volume=str(final_volume),
             entry=str(fill_price),
             sl=str(stops.sl_price),
         )
@@ -310,7 +359,7 @@ class ExecutionPipeline:
                 ticket=str(order_env.order_id),
                 side=side,
                 entry_price=fill_price,
-                initial_volume=sizing.volume_lots,
+                initial_volume=final_volume,
                 sl_price=stops.sl_price,
                 tp1_price=stops.tp1_price,
                 tp2_price=stops.tp2_price,

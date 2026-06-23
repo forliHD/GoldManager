@@ -350,6 +350,33 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Execution safety (SL floor + hard max-risk cap) — prevents the
+    # tiny-structure-stop sizing blowup (a 0.26pt stop sized 1.92 lots → −6.7×
+    # the risk budget on one trade).
+    exec_min_sl_atr: float = Field(
+        default=0.6,
+        ge=0,
+        description=(
+            "Minimum SL distance from entry as a multiple of ATR. The SL floor is "
+            "max(exec_min_sl_atr×ATR, exec_min_sl_points); a structure stop tighter "
+            "than the floor is pushed out so the lot size can't explode."
+        ),
+    )
+    exec_min_sl_points: float = Field(
+        default=3.0,
+        ge=0,
+        description="Absolute minimum SL distance from entry in price points (gold). Part of the SL floor.",
+    )
+    exec_risk_tolerance: float = Field(
+        default=0.15,
+        ge=0,
+        description=(
+            "Hard max-risk cap: a position's realized risk (lots×sl_distance×contract) "
+            "may not exceed risk_amount×(1+exec_risk_tolerance). Backstop independent of "
+            "the SL floor — clamps lots down (never snaps volume_min up past the cap)."
+        ),
+    )
+
     # --- Risk (fractions, e.g. 0.04 = 4%)
     risk_max_daily: float = Field(default=0.04, ge=0, le=1)
     risk_max_weekly: float = Field(default=0.08, ge=0, le=1)

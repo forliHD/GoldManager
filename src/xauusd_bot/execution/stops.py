@@ -53,6 +53,11 @@ log = structlog.get_logger(__name__)
 DEFAULT_INITIAL_SL_ATR = 0.5
 DEFAULT_TRAIL_MIN_ATR = 1.0
 DEFAULT_BE_BONUS_POINTS = 5.0  # tiny buffer so commission+spread is covered
+# SL floor: a structure stop closer to entry than this is pushed out, so the
+# lot size (risk / sl_distance) can't explode on a tiny stop. floor =
+# max(DEFAULT_MIN_SL_ATR × ATR, DEFAULT_MIN_SL_POINTS).
+DEFAULT_MIN_SL_ATR = 0.6
+DEFAULT_MIN_SL_POINTS = 3.0
 
 
 # ----------------------------------------------------------------- helpers
@@ -101,11 +106,21 @@ class StopManager:
         initial_sl_atr: float = DEFAULT_INITIAL_SL_ATR,
         trail_min_atr: float = DEFAULT_TRAIL_MIN_ATR,
         be_bonus_points: float = DEFAULT_BE_BONUS_POINTS,
+        min_sl_atr: float = DEFAULT_MIN_SL_ATR,
+        min_sl_points: float = DEFAULT_MIN_SL_POINTS,
     ) -> None:
         self._spec = spec
         self._initial_sl_atr = initial_sl_atr
         self._trail_min_atr = trail_min_atr
         self._be_bonus_points = be_bonus_points
+        self._min_sl_atr = min_sl_atr
+        self._min_sl_points = min_sl_points
+
+    def _sl_floor(self, atr: float) -> Decimal:
+        """Minimum SL distance from entry (price units): max(atr-mult, points)."""
+
+        by_atr = self._min_sl_atr * atr
+        return Decimal(str(max(by_atr, self._min_sl_points)))
 
     @property
     def spec(self) -> SymbolSpec:
@@ -152,6 +167,24 @@ class StopManager:
         if sl <= 0:
             sl = entry_price - Decimal("1.0") if side == OrderSide.BUY else entry_price + Decimal("1.0")
             reasoning.append("SL guard: clamped to entry±1 to avoid zero/negative values")
+
+        # SL FLOOR: a structure stop closer to entry than the floor would explode
+        # the lot size (risk / sl_distance). Push it out to at least the floor.
+        floor = self._sl_floor(atr)
+        if side == OrderSide.BUY:
+            max_sl = entry_price - floor  # SL must be at or below this
+            if sl > max_sl:
+                reasoning.append(
+                    f"SL floor: {entry_price - sl} < {floor} → pushed to entry−floor ({max_sl})"
+                )
+                sl = max_sl
+        else:
+            min_sl = entry_price + floor  # SL must be at or above this
+            if sl < min_sl:
+                reasoning.append(
+                    f"SL floor: {sl - entry_price} < {floor} → pushed to entry+floor ({min_sl})"
+                )
+                sl = min_sl
 
         sl_rounded = _round(sl, self._spec)
         return StopsAndTPs(

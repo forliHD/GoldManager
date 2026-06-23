@@ -274,6 +274,14 @@ class Decision(BaseModel):
     source_score: float = Field(ge=0, le=100, description="Score.total_score at decision time.")
     source_band: ScoreBand
     source_direction: Literal["long", "short", "neutral"]
+    source_engine: Literal["ai", "rule"] = Field(
+        default="rule",
+        description=(
+            "Which engine produced this decision — 'ai' when the LLM decided "
+            "(orchestrator _llm_to_decision), 'rule' for the deterministic fallback. "
+            "Propagated to the order tag so journal_trades.engine_source is accurate."
+        ),
+    )
     timestamp: datetime
 
 
