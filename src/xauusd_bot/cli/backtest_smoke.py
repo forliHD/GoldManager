@@ -82,6 +82,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-bars", type=int, default=200, help="Cap on bars processed (smoke budgets).")
     parser.add_argument("--context-window-bars", type=int, default=600, help="Rolling feature window.")
     parser.add_argument("--skip-walkforward", action="store_true", help="Skip the Walk-Forward run.")
+    parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="LLM-in-the-loop: consult the AIDecisionOrchestrator per candidate bar "
+        "(needs OPENROUTER_API_KEY). Forces --skip-walkforward (one pass only).",
+    )
+    parser.add_argument("--prompt", type=Path, default=_THIS.parents[3] / "decision_agent.md")
     parser.add_argument("--symbol", type=str, default="XAUUSD")
     parser.add_argument("--sample", type=Path, default=DEFAULT_SAMPLE)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
@@ -132,6 +139,37 @@ def main(argv: list[str] | None = None) -> int:
     slippage = FixedSlippage(Decimal("0.50"))
     spread = FixedSpread(Decimal("0.30"))
 
+    # --- LLM-in-the-loop: build the orchestrator (same wiring as ai_smoke / live).
+    orchestrator = None
+    if args.llm:
+        import os
+
+        if not os.getenv("OPENROUTER_API_KEY"):
+            print("ERROR: --llm requires OPENROUTER_API_KEY.", file=sys.stderr)
+            return 2
+        from xauusd_bot.decision import (
+            AIDecisionLayer,
+            AIDecisionOrchestrator,
+            OpenRouterClient,
+            RuleBasedFallback,
+        )
+        from xauusd_bot.decision.ai_layer import default_zones_provider
+
+        openrouter = OpenRouterClient(settings=settings, prompt_path=args.prompt)
+        ai_layer = AIDecisionLayer(
+            openrouter_client=openrouter,
+            snapshot_zones_provider=default_zones_provider,
+            settings=settings,
+        )
+        orchestrator = AIDecisionOrchestrator(
+            ai_layer=ai_layer,
+            rule_fallback=RuleBasedFallback(settings=settings),
+            settings=settings,
+            journal_store=journal,
+        )
+        args.skip_walkforward = True  # one LLM pass only
+        log.info("backtest_llm_enabled", prompt=str(args.prompt))
+
     # --- 1. Plain BacktestEngine run.
     engine = BacktestEngine(
         connector=connector,
@@ -140,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         slippage_model=slippage,
         spread_model=spread,
         context_window_bars=args.context_window_bars,
+        orchestrator=orchestrator,
     )
     backtest_result: BacktestResult = engine.run(
         start_date=start_date,

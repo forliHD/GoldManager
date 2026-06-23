@@ -296,6 +296,7 @@ class BacktestEngine:
         context_window_bars: int = 1500,
         zone_lock: bool = True,
         zone_atr_mult: float = 0.5,
+        orchestrator: Any | None = None,
     ) -> None:
         """..."""
         self._connector = connector
@@ -341,6 +342,11 @@ class BacktestEngine:
         self._aggregator = FeatureAggregator()
         self._scoring = ScoringEngine()
         self._fallback = RuleBasedFallback(settings=self._settings)
+        # Optional LLM-in-the-loop: an AIDecisionOrchestrator (duck-typed async
+        # ``decide``). When set, the backtest consults the LLM exactly like live
+        # (score gate → orchestrator → rule fallback on failure) instead of the
+        # bare rule fallback — so the backtest reflects the real AI behaviour.
+        self._orchestrator = orchestrator
         self._qualifier = TradeQualificationEngine(settings=self._settings)
 
         # --- Execution (Block 4). The PaperBroker is the
@@ -515,11 +521,20 @@ class BacktestEngine:
             # so the equity curve reflects unrealized PnL between fills.
             self._paper.update_marks(bar.close)
 
-            # 1. Decision.
+            # 1. Decision. With an orchestrator wired, consult the LLM (same
+            # code path as live: score gate → LLM → rule fallback on failure);
+            # otherwise the bare rule fallback.
             agg = self._aggregator.aggregate(bundle)
             score = self._scoring.score(agg)
             account = self._connector.get_account()
-            decision = self._fallback.decide(score, agg, account=account)
+            if self._orchestrator is not None:
+                decision = self._run_async(
+                    self._orchestrator.decide(
+                        feature_snapshot=bundle, score=score, account=account, agg=agg
+                    )
+                )
+            else:
+                decision = self._fallback.decide(score, agg, account=account)
             qualification = self._qualifier.qualify(
                 decision, score, agg, bundle, account=account
             )
