@@ -56,23 +56,44 @@ def _configs():
         yield ExitConfig(**kw)
 
 
+def _load_tapes(path: Path) -> list[dict]:
+    """Load one tape file, or every ``*.json`` tape in a directory."""
+
+    files = sorted(path.glob("*.json")) if path.is_dir() else [path]
+    return [json.loads(f.read_text()) for f in files]
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Offline exit-param sweep over a recorded tape.")
-    ap.add_argument("--tape", type=Path, required=True, help="Tape JSON from backtest_smoke --record-tape.")
+    ap = argparse.ArgumentParser(description="Offline exit-param sweep over recorded tape(s).")
+    ap.add_argument("--tape", type=Path, required=True, help="Tape JSON (or a directory of tapes) from --record-tape.")
     ap.add_argument("--top", type=int, default=15, help="How many top configs to print.")
     args = ap.parse_args(argv)
 
-    tape = json.loads(args.tape.read_text())
-    n_entries = len(tape.get("entries", []))
-    print(f"tape: {len(tape.get('bars', []))} bars, {n_entries} trades\n")
+    tapes = _load_tapes(args.tape)
+    n_bars = sum(len(t.get("bars", [])) for t in tapes)
+    n_entries = sum(len(t.get("entries", [])) for t in tapes)
+    print(f"tapes: {len(tapes)} file(s), {n_bars} bars, {n_entries} trades\n")
     if n_entries == 0:
-        print("no trades in tape — nothing to sweep.")
+        print("no trades in tape(s) — nothing to sweep.")
         return 0
 
     rows = []
     for cfg in _configs():
-        s = replay_tape(tape, cfg, _SPEC)
-        rows.append((s.total_r, s.avg_r, s.winrate, s.profit_factor, s.wins, s.losses, cfg.label))
+        total_r = 0.0
+        r_list: list[float] = []
+        wins = losses = 0
+        for tape in tapes:
+            s = replay_tape(tape, cfg, _SPEC)
+            total_r += s.total_r
+            r_list += s.r_list
+            wins += s.wins
+            losses += s.losses
+        n = wins + losses + sum(1 for r in r_list if abs(r) <= 1e-9)
+        wr = wins / (wins + losses) if (wins + losses) else 0.0
+        gp = sum(r for r in r_list if r > 0)
+        gl = -sum(r for r in r_list if r < 0)
+        pf = gp / gl if gl > 0 else (float("inf") if gp > 0 else 0.0)
+        rows.append((total_r, total_r / n if n else 0.0, wr, pf, wins, losses, cfg.label))
     rows.sort(key=lambda r: r[0], reverse=True)
 
     print(f"{'config':28} {'totR':>7} {'avgR':>7} {'WR':>5} {'PF':>6}  W/L")
