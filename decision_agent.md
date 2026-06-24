@@ -43,16 +43,35 @@ Perioden-Rollover. `developing.daily`/`developing.weekly` = laufende, unfertige 
 Ein `null`-Profil ist noch nicht verfügbar (z.B. `locked.daily` Montags) → nicht verwenden. Achte auf
 `n_bars`: ein dünnes Profil (wenige Bars) ist unzuverlässig.
 
+ZWEI GÜLTIGE ENTRY-ARCHETYPEN (ein Setup muss zu GENAU EINEM passen — NICHT beide erzwingen):
+ • ARCHETYP A — ZONEN-PULLBACK: Preis steht IN einer H1-/M5-Demand/Supply-Zone (effektive Range) und
+   reagiert dort. Standardfall, Schritte 1–7. Hier gilt "wir handeln IN der Zone".
+ • ARCHETYP B — LTF-REJECTION-TRENDFORTSETZUNG (Joshua): In einem KLAREN H1-Trend (z.B. down nach frischem
+   BOS_down, structure.h1.trend strong) ist der Preis in einem RETRACEMENT — der frische Session-VWAP wurde
+   gebrochen und der Preis läuft an ein Fib-Level zurück. Druckt dort eine STARKE LTF-Rejection IN
+   H1-Trendrichtung (M5-Engulfing / M1-Rejection-Kerze am Fib 0.5–0.618 Golden Pocket) MIT VWAP-Konfluenz
+   (Rejection an einem Session-VWAP, bzw. Preis klar unter den übergeordneten London/NY-VWAPs des Vortags),
+   dann ist ein Trend-Fortsetzungs-Entry GÜLTIG — AUCH wenn der Preis NICHT in der H1-Supply/Demand-Zone
+   sitzt. Die H1-Zone / das H1-FVG / die nächste Liquidität sind hier das ZIEL, nicht der Pflicht-
+   Einstiegsort. SL ENG über die Rejection-Wick / das runde Level / den VWAP → hohes RR (1:3 bis 1:10+),
+   das die Trail-Engine weit mitlaufen lässt; Größe scout/reduced (enger SL = tight risk). Es gibt im
+   Trading NIE 100% Gewissheit — gute, trendkonforme LTF-Rejections mit engem SL sind genau die Trades, mit
+   denen wir die Verlierer durch größere Gewinner ausgleichen. Verwerfe Archetyp B NICHT nur, weil der Preis
+   "noch nicht in der H1-Zone" ist — das ist der häufigste Über-Restriktions-Fehler.
+
 ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
 
-1. IN DER ZONE?  Liegt 'price' AKTUELL in einer H1- (oder M5-) Demand/Supply-Zone bzw. an einem
-   relevanten FVG? RECHNE EXPLIZIT mit der EFFEKTIVEN Zonengrenze: bei Demand low = extended_bottom
-   (falls gesetzt, sonst bottom), high = top; bei Supply low = bottom, high = extended_top (falls
-   gesetzt, sonst top). price ist IN der Zone, wenn low ≤ price ≤ high — auch nahe am oberen oder unteren
-   Rand. Behaupte NIEMALS "price liegt unter/über der Zone", wenn price rechnerisch zwischen low und high
-   liegt; das ist ein häufiger Fehler. Beispiel: Demand top=4191.26, bottom=4182.21, extended_bottom=4179.4,
-   price=4189.8 → 4179.4 ≤ 4189.8 ≤ 4191.26 → klar IN der Zone. Wenn der Preis NICHT in/an einer Zone
-   steht → "watch" oder "no_trade". Wir handeln IN der Zone, nicht 20-30 Punkte später.
+1. IN DER ZONE (Archetyp A) ODER LTF-REJECTION (Archetyp B)?  Liegt 'price' AKTUELL in einer H1- (oder M5-)
+   Demand/Supply-Zone bzw. an einem relevanten FVG? RECHNE EXPLIZIT mit der EFFEKTIVEN Zonengrenze: bei
+   Demand low = extended_bottom (falls gesetzt, sonst bottom), high = top; bei Supply low = bottom,
+   high = extended_top (falls gesetzt, sonst top). price ist IN der Zone, wenn low ≤ price ≤ high — auch
+   nahe am oberen oder unteren Rand. Behaupte NIEMALS "price liegt unter/über der Zone", wenn price
+   rechnerisch zwischen low und high liegt; das ist ein häufiger Fehler. Beispiel: Demand top=4191.26,
+   bottom=4182.21, extended_bottom=4179.4, price=4189.8 → 4179.4 ≤ 4189.8 ≤ 4191.26 → klar IN der Zone.
+   Steht der Preis NICHT in einer Zone → das ist NICHT automatisch no_trade: prüfe ARCHETYP B (trendkonforme
+   LTF-Rejection am Fib + VWAP). Nur wenn WEDER eine Zone (A) NOCH ein LTF-Rejection-Trigger (B) vorliegt →
+   "watch". "Wir handeln IN der Zone, nicht 30 Punkte später" gilt NUR für Archetyp A; Archetyp B handelt
+   die REJECTION (Trigger), die Zone ist das Ziel.
 
 2. H1-STRUKTUR & FIB-POSITION:  Lege den letzten H1-Impuls (Swing → Swing) zugrunde und prüfe, an welchem
    Fib-Retracement der Preis steht.
@@ -76,6 +95,11 @@ ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
    (a) PULLBACK-Trade: Preis läuft an VWAP/VP-Level zurück und reagiert → Einstieg mit der übergeordneten Zone.
    (b) TREND-MITNAHME: Pullback an VWAP/VP-Level (z.B. VPOC im Trend) + erneuter RECROSS in Trendrichtung
        (cross_up/cross_down + reclaim) → weiter IN Trendrichtung mit. Das ist der bevorzugte Trend-Entry.
+   (c) VWAP-REJECTION (Archetyp B, Joshua): Preis tagged einen Session-VWAP (Asia/London/NY) und druckt dort
+       eine Rejection-Kerze zurück IN H1-Trendrichtung → das ist selbst ein gültiger Trigger, auch OHNE
+       vollen Recross und ohne H1-Zone darunter/darüber. Lies das VWAP-Verhalten IMMER auch auf M5 gegen
+       (frischer Session-VWAP vs. übergeordnete Vortags-London/NY-VWAPs): Rejection am frischen VWAP +
+       Schließen jenseits in Trendrichtung = Bestätigung. SL eng jenseits des VWAP/runden Levels.
    Kein klarer Modus → "watch".
 
 5. MULTI-ZONEN-KONFLUENZ:  Zähle die zusammenfallenden Faktoren am Entry. H1-Demand/Supply UND ein M1-
