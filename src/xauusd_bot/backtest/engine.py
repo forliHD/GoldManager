@@ -614,7 +614,22 @@ class BacktestEngine:
             )
             snapshot_id = self._run_async(self._journal.write_feature_snapshot(snapshot))
 
-            # 3. Try to open a trade if qualified.
+            # 3. Walk open positions FIRST (manage existing positions on this
+            # bar — SL / TP / trail, pessimistic via high/low), THEN consider a
+            # new entry. A position must NEVER be walked on its own entry bar:
+            # the entry fills at this bar's close, but the bar's high/low already
+            # printed BEFORE the fill, so checking them is lookahead — and live,
+            # the broker can't stop you out before you're filled. Walking before
+            # opening means a fresh position is first managed on the NEXT bar,
+            # matching live and the exit-replay (bars[1:]).
+            self._walk_open_positions(
+                bar=bar,
+                open_positions=open_positions,
+                bundle=bundle,
+                in_news_blackout=bool(bundle.news.in_blackout_flag) if bundle.news else False,
+            )
+
+            # 4. Try to open a trade if qualified (managed from the next bar on).
             if qualification.qualified:
                 self._try_open_trade(
                     bar=bar,
@@ -625,16 +640,6 @@ class BacktestEngine:
                     snapshot_id=snapshot_id,
                     open_positions=open_positions,
                 )
-
-            # 4. Walk open positions: check SL / TP hits on the
-            # closing bar (pessimistic, like the PaperBroker does
-            # for pending orders).
-            self._walk_open_positions(
-                bar=bar,
-                open_positions=open_positions,
-                bundle=bundle,
-                in_news_blackout=bool(bundle.news.in_blackout_flag) if bundle.news else False,
-            )
 
             # Zone-lock: re-arm 'used' zones once price has left their band.
             if self._zone_lock:
