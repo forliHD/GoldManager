@@ -62,7 +62,7 @@ import math
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -364,9 +364,28 @@ class BacktestEngine:
         # simulated broker the engine drives.
         self._spec = connector.spec
         self._paper = PaperBroker(connector=connector, initial_balance=self._initial_balance)
-        self._stop_mgr = StopManager(spec=self._spec)
-        self._tp_mgr = TakeProfitManager(spec=self._spec)
-        self._sizer = PositionSizer()
+        # Build the exec managers from settings so the backtest mirrors live
+        # (SL floor, trail-behind-swing buffer, partial fractions, risk cap).
+        self._stop_mgr = StopManager(
+            spec=self._spec,
+            min_sl_atr=self._settings.exec_min_sl_atr,
+            min_sl_points=self._settings.exec_min_sl_points,
+            trail_buffer_atr=self._settings.exec_trail_buffer_atr,
+        )
+        self._tp_mgr = TakeProfitManager(
+            spec=self._spec,
+            tp1_pct=self._settings.exec_tp1_pct,
+            tp2_pct=self._settings.exec_tp2_pct,
+            tp3_pct=self._settings.exec_tp3_pct,
+        )
+        self._sizer = PositionSizer(risk_tolerance=self._settings.exec_risk_tolerance)
+        # Phase D exit knobs + the weekend-flat window (mirrors execution_engine).
+        self._trail_activate_r = float(self._settings.exec_trail_activate_r)
+        self._tp1_frac = self._settings.exec_tp1_pct / 100.0
+        self._tp2_frac = self._settings.exec_tp2_pct / 100.0
+        from xauusd_bot.decision.trading_hours import TradingWindow
+
+        self._trading_window = TradingWindow.from_settings(self._settings)
         # OrderManager wraps the connector + a safety checker. For
         # backtest the safety checker is permissive (we never want
         # the backtest to refuse a trade on connectivity grounds).
@@ -601,6 +620,7 @@ class BacktestEngine:
             self._walk_open_positions(
                 bar=bar,
                 open_positions=open_positions,
+                bundle=bundle,
                 in_news_blackout=bool(bundle.news.in_blackout_flag) if bundle.news else False,
             )
 
@@ -781,12 +801,27 @@ class BacktestEngine:
             log.info("backtest_risk_blocked", reason=risk_verdict.blocked_reason)
             return
 
-        # --- stops
-        stops = self._stop_mgr.compute_initial(side, entry_price_close, bundle, now=bar.time)
+        # --- stops (Phase C: honour the AI's invalidation→SL + TP R-targets,
+        # clamped by the Phase-A floor, exactly like the live ExecutionPipeline).
+        from xauusd_bot.execution.stops import parse_sl_from_invalidations
+
+        intent = getattr(decision, "llm_intent", None)
+        sl_hint: Decimal | None = None
+        if intent is not None and intent.invalidations:
+            lvl = parse_sl_from_invalidations(
+                intent.invalidations, side, float(entry_price_close)
+            )
+            if lvl is not None:
+                sl_hint = Decimal(str(lvl))
+        stops = self._stop_mgr.compute_initial(
+            side, entry_price_close, bundle, now=bar.time, sl_hint=sl_hint
+        )
         if stops.sl_price is None or stops.sl_price == 0:
             return
         tp_plan = self._tp_mgr.compute(
-            side, entry_price_close, stops.sl_price, bundle, now=bar.time
+            side, entry_price_close, stops.sl_price, bundle, now=bar.time,
+            tp1_rr=(intent.tp1_rr if intent is not None else None),
+            tp2_rr=(intent.tp2_rr if intent is not None else None),
         )
         stops = stops.model_copy(
             update={
@@ -934,10 +969,20 @@ class BacktestEngine:
             "entry_price": fill_price,
             "sl": stops.sl_price,
             "tps": [p for p in (stops.tp1_price, stops.tp2_price, stops.tp3_price) if p is not None],
+            # Phase D multi-tier exit state.
+            "tp1": stops.tp1_price,
+            "tp2": stops.tp2_price,
+            "tp3": stops.tp3_price,
             "volume": sizing.volume_lots,
+            "initial_volume": sizing.volume_lots,
             "risk_amount": risk_verdict.risk_amount,
+            "initial_risk": abs(fill_price - stops.sl_price),
             "entry_time": bar.time,
             "zone_id": zone_id,
+            "tp1_taken": False,
+            "tp2_taken": False,
+            "armed": False,
+            "realized_pnl": Decimal("0"),
         }
 
     def _walk_open_positions(
@@ -945,42 +990,147 @@ class BacktestEngine:
         *,
         bar: Bar,
         open_positions: dict[str, dict[str, Any]],
+        bundle: FeatureSnapshotBundle,
         in_news_blackout: bool,
     ) -> None:
-        """Check every open position for SL / TP hits on the closing bar."""
+        """Drive each open position one bar forward — Phase D multi-tier exit.
 
-        to_close: list[tuple[str, Decimal, ExitReasonTag]] = []
-        for pid, state in list(open_positions.items()):
-            side = state["side"]
-            sl = state["sl"]
-            tps = state["tps"] or []
-            tp1 = tps[0] if tps else None
-            if side == OrderSide.BUY:
-                # SL hit?
-                if bar.low <= sl:
-                    to_close.append((pid, sl, ExitReasonTag.SL_HIT))
+        Order per bar (pessimistic fills via high/low):
+          1. SL hit → close the remaining size.
+          2. Weekend flat → close remaining (never carry over the gap).
+          3. TP1 / TP2 → partial close (lock part, arm trailing).
+          4. TP3 / runner target → close remaining.
+          5. Runner rejection (structure flips against it) → close remaining.
+          6. Once ≥ trail_activate_r in profit, trail the SL behind structure
+             (StopManager.trail; ratchet only). The trailed SL is what stops the
+             runner on the next bar if the move reverses — this is what lets a
+             winner run past TP1 instead of full-closing there.
+        """
+
+        for pid, st in list(open_positions.items()):
+            side = st["side"]
+            entry = st["entry_price"]
+            sl = st["sl"]
+            sign = Decimal("1") if side == OrderSide.BUY else Decimal("-1")
+            is_long = side == OrderSide.BUY
+
+            # 1. SL (incl. a trailed SL) — pessimistic, checked first.
+            if (is_long and bar.low <= sl) or (not is_long and bar.high >= sl):
+                reason = ExitReasonTag.TRAILED if st["armed"] else ExitReasonTag.SL_HIT
+                self._close_position(
+                    position_id=pid, state=st, close_price=sl, close_time=bar.time, reason=reason
+                )
+                open_positions.pop(pid, None)
+                continue
+
+            # 2. Weekend flat.
+            if self._trading_window.should_flatten_for_weekend(
+                bar.time, getattr(bundle, "broker_offset_minutes", 0.0)
+            ):
+                self._close_position(
+                    position_id=pid, state=st, close_price=bar.close,
+                    close_time=bar.time, reason=ExitReasonTag.MANUAL,
+                )
+                open_positions.pop(pid, None)
+                continue
+
+            # 3. TP1 / TP2 partial closes.
+            tp1 = st.get("tp1")
+            if not st["tp1_taken"] and tp1 is not None and (
+                (is_long and bar.high >= tp1) or (not is_long and bar.low <= tp1)
+            ):
+                self._partial_close(
+                    position_id=pid, state=st, frac_initial=self._tp1_frac,
+                    price=tp1, close_time=bar.time,
+                )
+                st["tp1_taken"] = True
+                st["armed"] = True
+            tp2 = st.get("tp2")
+            if not st["tp2_taken"] and tp2 is not None and (
+                (is_long and bar.high >= tp2) or (not is_long and bar.low <= tp2)
+            ):
+                self._partial_close(
+                    position_id=pid, state=st, frac_initial=self._tp2_frac,
+                    price=tp2, close_time=bar.time,
+                )
+                st["tp2_taken"] = True
+
+            # 4. TP3 / runner target → close the remaining runner.
+            tp3 = st.get("tp3")
+            if tp3 is not None and (
+                (is_long and bar.high >= tp3) or (not is_long and bar.low <= tp3)
+            ):
+                self._close_position(
+                    position_id=pid, state=st, close_price=tp3,
+                    close_time=bar.time, reason=ExitReasonTag.TP3_HIT,
+                )
+                open_positions.pop(pid, None)
+                continue
+
+            # 5. Runner rejection (structure flip against it).
+            if st["armed"] and tp3 is not None:
+                should, _reason = self._tp_mgr.should_close_runner(side, tp3, bar.close, bundle)
+                if should:
+                    self._close_position(
+                        position_id=pid, state=st, close_price=bar.close,
+                        close_time=bar.time, reason=ExitReasonTag.MANUAL,
+                    )
+                    open_positions.pop(pid, None)
                     continue
-                # TP1 hit?
-                if tp1 is not None and bar.high >= tp1:
-                    to_close.append((pid, tp1, ExitReasonTag.TP1_HIT))
-                    continue
-            else:
-                if bar.high >= sl:
-                    to_close.append((pid, sl, ExitReasonTag.SL_HIT))
-                    continue
-                if tp1 is not None and bar.low <= tp1:
-                    to_close.append((pid, tp1, ExitReasonTag.TP1_HIT))
-                    continue
-        for pid, exit_price, reason in to_close:
-            self._close_position(
-                position_id=pid,
-                state=open_positions[pid],
-                close_price=exit_price,
-                close_time=bar.time,
-                reason=reason,
-            )
-            # Drop the position from the open dict.
-            open_positions.pop(pid, None)
+
+            # 6. Arm trailing on a ≥ activate_r favorable excursion, then trail.
+            init_risk = st["initial_risk"] if st["initial_risk"] > 0 else Decimal("1")
+            fav = bar.high if is_long else bar.low
+            profit_dist = (fav - entry) * sign
+            if (
+                not st["armed"]
+                and self._trail_activate_r > 0
+                and profit_dist >= init_risk * Decimal(str(self._trail_activate_r))
+            ):
+                st["armed"] = True
+            if st["armed"]:
+                trail = self._stop_mgr.trail(side, st["sl"], entry, bundle, now=bar.time)
+                new_sl = trail.sl_price
+                if new_sl is not None and (
+                    (is_long and new_sl > st["sl"]) or (not is_long and new_sl < st["sl"])
+                ):
+                    st["sl"] = new_sl
+
+    def _partial_close(
+        self,
+        *,
+        position_id: str,
+        state: dict[str, Any],
+        frac_initial: float,
+        price: Decimal,
+        close_time: datetime,
+    ) -> None:
+        """Close ``frac_initial`` of the ORIGINAL size at ``price``; book the PnL.
+
+        Accumulates into ``state['realized_pnl']`` and shrinks the runner.
+        The trade stays open (no journal close) until the final exit, which
+        records the blended R across all partials.
+        """
+
+        step = self._spec.volume_step if self._spec.volume_step and self._spec.volume_step > 0 else Decimal("0.01")
+        vmin = self._spec.volume_min if self._spec.volume_min else Decimal("0.01")
+        raw = state["initial_volume"] * Decimal(str(frac_initial))
+        vol = (raw / step).to_integral_value(rounding=ROUND_DOWN) * step
+        remaining = state["volume"]
+        # Skip if the partial is below the broker min or would close everything —
+        # the final close handles the remainder, keeping the R accounting clean.
+        if vol < vmin or vol >= remaining:
+            return
+        sign = Decimal("1") if state["side"] == OrderSide.BUY else Decimal("-1")
+        pnl = (price - state["entry_price"]) * sign * vol * self._spec.trade_contract_size
+        state["realized_pnl"] += pnl
+        state["volume"] = remaining - vol
+        self._paper._account.balance += pnl  # noqa: SLF001
+        self._paper._account.equity = self._paper._account.balance  # noqa: SLF001
+        self._risk.record_pnl(pnl, close_time)
+        pos = self._paper._positions.get(position_id)  # noqa: SLF001
+        if pos is not None:
+            pos.volume = state["volume"]
 
     def _close_position(
         self,
@@ -993,7 +1143,11 @@ class BacktestEngine:
     ) -> None:
         side_sign = Decimal("1") if state["side"] == OrderSide.BUY else Decimal("-1")
         gross = (close_price - state["entry_price"]) * side_sign
-        pnl = gross * state["volume"] * self._spec.trade_contract_size
+        # Total PnL = this (final) leg + any partials already booked at TP1/TP2,
+        # so the trade's R reflects the whole multi-tier outcome (Phase D).
+        pnl = gross * state["volume"] * self._spec.trade_contract_size + state.get(
+            "realized_pnl", Decimal("0")
+        )
         risk = state["risk_amount"] if state["risk_amount"] > 0 else Decimal("1")
         r_mult = float(pnl / risk)
 
