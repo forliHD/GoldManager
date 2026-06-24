@@ -950,11 +950,15 @@ class BacktestEngine:
         self._risk.record_trade(now=bar.time)
 
         # --- Persist the synthetic market order.
+        # Broker backstop TP = furthest target (tp3 → tp2 → tp1); the bot-side
+        # partials/runner in _walk_open_positions handle TP1/TP2 (mirrors live,
+        # where attaching tp1 for full volume pre-empted the scale-out).
+        backstop_tp = stops.tp3_price or stops.tp2_price or stops.tp1_price
         order_env = self._make_market_order(
             side=side,
             volume=sizing.volume_lots,
             sl=stops.sl_price,
-            tp=stops.tp1_price,
+            tp=backstop_tp,
             requested_price=entry_price_close,
             fill_price=fill_price,
             now=bar.time,
@@ -1006,7 +1010,7 @@ class BacktestEngine:
             open_price=fill_price,
             open_time=bar.time,
             sl=stops.sl_price,
-            tp=stops.tp1_price,
+            tp=backstop_tp,
             magic=0,
             comment="backtest",
             position_id=pid,

@@ -564,16 +564,42 @@ class Mt5LinuxConnector(IMarketConnector):
         tp: float | None = None,
     ) -> OrderResult:
         mt5 = self._ensure()
-        req: dict[str, Any] = {
-            "action": int(getattr(mt5, "TRADE_ACTION_MODIFY")),
-            "order": int(order_id),
-        }
-        if price is not None:
-            req["price"] = float(price)
-        if sl is not None:
-            req["sl"] = float(sl)
-        if tp is not None:
-            req["tp"] = float(tp)
+        # An OPEN position and a PENDING order need different MT5 actions:
+        #   - position SL/TP  → TRADE_ACTION_SLTP with `position`
+        #   - pending order   → TRADE_ACTION_MODIFY with `order`
+        # The manage loop only ever trails an open position's SL; the old code
+        # used TRADE_ACTION_MODIFY+order for it, which the broker rejects (that
+        # ticket is a position, not a pending order) → the trail silently never
+        # reached the broker. Detect the position case and use SLTP. Critically,
+        # an SLTP modify must carry BOTH legs — a missing `sl`/`tp` is read as 0
+        # and *removes* that level — so we preserve the un-passed leg from the
+        # live position (e.g. trailing the SL keeps the TP backstop intact).
+        position = next(
+            (p for p in self.positions_get() if str(p.position_id) == str(order_id)),
+            None,
+        )
+        req: dict[str, Any]
+        if position is not None:
+            cur_sl = float(position.sl) if position.sl is not None else 0.0
+            cur_tp = float(position.tp) if position.tp is not None else 0.0
+            req = {
+                "action": int(getattr(mt5, "TRADE_ACTION_SLTP")),
+                "position": int(order_id),
+                "symbol": position.symbol,
+                "sl": float(sl) if sl is not None else cur_sl,
+                "tp": float(tp) if tp is not None else cur_tp,
+            }
+        else:
+            req = {
+                "action": int(getattr(mt5, "TRADE_ACTION_MODIFY")),
+                "order": int(order_id),
+            }
+            if price is not None:
+                req["price"] = float(price)
+            if sl is not None:
+                req["sl"] = float(sl)
+            if tp is not None:
+                req["tp"] = float(tp)
         try:
             result = mt5.order_send(req)
         except Exception as exc:  # noqa: BLE001

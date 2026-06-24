@@ -256,6 +256,12 @@ class ExecutionPipeline:
             return ExecutionOutcome(submitted=False, blocked_reason=reason)
 
         # --- Submit the order.
+        # Broker backstop TP = the FURTHEST target (tp3 → tp2 → tp1). Attaching
+        # tp1 for the full volume made the broker auto-close 100% at TP1, which
+        # pre-empted the bot-side 30/30/40 partials + runner (PositionManager
+        # banks TP1/TP2 along the way and trails the runner to tp3). The far
+        # backstop only fires if the engine is down or price gaps past the plan.
+        backstop_tp = stops.tp3_price or stops.tp2_price or stops.tp1_price
         order_env = self.order_mgr.send(
             OrderRequest(
                 symbol=self.symbol,
@@ -263,7 +269,7 @@ class ExecutionPipeline:
                 type=OrderType.MARKET,
                 volume=sizing.volume_lots,
                 sl=stops.sl_price,
-                tp=stops.tp1_price,
+                tp=backstop_tp,
             ),
             setup_id=qualification.qualification_id,
             engine_source=(

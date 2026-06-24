@@ -229,14 +229,26 @@ async def _load_managed_all(redis_client) -> dict[str, ManagedPosition]:
 
 
 async def _apply_action(connector, ticket: str, action) -> None:
+    # Check the broker's verdict and surface a rejection — a rejected SL-trail or
+    # partial-close must NOT log as a success (that masked the broken trail).
     if action.kind == "modify_sl":
-        await asyncio.to_thread(connector.order_modify, ticket, sl=float(action.price))
+        res = await asyncio.to_thread(connector.order_modify, ticket, sl=float(action.price))
     elif action.kind in ("partial_close", "close_all"):
         fn = getattr(connector, "close_position", None)
         if fn is None:
             log.warning("execution_close_not_supported", ticket=ticket)
             return
-        await asyncio.to_thread(fn, ticket, action.volume if action.kind == "partial_close" else None)
+        res = await asyncio.to_thread(fn, ticket, action.volume if action.kind == "partial_close" else None)
+    else:
+        return
+    if res is not None and getattr(res, "accepted", True) is False:
+        log.warning(
+            "execution_manage_action_rejected",
+            ticket=ticket,
+            kind=action.kind,
+            error_code=getattr(res, "error_code", None),
+            error_message=getattr(res, "error_message", None),
+        )
 
 
 def _r_multiple(side: OrderSide, entry: Decimal, sl: Decimal, exit_price: Decimal) -> float | None:
