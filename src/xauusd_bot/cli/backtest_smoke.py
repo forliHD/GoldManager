@@ -99,6 +99,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Broker→UTC offset of the data (e.g. 180 for UTC+3 MT5 data). Aligns the "
         "session/VWAP engines + the trading-hours gate with real UTC. 0 for synthetic UTC samples.",
     )
+    parser.add_argument(
+        "--record-tape",
+        type=Path,
+        default=None,
+        help="Write an exit-replay tape (per-bar exit inputs + opened trades) to this path, "
+        "so exit params can be swept OFFLINE (xauusd_bot.cli.exit_sweep) without re-calling the LLM.",
+    )
     return parser.parse_args(argv)
 
 
@@ -187,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         context_window_bars=args.context_window_bars,
         orchestrator=orchestrator,
         clock_offset_minutes=args.clock_offset_minutes,
+        record_tape=args.record_tape is not None,
     )
     backtest_result: BacktestResult = engine.run(
         start_date=start_date,
@@ -194,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         warmup_bars=args.warmup_bars,
         max_bars=args.max_bars,
     )
+    if args.record_tape is not None:
+        engine.dump_tape(args.record_tape)
 
     # --- 2. WalkForward run.
     walkforward_result: WalkForwardResult | None = None

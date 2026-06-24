@@ -58,10 +58,12 @@ Invariants
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
@@ -298,6 +300,7 @@ class BacktestEngine:
         zone_atr_mult: float = 0.5,
         orchestrator: Any | None = None,
         clock_offset_minutes: float = 0.0,
+        record_tape: bool = False,
     ) -> None:
         """..."""
         self._connector = connector
@@ -385,6 +388,11 @@ class BacktestEngine:
         self._be_trigger_r = float(self._settings.exec_be_trigger_r)
         self._tp1_frac = self._settings.exec_tp1_pct / 100.0
         self._tp2_frac = self._settings.exec_tp2_pct / 100.0
+        # Exit-tape recording (Part B): capture per-bar exit inputs + each opened
+        # trade so exit params can be swept OFFLINE without re-calling the LLM.
+        self._record_tape = record_tape
+        self._tape_bars: list[dict[str, Any]] = []
+        self._tape_entries: list[dict[str, Any]] = []
         from xauusd_bot.decision.trading_hours import TradingWindow
 
         self._trading_window = TradingWindow.from_settings(self._settings)
@@ -548,6 +556,8 @@ class BacktestEngine:
             start_slice = max(0, j + 1 - self._context_window_bars)
             bundle = self._build_bundle(all_bars[start_slice: j + 1], bar.time, float(bar.close))
             n_bars_processed += 1
+            if self._record_tape:
+                self._tape_bars.append(self._tape_bar_record(bar, bundle))
 
             # Mark-to-market the open positions on the paper broker
             # so the equity curve reflects unrealized PnL between fills.
@@ -688,6 +698,45 @@ class BacktestEngine:
             else:
                 break
         return idx
+
+    @staticmethod
+    def _tape_bar_record(bar: Bar, bundle: FeatureSnapshotBundle) -> dict[str, Any]:
+        """Capture the exit-relevant inputs for one bar (Part B exit replay).
+
+        Only what the exit logic reads: OHLC, ATR, the latest swing low/high and
+        the latest BOS/CHoCH type (trail + runner), and the broker offset (weekend
+        flat). A minimal bundle is reconstructed from these during replay.
+        """
+
+        st = bundle.structure
+        last_low = last_high = None
+        if st is not None:
+            for sw in reversed(st.swings):
+                if last_low is None and sw.kind == "low":
+                    last_low = float(sw.price)
+                if last_high is None and sw.kind == "high":
+                    last_high = float(sw.price)
+                if last_low is not None and last_high is not None:
+                    break
+        return {
+            "ts": bar.time.isoformat(),
+            "high": str(bar.high),
+            "low": str(bar.low),
+            "close": str(bar.close),
+            "atr": float(bundle.atr) if bundle.atr else 0.0,
+            "swing_low": last_low,
+            "swing_high": last_high,
+            "last_bos": st.last_bos.type.value if (st and st.last_bos) else None,
+            "last_choch": st.last_choch.type.value if (st and st.last_choch) else None,
+            "offset": float(bundle.broker_offset_minutes),
+        }
+
+    def dump_tape(self, path: Path) -> None:
+        """Write the recorded exit tape ({bars, entries}) to ``path`` as JSON."""
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"bars": self._tape_bars, "entries": self._tape_entries}))
+        log.info("backtest_tape_written", path=str(path), bars=len(self._tape_bars), entries=len(self._tape_entries))
 
     def _build_bundle(
         self,
@@ -987,6 +1036,19 @@ class BacktestEngine:
             "realized_pnl": Decimal("0"),
             "peak": fill_price,  # favorable extreme for the chandelier trail
         }
+        if self._record_tape:
+            # Index into _tape_bars of the entry bar (appended this same bar).
+            self._tape_entries.append({
+                "side": "long" if side == OrderSide.BUY else "short",
+                "entry_price": str(fill_price),
+                "initial_sl": str(stops.sl_price),
+                "tp1": str(stops.tp1_price) if stops.tp1_price is not None else None,
+                "tp2": str(stops.tp2_price) if stops.tp2_price is not None else None,
+                "tp3": str(stops.tp3_price) if stops.tp3_price is not None else None,
+                "risk_amount": str(risk_verdict.risk_amount),
+                "initial_volume": str(sizing.volume_lots),
+                "entry_bar_index": len(self._tape_bars) - 1,
+            })
 
     def _walk_open_positions(
         self,
