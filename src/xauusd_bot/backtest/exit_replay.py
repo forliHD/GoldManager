@@ -97,7 +97,10 @@ def _bundle(rec: dict) -> FeatureSnapshotBundle:
     def _ev(v):
         if not v:
             return None
-        return StructureEvent(type=StructureEventType(v), level=0.0, close=0.0, time=ts, bar_index=0)
+        # should_close_runner only reads .type; the other fields are dummies.
+        return StructureEvent(
+            type=StructureEventType(v), level=0.0, close=0.0, distance_atr=0.0, time=ts, bar_index=0
+        )
 
     return FeatureSnapshotBundle(
         ts=ts,
