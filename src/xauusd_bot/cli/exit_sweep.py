@@ -77,9 +77,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"{'config':28} {'totR':>7} {'avgR':>7} {'WR':>5} {'PF':>6}  W/L")
     print("-" * 64)
-    for total_r, avg_r, wr, pf, w, l, label in rows[: args.top]:
+    for total_r, avg_r, wr, pf, wins, losses, label in rows[: args.top]:
         pf_s = "inf" if pf == float("inf") else f"{pf:.2f}"
-        print(f"{label:28} {total_r:7.2f} {avg_r:7.3f} {wr:5.2f} {pf_s:>6}  {w}/{l}")
+        print(f"{label:28} {total_r:7.2f} {avg_r:7.3f} {wr:5.2f} {pf_s:>6}  {wins}/{losses}")
     return 0
 
 

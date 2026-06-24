@@ -162,9 +162,11 @@ def replay_entry(entry: dict, bars: list[dict], cfg: ExitConfig, spec: SymbolSpe
         bundle = _bundle(rec)
         # 3. TP1 / TP2 partials.
         if not tp1_taken and tp1 is not None and ((is_long and high >= tp1) or (not is_long and low <= tp1)):
-            _partial(cfg.tp1_pct / 100.0, tp1); tp1_taken = armed = True
+            _partial(cfg.tp1_pct / 100.0, tp1)
+            tp1_taken = armed = True
         if not tp2_taken and tp2 is not None and ((is_long and high >= tp2) or (not is_long and low <= tp2)):
-            _partial(cfg.tp2_pct / 100.0, tp2); tp2_taken = True
+            _partial(cfg.tp2_pct / 100.0, tp2)
+            tp2_taken = True
         # 4. TP3 / runner.
         if tp3 is not None and ((is_long and high >= tp3) or (not is_long and low <= tp3)):
             return _final_r(tp3)
