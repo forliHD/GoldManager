@@ -64,6 +64,13 @@ class ManagedPosition(BaseModel):
             "as TP1 arms it (legacy)."
         ),
     )
+    peak: Decimal | None = Field(
+        default=None,
+        description=(
+            "Highest price seen since entry (long) / lowest (short) — the favorable extreme. "
+            "Feeds the chandelier trail so the SL ratchets up continuously. None = use entry."
+        ),
+    )
 
 
 class ManagementAction(BaseModel):
@@ -109,6 +116,7 @@ class PositionManager:
         *,
         breakeven_at_tp1: bool = False,
         trail_activate_r: float = 0.0,
+        be_trigger_r: float = 1.0,
         weekend_flat: Callable[[datetime, float], bool] | None = None,
     ) -> None:
         self._stop = stop_mgr
@@ -129,6 +137,9 @@ class PositionManager:
         # so an unproven trade is never tightened prematurely. 0 = legacy (trail
         # as soon as TP1 arms it).
         self._trail_activate_r = trail_activate_r
+        # Break-even floor trigger (R): once favorable excursion reaches this, the
+        # trail enforces a no-loss floor (entry ± cost buffer).
+        self._be_trigger_r = be_trigger_r
 
     def _trail_armed(self, mp: ManagedPosition, current_price: Decimal) -> bool:
         """True once the trade is ≥ ``trail_activate_r`` R in profit (Phase D).
@@ -146,6 +157,20 @@ class PositionManager:
         else:
             profit = mp.entry_price - current_price
         return profit >= mp.initial_risk * Decimal(str(self._trail_activate_r))
+
+    def _be_floor_armed(self, mp: ManagedPosition) -> bool:
+        """True once the favorable excursion (peak) reached ``be_trigger_r`` R.
+
+        Uses the peak (not the current price) so the BE floor stays locked even
+        if price pulled back below the trigger after first reaching it.
+        """
+
+        if self._be_trigger_r <= 0:
+            return mp.tp1_taken  # no R trigger → only TP1 arms the floor
+        if mp.initial_risk is None or mp.initial_risk <= 0 or mp.peak is None:
+            return mp.tp1_taken
+        excursion = (mp.peak - mp.entry_price) if mp.side == OrderSide.BUY else (mp.entry_price - mp.peak)
+        return mp.tp1_taken or excursion >= mp.initial_risk * Decimal(str(self._be_trigger_r))
 
     def plan(
         self,
@@ -189,13 +214,22 @@ class PositionManager:
                 actions.append(ManagementAction(kind="partial_close", volume=vol, reason="tp2_hit"))
             mp.tp2_taken = True
 
-        # --- Trailing SL behind structure (ratchet only). Arms once TP1 was
-        # taken OR the trade has earned a ≥ trail_activate_r profit buffer, so an
-        # unproven trade is never tightened prematurely (Phase D).
+        # Track the favorable extreme (peak) for the chandelier trail.
+        if mp.peak is None:
+            mp.peak = mp.entry_price
+        mp.peak = max(mp.peak, current_price) if mp.side == OrderSide.BUY else min(mp.peak, current_price)
+
+        # --- Trailing SL (ratchet only): break-even floor + structure + chandelier.
+        # Arms once TP1 was taken OR the trade has earned a ≥ trail_activate_r
+        # buffer, so an unproven trade is never tightened prematurely (Phase D).
         if mp.breakeven_done or self._trail_armed(mp, current_price):
-            trail = self._stop.trail(mp.side, mp.sl_price, mp.entry_price, bundle)
+            be_armed = self._be_floor_armed(mp)
+            trail = self._stop.trail(
+                mp.side, mp.sl_price, mp.entry_price, bundle,
+                peak=mp.peak, be_armed=be_armed,
+            )
             if trail.sl_price is not None and _tighter(mp.side, trail.sl_price, mp.sl_price):
-                actions.append(ManagementAction(kind="modify_sl", price=trail.sl_price, reason="structure_trail"))
+                actions.append(ManagementAction(kind="modify_sl", price=trail.sl_price, reason="trail"))
                 mp.sl_price = trail.sl_price
 
         # --- Runner: close the remainder on HTF-level rejection.

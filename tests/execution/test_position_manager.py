@@ -35,7 +35,7 @@ class _FakeStop:
     def __init__(self, trail_sl: Decimal | None = None) -> None:
         self._trail_sl = trail_sl
 
-    def trail(self, side, current_sl, entry_price, bundle, *, now=None):
+    def trail(self, side, current_sl, entry_price, bundle, *, now=None, peak=None, be_armed=False):
         return SimpleNamespace(sl_price=self._trail_sl)
 
 
@@ -125,7 +125,7 @@ def test_trailing_ratchets_only_in_favour():
         _BUNDLE,
         current_price=Decimal("4258.00"),
     )
-    trail = [a for a in actions if a.reason == "structure_trail"]
+    trail = [a for a in actions if a.reason == "trail"]
     assert trail and trail[0].price == Decimal("4253.00") and mp.sl_price == Decimal("4253.00")
 
     # Trail candidate BELOW current SL → no move (ratchet).
@@ -134,7 +134,7 @@ def test_trailing_ratchets_only_in_favour():
         _BUNDLE,
         current_price=Decimal("4258.00"),
     )
-    assert all(a.reason != "structure_trail" for a in actions2)
+    assert all(a.reason != "trail" for a in actions2)
 
 
 def test_runner_close_on_rejection():
@@ -199,7 +199,7 @@ def test_trail_arms_at_activation_r():
     mgr = _mgr_activate(trail_sl=Decimal("4248.00"), trail_activate_r=1.0)
     pos = _pos(tp1_price=Decimal("4300.00"), initial_risk=Decimal("10.0"))
     actions, mp = mgr.plan(pos, _BUNDLE, current_price=Decimal("4262.00"))
-    assert ("modify_sl", "structure_trail") in [(a.kind, a.reason) for a in actions]
+    assert ("modify_sl", "trail") in [(a.kind, a.reason) for a in actions]
     assert mp.sl_price == Decimal("4248.00")
 
 

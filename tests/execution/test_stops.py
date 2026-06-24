@@ -260,3 +260,38 @@ def test_compute_initial_returns_stopsandtps() -> None:
     )
     assert isinstance(result, StopsAndTPs)
     assert result.timestamp.tzinfo is not None
+
+
+# ----------------------------------------------------------------- Phase D: BE floor + chandelier
+
+
+_TS_PD = datetime(2026, 4, 15, 13, 30, tzinfo=UTC)
+
+
+def test_trail_break_even_floor_locks_no_loss() -> None:
+    # be_armed → the SL may not sit worse than entry + cost buffer, even though
+    # the structure swing (2369.75) is far below entry. Chandelier off.
+    mgr = StopManager(spec=make_symbol_spec(), trail_buffer_atr=0.5, chandelier_atr=0.0)
+    bundle = _bundle_with_low_swing(_TS_PD, swing_low=2370.0)  # atr 0.5
+    res = mgr.trail(OrderSide.BUY, Decimal("2369.00"), Decimal("2375.00"), bundle,
+                    now=_TS_PD, peak=None, be_armed=True)
+    assert res.sl_price == Decimal("2375.05")  # entry + 5×point — break-even floor
+
+
+def test_trail_chandelier_ratchets_from_peak() -> None:
+    # The chandelier (peak − 3×ATR) ratchets the SL up continuously, dominating
+    # the far structure swing.
+    mgr = StopManager(spec=make_symbol_spec(), trail_buffer_atr=0.5, chandelier_atr=3.0)
+    bundle = _bundle_with_low_swing(_TS_PD, swing_low=2370.0)  # atr 0.5
+    res = mgr.trail(OrderSide.BUY, Decimal("2369.00"), Decimal("2375.00"), bundle,
+                    now=_TS_PD, peak=Decimal("2400.00"), be_armed=False)
+    assert res.sl_price == Decimal("2398.50")  # 2400 − 3×0.5
+
+
+def test_trail_short_be_floor_and_chandelier() -> None:
+    mgr = StopManager(spec=make_symbol_spec(), trail_buffer_atr=0.5, chandelier_atr=3.0)
+    bundle = _bundle_with_high_swing(_TS_PD, swing_high=2380.0)  # atr 0.5
+    # Short entry 2375, peak (low) 2350 → chandelier = 2350 + 1.5 = 2351.5; BE = 2374.95.
+    res = mgr.trail(OrderSide.SELL, Decimal("2381.00"), Decimal("2375.00"), bundle,
+                    now=_TS_PD, peak=Decimal("2350.00"), be_armed=True)
+    assert res.sl_price == Decimal("2351.50")  # tightest protective (min) for a short

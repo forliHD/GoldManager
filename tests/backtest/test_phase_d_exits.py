@@ -64,6 +64,7 @@ def test_runner_blended_r_across_partials():
         "risk_amount": Decimal("1000"), "initial_risk": Decimal("10"),
         "entry_time": t0, "zone_id": None,
         "tp1_taken": False, "tp2_taken": False, "armed": False, "realized_pnl": Decimal("0"),
+        "peak": Decimal("2000"),
     }
     open_positions = {"p1": state}
     # No structure in the bundle → the trail/runner stay quiet so the TP tiers

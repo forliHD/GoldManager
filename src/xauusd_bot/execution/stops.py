@@ -102,6 +102,12 @@ DEFAULT_TRAIL_MIN_ATR = 1.0
 # (long: swing_low − buffer×ATR), not above it, so a pullback to structure does
 # not stop the runner out near break-even. Default 0.5×ATR of room.
 DEFAULT_TRAIL_BUFFER_ATR = 0.5
+# Chandelier ratchet: once the runner is armed, the SL also rides this many ATR
+# below the highest-high-since-entry (long) so it ratchets up CONTINUOUSLY as
+# the trade extends — not only when a new structural swing prints. Combined
+# with the break-even floor this is what lets a winner run to its max while
+# locking progressively more in. 0 = chandelier off (structure-trail only).
+DEFAULT_CHANDELIER_ATR = 3.0
 DEFAULT_BE_BONUS_POINTS = 5.0  # tiny buffer so commission+spread is covered
 # SL floor: a structure stop closer to entry than this is pushed out, so the
 # lot size (risk / sl_distance) can't explode on a tiny stop. floor =
@@ -156,6 +162,7 @@ class StopManager:
         initial_sl_atr: float = DEFAULT_INITIAL_SL_ATR,
         trail_min_atr: float = DEFAULT_TRAIL_MIN_ATR,
         trail_buffer_atr: float = DEFAULT_TRAIL_BUFFER_ATR,
+        chandelier_atr: float = DEFAULT_CHANDELIER_ATR,
         be_bonus_points: float = DEFAULT_BE_BONUS_POINTS,
         min_sl_atr: float = DEFAULT_MIN_SL_ATR,
         min_sl_points: float = DEFAULT_MIN_SL_POINTS,
@@ -166,6 +173,7 @@ class StopManager:
         # Room BEHIND the swing for the trailing SL (Phase D). Kept separate from
         # trail_min_atr (legacy) so the direction flip is explicit and tunable.
         self._trail_buffer_atr = trail_buffer_atr
+        self._chandelier_atr = chandelier_atr
         self._be_bonus_points = be_bonus_points
         self._min_sl_atr = min_sl_atr
         self._min_sl_points = min_sl_points
@@ -320,20 +328,28 @@ class StopManager:
         bundle: FeatureSnapshotBundle,
         *,
         now: datetime | None = None,
+        peak: Decimal | None = None,
+        be_armed: bool = False,
     ) -> StopsAndTPs:
-        """Trail the SL BEHIND the latest swing point in the trade's favour.
+        """Ratchet the SL up using three protective anchors (Phase D, ratchet-only).
 
-        Rule (Phase D — let winners run)
-        --------------------------------
-        * Long trade: new SL = max(current_sl, latest_swing_low − buffer×ATR).
-          The SL sits a buffer BELOW the protective swing low (room for a
-          pullback to structure), and can only ratchet **up**; it never moves
-          back down.
-        * Short trade: mirror — new SL = min(current_sl, latest_swing_high + buffer×ATR).
+        The new SL is the most-protective (highest for a long / lowest for a
+        short) of:
 
-        The old logic placed the SL *above* the swing (swing + ATR), which
-        stopped the runner out on the first pullback to structure → "baby
-        trades". If no fresh swing is available, the SL stays put.
+        * **Break-even floor** (``be_armed``): once the trade has proven itself
+          (≥ its BE trigger), the SL never sits worse than entry ± a small cost
+          buffer — so a trade that touched profit can no longer become a loss.
+        * **Structure trail**: a buffer BEHIND the latest protective swing
+          (``swing_low − buffer×ATR`` for a long) — room for a pullback to
+          structure without stopping the runner.
+        * **Chandelier**: ``peak − chandelier_atr×ATR`` (``peak`` = the highest
+          high since entry for a long) — ratchets the SL up CONTINUOUSLY as the
+          trade extends, not only when a new swing prints, so a runner rides to
+          its maximum with progressively more locked in.
+
+        The SL only ever ratchets in the trade's favour (``max`` for a long,
+        ``min`` for a short); it never moves back. With no anchors available it
+        stays put.
         """
 
         ts = (now or datetime.now(tz=UTC))
@@ -343,40 +359,33 @@ class StopManager:
             ts = ts.astimezone(UTC)
 
         atr = _atr_safe(bundle)
-        reasoning: list[str] = [f"trail: {self._trail_buffer_atr}×ATR behind the swing"]
+        is_long = side == OrderSide.BUY
+        reasoning: list[str] = []
+        # Collect protective candidates; the ratchet picks the tightest.
+        candidates: list[Decimal] = [current_sl]
 
-        if side == OrderSide.BUY:
-            swing = _last_swing(bundle, "low")
-            if swing is None or atr <= 0:
-                return StopsAndTPs(
-                    sl_price=current_sl,
-                    trail_active=True,
-                    trailing_mode=TrailingMode.STRUCTURE_TRAIL,
-                    reasoning=reasoning + ["no swing low / no ATR — SL unchanged"],
-                    timestamp=ts,
-                )
-            candidate = Decimal(str(swing)) - Decimal(str(self._trail_buffer_atr * atr))
-            new_sl = max(current_sl, candidate)
-            if new_sl > current_sl:
-                reasoning.append(f"long trail: SL raised from {current_sl} to {new_sl} (behind swing low {swing})")
-            else:
-                reasoning.append(f"long trail: candidate {candidate} ≤ current SL {current_sl} — unchanged")
-        else:
-            swing = _last_swing(bundle, "high")
-            if swing is None or atr <= 0:
-                return StopsAndTPs(
-                    sl_price=current_sl,
-                    trail_active=True,
-                    trailing_mode=TrailingMode.STRUCTURE_TRAIL,
-                    reasoning=reasoning + ["no swing high / no ATR — SL unchanged"],
-                    timestamp=ts,
-                )
-            candidate = Decimal(str(swing)) + Decimal(str(self._trail_buffer_atr * atr))
-            new_sl = min(current_sl, candidate)
-            if new_sl < current_sl:
-                reasoning.append(f"short trail: SL lowered from {current_sl} to {new_sl} (behind swing high {swing})")
-            else:
-                reasoning.append(f"short trail: candidate {candidate} ≥ current SL {current_sl} — unchanged")
+        if be_armed:
+            bonus = Decimal(str(self._be_bonus_points)) * self._spec.point
+            be = entry_price + bonus if is_long else entry_price - bonus
+            candidates.append(be)
+            reasoning.append(f"break-even floor {be}")
+
+        swing = _last_swing(bundle, "low" if is_long else "high")
+        if swing is not None and atr > 0:
+            buf = Decimal(str(self._trail_buffer_atr * atr))
+            struct = Decimal(str(swing)) - buf if is_long else Decimal(str(swing)) + buf
+            candidates.append(struct)
+            reasoning.append(f"structure {struct} ({self._trail_buffer_atr}×ATR behind swing {swing})")
+
+        if peak is not None and atr > 0 and self._chandelier_atr > 0:
+            dist = Decimal(str(self._chandelier_atr * atr))
+            chand = peak - dist if is_long else peak + dist
+            candidates.append(chand)
+            reasoning.append(f"chandelier {chand} ({self._chandelier_atr}×ATR from peak {peak})")
+
+        new_sl = max(candidates) if is_long else min(candidates)
+        moved = new_sl > current_sl if is_long else new_sl < current_sl
+        reasoning.insert(0, f"trail: SL {'raised' if moved else 'unchanged'} {current_sl}→{new_sl}")
 
         return StopsAndTPs(
             sl_price=_round(new_sl, self._spec),

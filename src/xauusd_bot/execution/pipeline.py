@@ -105,6 +105,7 @@ class ExecutionPipeline:
             min_sl_atr=settings.exec_min_sl_atr,
             min_sl_points=settings.exec_min_sl_points,
             trail_buffer_atr=settings.exec_trail_buffer_atr,
+            chandelier_atr=settings.exec_chandelier_atr,
         )
         self.tp_mgr = TakeProfitManager(
             spec=self.spec,
@@ -394,6 +395,7 @@ class ExecutionPipeline:
                 # Entry-time risk distance — gates Phase-D structure-trailing on a
                 # real ≥R profit buffer. Use the realized fill→SL distance.
                 initial_risk=abs(fill_price - stops.sl_price),
+                peak=fill_price,  # chandelier seed
             )
         return ExecutionOutcome(submitted=True, trade=trade, order=order, managed=managed)
 

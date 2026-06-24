@@ -371,6 +371,7 @@ class BacktestEngine:
             min_sl_atr=self._settings.exec_min_sl_atr,
             min_sl_points=self._settings.exec_min_sl_points,
             trail_buffer_atr=self._settings.exec_trail_buffer_atr,
+            chandelier_atr=self._settings.exec_chandelier_atr,
         )
         self._tp_mgr = TakeProfitManager(
             spec=self._spec,
@@ -381,6 +382,7 @@ class BacktestEngine:
         self._sizer = PositionSizer(risk_tolerance=self._settings.exec_risk_tolerance)
         # Phase D exit knobs + the weekend-flat window (mirrors execution_engine).
         self._trail_activate_r = float(self._settings.exec_trail_activate_r)
+        self._be_trigger_r = float(self._settings.exec_be_trigger_r)
         self._tp1_frac = self._settings.exec_tp1_pct / 100.0
         self._tp2_frac = self._settings.exec_tp2_pct / 100.0
         from xauusd_bot.decision.trading_hours import TradingWindow
@@ -983,6 +985,7 @@ class BacktestEngine:
             "tp2_taken": False,
             "armed": False,
             "realized_pnl": Decimal("0"),
+            "peak": fill_price,  # favorable extreme for the chandelier trail
         }
 
     def _walk_open_positions(
@@ -1078,9 +1081,11 @@ class BacktestEngine:
                     open_positions.pop(pid, None)
                     continue
 
-            # 6. Arm trailing on a ≥ activate_r favorable excursion, then trail.
+            # 6. Track peak, arm trailing on a ≥ activate_r favorable excursion,
+            #    then ratchet the SL (break-even floor + structure + chandelier).
             init_risk = st["initial_risk"] if st["initial_risk"] > 0 else Decimal("1")
             fav = bar.high if is_long else bar.low
+            st["peak"] = max(st["peak"], fav) if is_long else min(st["peak"], fav)
             profit_dist = (fav - entry) * sign
             if (
                 not st["armed"]
@@ -1089,7 +1094,15 @@ class BacktestEngine:
             ):
                 st["armed"] = True
             if st["armed"]:
-                trail = self._stop_mgr.trail(side, st["sl"], entry, bundle, now=bar.time)
+                excursion = (st["peak"] - entry) * sign
+                be_armed = st["tp1_taken"] or (
+                    self._be_trigger_r > 0
+                    and excursion >= init_risk * Decimal(str(self._be_trigger_r))
+                )
+                trail = self._stop_mgr.trail(
+                    side, st["sl"], entry, bundle, now=bar.time,
+                    peak=st["peak"], be_armed=be_armed,
+                )
                 new_sl = trail.sl_price
                 if new_sl is not None and (
                     (is_long and new_sl > st["sl"]) or (not is_long and new_sl < st["sl"])

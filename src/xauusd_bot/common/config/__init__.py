@@ -458,6 +458,26 @@ class Settings(BaseSettings):
             "that hasn't proven itself is never tightened prematurely. 0 = trail immediately."
         ),
     )
+    exec_be_trigger_r: float = Field(
+        default=1.0,
+        ge=0,
+        description=(
+            "Break-even floor: once the trade's favorable excursion reaches this many R, the "
+            "trailing SL may never sit worse than entry (+ a small cost buffer). Stops a trade "
+            "that touched profit from becoming a loss — the fix for the backtest finding that a "
+            "+1R touch turned into −1R when no higher swing had printed yet. 0 = no BE floor."
+        ),
+    )
+    exec_chandelier_atr: float = Field(
+        default=3.0,
+        ge=0,
+        description=(
+            "Chandelier trail distance in ATR: once armed, the SL also rides this many ATR below "
+            "the highest-high-since-entry (long), ratcheting up CONTINUOUSLY as the trade extends "
+            "so a runner rides to its max while locking progressively more in. Looser = more room "
+            "(runs further, gives back more). 0 = chandelier off (structure-trail + BE floor only)."
+        ),
+    )
     exec_tp1_pct: float = Field(
         default=30.0, ge=0, le=100,
         description="Fraction (%) of the position closed at TP1. Smaller = bigger runner.",

@@ -368,6 +368,7 @@ def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_clien
         pipeline.tp_mgr,
         pipeline.spec,
         trail_activate_r=settings.exec_trail_activate_r,
+        be_trigger_r=settings.exec_be_trigger_r,
         weekend_flat=(
             _trading_window.should_flatten_for_weekend
             if settings.exec_weekend_flat_enabled
