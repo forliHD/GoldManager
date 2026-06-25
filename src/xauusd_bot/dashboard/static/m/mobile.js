@@ -231,6 +231,10 @@
       if (window.ResizeObserver) new ResizeObserver(() => { try { state.chart.applyOptions(sz()); } catch (e) {} positionFvgBoxes(); }).observe(el);
       window.addEventListener('resize', () => { if (state.chart) { const x = sz(); state.chart.applyOptions(x); positionFvgBoxes(); } });
     } else { const x = sz(); if (x.width) state.chart.applyOptions(x); } // re-fit after the view was hidden (size 0) at create time
+    // Generation token: a rapid timeframe switch fires loadChart again; bump the
+    // token here and bail after the await if a newer call superseded us, so a
+    // slow stale-TF fetch can't overwrite the current chart with old data.
+    const myGen = (state.chartGen = (state.chartGen || 0) + 1);
     try {
       if (!state.symbol) { const h = await api('/api/health').catch(() => null); state.symbol = (h && h.symbol) || 'XAUUSD'; }
       const tf = state.timeframe || 'M5';
@@ -240,6 +244,7 @@
         api(`/api/chart/overlays?symbol=${sym}`).catch(() => null),
         api('/api/positions/managed').catch(() => null),
       ]);
+      if (myGen !== state.chartGen) return;  // a newer loadChart superseded this fetch
       if (Array.isArray(candles) && candles.length) {
         const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: +c.open, high: +c.high, low: +c.low, close: +c.close }));
         state.series.setData(mapped);           // full (re)load on open / timeframe change

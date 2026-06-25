@@ -574,8 +574,9 @@ class Mt5LinuxConnector(IMarketConnector):
         # an SLTP modify must carry BOTH legs — a missing `sl`/`tp` is read as 0
         # and *removes* that level — so we preserve the un-passed leg from the
         # live position (e.g. trailing the SL keeps the TP backstop intact).
+        positions = self.positions_get()
         position = next(
-            (p for p in self.positions_get() if str(p.position_id) == str(order_id)),
+            (p for p in positions if str(p.position_id) == str(order_id)),
             None,
         )
         req: dict[str, Any]
@@ -589,7 +590,23 @@ class Mt5LinuxConnector(IMarketConnector):
                 "sl": float(sl) if sl is not None else cur_sl,
                 "tp": float(tp) if tp is not None else cur_tp,
             }
+        elif not positions:
+            # positions_get() came back EMPTY — ambiguous (most likely a transient
+            # bridge read failure for a real position). The manage loop only ever
+            # trails OPEN positions, so refuse rather than fall through to the
+            # pending-order action against a live position ticket — that is exactly
+            # the silent SL-trail rejection this method was fixed to avoid. The
+            # manage loop retries next bar; the rejection is surfaced, not hidden.
+            return OrderResult(
+                accepted=False,
+                order_id=str(order_id),
+                error_code="POSITION_NOT_FOUND",
+                error_message="order_modify target not in positions snapshot (transient read?) — will retry",
+            )
         else:
+            # The snapshot listed other positions but not this ticket → it really
+            # is NOT an open position (a pending order or already closed) → use the
+            # pending-order MODIFY action.
             req = {
                 "action": int(getattr(mt5, "TRADE_ACTION_MODIFY")),
                 "order": int(order_id),

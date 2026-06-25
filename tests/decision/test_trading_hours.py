@@ -134,6 +134,25 @@ def test_weekend_flat_disabled():
     assert win.should_flatten_for_weekend(_utc(2026, 1, 3, 3, 0)) is False
 
 
+def test_weekend_flat_sunday_after_reopen_not_flattened():
+    # Review #7: a position opened at the Sunday-evening reopen (which allows()
+    # permits) must NOT be force-closed on its first bar. Sunday before the cutoff
+    # still flattens a weekend survivor; Sunday at/after it does not.
+    win = _win()  # Sun = 2026-01-04
+    assert win.should_flatten_for_weekend(_utc(2026, 1, 4, 10, 0)) is True    # pre-reopen survivor
+    assert win.should_flatten_for_weekend(_utc(2026, 1, 4, 22, 30)) is False  # after reopen
+    assert win.should_flatten_for_weekend(_utc(2026, 1, 4, 20, 55)) is False  # at cutoff (>= → keep)
+
+
+def test_weekend_flat_cutoff_is_utc_not_window_tz():
+    # Review #6: the cutoff is UTC (the field is *_utc), independent of the entry
+    # window's display timezone. With a Berlin window, a Friday instant at 20:55
+    # UTC flattens; one at 19:55 UTC (= 20:55 Berlin, winter) does NOT.
+    win = _win(tz="Europe/Berlin")  # Fri = 2026-01-02
+    assert win.should_flatten_for_weekend(_utc(2026, 1, 2, 20, 55)) is True
+    assert win.should_flatten_for_weekend(_utc(2026, 1, 2, 19, 55)) is False
+
+
 def test_reason_constants_stable():
     assert REASON_OUTSIDE_TRADING_HOURS == "outside_trading_hours"
     assert REASON_WEEKEND_FLAT == "weekend_flat"

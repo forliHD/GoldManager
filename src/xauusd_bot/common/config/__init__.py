@@ -428,8 +428,9 @@ class Settings(BaseSettings):
     exec_weekend_flat_utc: str = Field(
         default="20:55",
         description=(
-            "Friday time (exec_trading_timezone) at/after which open positions are flattened, "
-            "'HH:MM'. Default 20:55 — set BEFORE your broker's Friday gold close so a flatten bar "
+            "Friday time in **UTC** (not exec_trading_timezone — the weekend gap is a "
+            "broker-clock event) at/after which open positions are flattened, 'HH:MM'. "
+            "Default 20:55 — set BEFORE your broker's Friday gold close so a flatten bar "
             "still fires. Overnight (weekday) holds are unaffected; only the weekend gap is."
         ),
     )
@@ -593,9 +594,12 @@ class Settings(BaseSettings):
     @field_validator("exec_tp3_pct")
     @classmethod
     def _tp_fractions_sum_to_100(cls, v: float, info) -> float:
-        tp1 = info.data.get("exec_tp1_pct", 30.0)
-        tp2 = info.data.get("exec_tp2_pct", 30.0)
-        total = tp1 + tp2 + v
+        # If tp1/tp2 failed their OWN validation they are absent from info.data;
+        # don't substitute a default (it could spuriously pass the sum check while
+        # masking the real value) — let their own errors surface instead.
+        if "exec_tp1_pct" not in info.data or "exec_tp2_pct" not in info.data:
+            return v
+        total = info.data["exec_tp1_pct"] + info.data["exec_tp2_pct"] + v
         if abs(total - 100.0) > 1e-6:
             raise ValueError(
                 f"exec_tp1_pct + exec_tp2_pct + exec_tp3_pct must sum to 100 (got {total})"

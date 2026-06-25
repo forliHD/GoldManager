@@ -205,6 +205,12 @@ class TakeProfitManager:
 
         ai_tp1 = tp1_rr if (tp1_rr is not None and 0 < tp1_rr <= _MAX_TP_RR) else None
         ai_tp2 = tp2_rr if (tp2_rr is not None and 0 < tp2_rr <= _MAX_TP_RR) else None
+        # Guard against an inverted AI pair (tp1_rr > tp2_rr): TP1 must be the
+        # NEARER target so the partial-close + break-even sequence fires in order
+        # (else TP2 banks first and break-even only arms at the further TP1).
+        if ai_tp1 is not None and ai_tp2 is not None and ai_tp1 > ai_tp2:
+            ai_tp1, ai_tp2 = ai_tp2, ai_tp1
+            reasoning.append("AI tp1_rr>tp2_rr → swapped so TP1 is nearer")
 
         # --- TP1: LLM R-target → nearest liquidity zone → 1R fallback.
         tp1: Decimal | None = None

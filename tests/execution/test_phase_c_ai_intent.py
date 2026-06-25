@@ -55,6 +55,28 @@ def test_parse_sl_picks_nearest_level_to_entry():
     assert parse_sl_from_invalidations(inv, OrderSide.BUY, entry_price=4189.0) == 4180.0
 
 
+def test_parse_sl_ignores_fractional_part_of_a_decimal():
+    # Review #1: "0.4179" must NOT be read as the price 4179 (the old \d{3,6}
+    # regex grabbed the fractional digits and, being nearer entry than the real
+    # 4150 level, won via max()). The true level must survive.
+    inv = ["momentum 0.4179 weakening", "H1 close below 4150"]
+    assert parse_sl_from_invalidations(inv, OrderSide.BUY, entry_price=4185.0) == 4150.0
+
+
+def test_parse_sl_handles_thousands_separator():
+    # Review #1: "4,179.4" must parse to 4179.4 (the old regex matched only
+    # "179.4" → dropped below the price floor → AI level silently lost).
+    inv = ["H1 close below 4,179.4"]
+    assert parse_sl_from_invalidations(inv, OrderSide.BUY, entry_price=4185.0) == 4179.4
+
+
+def test_parse_sl_rejects_levels_implausibly_far_from_entry():
+    # Review #1: "ATR 1500 points" / fib "0.618"→618 are ≥ the floor but far from
+    # entry → rejected by the ±25% band; only the real 4150 level remains.
+    inv = ["invalid below 4150", "ATR 1500 points", "0.618 fib"]
+    assert parse_sl_from_invalidations(inv, OrderSide.BUY, entry_price=4185.0) == 4150.0
+
+
 # ---------------------------------------------------------------- AI SL hint → compute_initial
 
 

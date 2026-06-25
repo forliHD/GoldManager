@@ -217,3 +217,30 @@ def test_require_openrouter_returns_secret_when_set(monkeypatch: pytest.MonkeyPa
     s = Settings()
     secret = s.require_openrouter()
     assert secret.get_secret_value() == "test-key-123"
+
+
+def test_tp_sum_validator_does_not_mask_out_of_range_tp1(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Review #9: when tp1 fails its own le=100 validation it is absent from
+    # info.data; the sum validator must SKIP (not substitute a 30.0 default and
+    # raise a MISLEADING "sum != 100"). Only the real tp1 bound error should show.
+    monkeypatch.setenv("REDIS_URL", "redis://r:6379/0")
+    monkeypatch.setenv("TIMESCALEDB_URL", "postgresql+asyncpg://u:p@h:5432/d")
+    monkeypatch.setenv("EXEC_TP1_PCT", "120")  # violates le=100
+    monkeypatch.setenv("EXEC_TP2_PCT", "30")
+    monkeypatch.setenv("EXEC_TP3_PCT", "50")
+    with pytest.raises(ValidationError) as exc:
+        Settings()
+    msg = str(exc.value)
+    assert "exec_tp1_pct" in msg          # the real le=100 error surfaces
+    assert "must sum to 100" not in msg   # no misleading fallback-based sum error
+
+
+def test_tp_sum_validator_still_catches_real_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Guard: with all three in range but not summing to 100, the sum check fires.
+    monkeypatch.setenv("REDIS_URL", "redis://r:6379/0")
+    monkeypatch.setenv("TIMESCALEDB_URL", "postgresql+asyncpg://u:p@h:5432/d")
+    monkeypatch.setenv("EXEC_TP1_PCT", "30")
+    monkeypatch.setenv("EXEC_TP2_PCT", "30")
+    monkeypatch.setenv("EXEC_TP3_PCT", "50")  # 30+30+50 = 110
+    with pytest.raises(ValidationError, match="must sum to 100"):
+        Settings()

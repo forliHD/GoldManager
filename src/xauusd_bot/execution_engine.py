@@ -378,6 +378,15 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
     positions = await asyncio.to_thread(connector.positions_get, settings.symbol)
     open_tickets = {p.position_id for p in (positions or [])}
     price = Decimal(str(current_price))
+    # Live spread (points) so the break-even floor clears it; 0 on any failure
+    # (degrades to the bare bonus buffer — never blocks management).
+    spread_pts = 0.0
+    try:
+        acc = await asyncio.to_thread(connector.get_account)
+        if acc is not None and acc.current_spread is not None:
+            spread_pts = float(acc.current_spread)
+    except Exception:  # noqa: BLE001 - spread is best-effort; management proceeds without it
+        spread_pts = 0.0
     for ticket, mp in stored.items():
         if ticket not in open_tickets:
             # Position closed on the broker → finalise the journal trade, then
@@ -390,7 +399,7 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
             if notifier is not None and notifier.enabled:
                 await _notify_close(notifier, settings, ticket, mp, summary)
             continue
-        actions, mp2 = pos_mgr.plan(mp, bundle, price)
+        actions, mp2 = pos_mgr.plan(mp, bundle, price, current_spread_points=spread_pts)
         for a in actions:
             try:
                 await _apply_action(connector, ticket, a)

@@ -168,6 +168,29 @@ def test_break_even_short_moves_sl_below_entry() -> None:
     assert result.sl_price == Decimal("2374.65")
 
 
+def test_trail_break_even_floor_covers_spread() -> None:
+    # Review #2: the trail's BE floor must include the spread (like
+    # move_to_break_even), else a "break-even" runner still nets a small loss on
+    # a wide gold spread. No swing/peak in the bundle → the BE floor is the only
+    # forward anchor, so the SL ratchets exactly to it.
+    spec = make_symbol_spec()
+    mgr = StopManager(spec=spec, be_bonus_points=5.0)
+    bundle = _empty_bundle(datetime(2026, 4, 15, 13, 30, tzinfo=UTC))
+    entry = Decimal("2375.00")
+    with_spread = mgr.trail(
+        OrderSide.BUY, current_sl=Decimal("2370.00"), entry_price=entry,
+        bundle=bundle, be_armed=True, spread_points=30.0,
+    )
+    assert with_spread.sl_price == Decimal("2375.35")  # entry + (30+5)pts
+    # Default (no spread, e.g. backtest) → bare bonus only = 2375.05 (unchanged).
+    no_spread = mgr.trail(
+        OrderSide.BUY, current_sl=Decimal("2370.00"), entry_price=entry,
+        bundle=bundle, be_armed=True,
+    )
+    assert no_spread.sl_price == Decimal("2375.05")
+    assert with_spread.sl_price > no_spread.sl_price
+
+
 # ----------------------------------------------------------------- 5. trail ratchet (long)
 
 

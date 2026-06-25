@@ -251,6 +251,19 @@ def test_order_modify_pending_order_uses_modify_action():
     assert req["price"] == 4200.0 and req["sl"] == 4250.0
 
 
+def test_order_modify_refuses_on_empty_positions_snapshot():
+    """Review #4: an EMPTY positions_get() (likely a transient bridge read) must
+    NOT fall through to the pending-order action on a real position ticket — that
+    is the silent SL-trail rejection. Refuse so the manage loop retries."""
+    fake = FakeMt5()
+    c = _conn(fake)
+    c.positions_get = lambda *a, **k: []  # simulate a transient empty read
+    res = c.order_modify("111", sl=4245.0)
+    assert res.accepted is False
+    assert res.error_code == "POSITION_NOT_FOUND"
+    assert fake.last_order_request is None  # no (wrong) order_send was issued
+
+
 def test_get_ticks_uses_time_msc():
     ticks = _conn().get_ticks(
         "XAUUSD+", datetime(2026, 6, 18, 15, 0, tzinfo=UTC),

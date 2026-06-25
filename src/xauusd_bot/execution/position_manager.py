@@ -177,11 +177,14 @@ class PositionManager:
         mp: ManagedPosition,
         bundle: FeatureSnapshotBundle,
         current_price: Decimal,
+        current_spread_points: float = 0.0,
     ) -> tuple[list[ManagementAction], ManagedPosition]:
         """Return the management actions for this bar + the updated state.
 
         ``current_price`` is the latest close (or bid/ask) used to test TP hits
-        and runner rejection. The returned state must be persisted by the caller.
+        and runner rejection. ``current_spread_points`` lets the break-even floor
+        cover the spread (defaults to 0 for tests/backtest). The returned state
+        must be persisted by the caller.
         """
         actions: list[ManagementAction] = []
         mp = mp.model_copy(deep=True)
@@ -226,7 +229,7 @@ class PositionManager:
             be_armed = self._be_floor_armed(mp)
             trail = self._stop.trail(
                 mp.side, mp.sl_price, mp.entry_price, bundle,
-                peak=mp.peak, be_armed=be_armed,
+                peak=mp.peak, be_armed=be_armed, spread_points=current_spread_points,
             )
             if trail.sl_price is not None and _tighter(mp.side, trail.sl_price, mp.sl_price):
                 actions.append(ManagementAction(kind="modify_sl", price=trail.sl_price, reason="trail"))

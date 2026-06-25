@@ -49,9 +49,17 @@ log = structlog.get_logger(__name__)
 # Gold-plausible price band for extracting an SL level from the LLM's free-form
 # invalidation strings. Filters out fib ratios (0.382), R-multiples, pip counts,
 # etc. — only a real XAUUSD price (~hundreds to tens-of-thousands) qualifies.
-_PRICE_RE = re.compile(r"\d{3,6}(?:[.,]\d+)?")
+# A price token: a leading digit, optional US-style thousands commas, and an
+# optional decimal — but NOT preceded by a digit or '.', so we never grab the
+# fractional tail of a decimal ("momentum 0.4179" → "4179") or a sub-run of a
+# larger number. ("4,179.4" matches whole; commas are stripped before float.)
+_PRICE_RE = re.compile(r"(?<![\d.])\d[\d,]*(?:\.\d+)?")
 _PRICE_MIN = 500.0
 _PRICE_MAX = 99_999.0
+# An invalidation level sits NEAR the trade. Reject anything implausibly far
+# from entry — fib ratios (0.618→618), "ATR 1500 points"→1500, RSI values — that
+# the digit scan would otherwise mistake for an SL price.
+_PRICE_ENTRY_BAND = 0.25  # keep only |level − entry| ≤ 25% of entry
 
 
 def parse_sl_from_invalidations(
@@ -74,11 +82,13 @@ def parse_sl_from_invalidations(
     for line in invalidations:
         for m in _PRICE_RE.findall(str(line)):
             try:
-                val = float(m.replace(",", "."))
+                val = float(m.replace(",", ""))  # strip US thousands separators
             except ValueError:
                 continue
             if not (_PRICE_MIN <= val <= _PRICE_MAX):
                 continue
+            if entry_price > 0 and abs(val - entry_price) > entry_price * _PRICE_ENTRY_BAND:
+                continue  # implausibly far from entry → not an invalidation level
             on_correct_side = (side == OrderSide.BUY and val < entry_price) or (
                 side == OrderSide.SELL and val > entry_price
             )
@@ -330,6 +340,7 @@ class StopManager:
         now: datetime | None = None,
         peak: Decimal | None = None,
         be_armed: bool = False,
+        spread_points: float = 0.0,
     ) -> StopsAndTPs:
         """Ratchet the SL up using three protective anchors (Phase D, ratchet-only).
 
@@ -365,8 +376,14 @@ class StopManager:
         candidates: list[Decimal] = [current_sl]
 
         if be_armed:
-            bonus = Decimal(str(self._be_bonus_points)) * self._spec.point
-            be = entry_price + bonus if is_long else entry_price - bonus
+            # Cover the spread too (like move_to_break_even): a long's SL fills at
+            # the bid, so entry + bonus alone can still net a small loss on a wide
+            # gold spread. spread_points defaults to 0 (backtest sim) → unchanged
+            # there; the live manage loop passes the real spread.
+            buffer = (
+                Decimal(str(spread_points)) + Decimal(str(self._be_bonus_points))
+            ) * self._spec.point
+            be = entry_price + buffer if is_long else entry_price - buffer
             candidates.append(be)
             reasoning.append(f"break-even floor {be}")
 

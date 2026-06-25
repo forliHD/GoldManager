@@ -1234,11 +1234,10 @@ class BacktestEngine:
     ) -> None:
         side_sign = Decimal("1") if state["side"] == OrderSide.BUY else Decimal("-1")
         gross = (close_price - state["entry_price"]) * side_sign
-        # Total PnL = this (final) leg + any partials already booked at TP1/TP2,
-        # so the trade's R reflects the whole multi-tier outcome (Phase D).
-        pnl = gross * state["volume"] * self._spec.trade_contract_size + state.get(
-            "realized_pnl", Decimal("0")
-        )
+        final_leg_pnl = gross * state["volume"] * self._spec.trade_contract_size
+        # The journal R reflects the WHOLE multi-tier outcome: this final leg plus
+        # the TP1/TP2 partials already booked into realized_pnl (Phase D).
+        pnl = final_leg_pnl + state.get("realized_pnl", Decimal("0"))
         risk = state["risk_amount"] if state["risk_amount"] > 0 else Decimal("1")
         r_mult = float(pnl / risk)
 
@@ -1256,10 +1255,13 @@ class BacktestEngine:
             )
         )
 
-        # Settle PnL in the simulated account + risk manager.
-        self._paper._account.balance += pnl  # noqa: SLF001
+        # Settle ONLY the final leg here — the TP1/TP2 partials were already
+        # booked to the account + risk manager in _partial_close, so re-adding the
+        # realized_pnl term would double-count it (inflating the equity curve and
+        # the daily/weekly PnL the risk gate reads).
+        self._paper._account.balance += final_leg_pnl  # noqa: SLF001
         self._paper._account.equity = self._paper._account.balance  # noqa: SLF001
-        self._risk.record_pnl(pnl, close_time)
+        self._risk.record_pnl(final_leg_pnl, close_time)
 
         # Remove from the paper broker's book.
         self._paper._positions.pop(position_id, None)  # noqa: SLF001

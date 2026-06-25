@@ -44,8 +44,10 @@ log = structlog.get_logger(__name__)
 
 # Stable block-reason string. Tests + the journal assert on this exact value.
 REASON_OUTSIDE_TRADING_HOURS = "outside_trading_hours"
-# Friday is weekday 4 (Mon=0 … Sun=6) — the last session before the weekend gap.
+# Mon=0 … Sun=6. Friday is the last session before the weekend gap.
 _FRIDAY = 4
+_SATURDAY = 5
+_SUNDAY = 6
 
 
 def _parse_hm(value: str) -> time | None:
@@ -147,23 +149,35 @@ class TradingWindow:
     def should_flatten_for_weekend(self, ts: datetime, broker_offset_minutes: float = 0.0) -> bool:
         """True if an open position must be CLOSED before the weekend gap.
 
-        Fires on **Friday at/after ``weekend_flat_cutoff``** (in the window
-        timezone) — flatten while there is still liquidity, before the broker's
-        Friday close — and as a catch-all on **Saturday/Sunday** (in case a
-        position somehow survived the gap). Disabled / tz failure → False
+        Evaluated in **UTC** — the weekend gap is a broker-clock event and the
+        cutoff is named ``..._utc``, so this is independent of the entry window's
+        display timezone. Fires Friday at/after ``weekend_flat_cutoff`` (flatten
+        while there is still liquidity, before the broker's Friday close), all of
+        Saturday, and Sunday **only before the cutoff** — so a position opened at
+        the Sunday-evening reopen (which ``allows()`` permits) is not force-closed
+        on its very first management bar. Disabled / clock failure → False
         (fail-safe: never force a close on an uncertain clock). Entry-window
         management is independent: a running trade may still be held overnight.
         """
 
         if not self.weekend_flat_enabled:
             return False
-        local = self.local_time(ts, broker_offset_minutes)
-        if local is None:
-            return False  # fail-safe — do not take a destructive action on a tz error
-        weekday = local.weekday()
-        if weekday > _FRIDAY:  # Saturday / Sunday
-            return True
-        return weekday == _FRIDAY and local.time() >= self.weekend_flat_cutoff
+        try:
+            aware = ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+            utc = (aware - timedelta(minutes=float(broker_offset_minutes))).astimezone(UTC)
+        except (ValueError, OverflowError, OSError) as exc:
+            log.warning("weekend_flat_clock_failed", error=str(exc))
+            return False  # fail-safe — do not take a destructive action on a bad clock
+        weekday = utc.weekday()
+        now = utc.time()
+        if weekday == _SATURDAY:
+            return True  # market fully closed all day
+        if weekday == _SUNDAY:
+            # Closed until the Sunday-evening reopen (~22:00 UTC). Flatten a weekend
+            # survivor before the cutoff, but don't force-close a freshly opened
+            # position once the new session has started (consistent with allows()).
+            return now < self.weekend_flat_cutoff
+        return weekday == _FRIDAY and now >= self.weekend_flat_cutoff
 
 
 REASON_WEEKEND_FLAT = "weekend_flat"

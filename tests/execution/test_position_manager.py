@@ -35,7 +35,8 @@ class _FakeStop:
     def __init__(self, trail_sl: Decimal | None = None) -> None:
         self._trail_sl = trail_sl
 
-    def trail(self, side, current_sl, entry_price, bundle, *, now=None, peak=None, be_armed=False):
+    def trail(self, side, current_sl, entry_price, bundle, *, now=None, peak=None, be_armed=False, spread_points=0.0):
+        self.last_spread_points = spread_points  # captured so a test can assert it's forwarded
         return SimpleNamespace(sl_price=self._trail_sl)
 
 

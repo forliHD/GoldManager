@@ -71,6 +71,8 @@ def test_runner_blended_r_across_partials():
     # are tested in isolation.
     bundle = FeatureSnapshotBundle(ts=t0, atr=2.0, broker_offset_minutes=0.0)
 
+    bal0 = eng._paper._account.balance  # noqa: SLF001 — before any leg settles
+
     # Bar 1: touches TP1 only (high 2012). Bar 2: TP2 (high 2022). Bar 3: TP3 (high 2032).
     eng._walk_open_positions(bar=_bar(t0, "2000", "2012", "2001", "2011"),
                              open_positions=open_positions, bundle=bundle, in_news_blackout=False)
@@ -86,3 +88,7 @@ def test_runner_blended_r_across_partials():
     # 0.3×1R + 0.3×2R + 0.4×3R = 2.1R
     assert closed.r_multiple == pytest.approx(2.1, abs=0.05)
     assert closed.exit_reason.value == "tp3_hit"
+    # Review #5: the account balance must move by the TOTAL realized pnl exactly
+    # once. TP1 0.3@+10 = +300, TP2 0.3@+20 = +600, runner 0.4@+30 = +1200 → +2100.
+    # The old code re-added the partials in _close_position → +3000 (double-count).
+    assert eng._paper._account.balance - bal0 == Decimal("2100")  # noqa: SLF001
