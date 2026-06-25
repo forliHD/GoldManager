@@ -70,6 +70,13 @@ def test_parse_sl_handles_thousands_separator():
     assert parse_sl_from_invalidations(inv, OrderSide.BUY, entry_price=4185.0) == 4179.4
 
 
+def test_parse_sl_handles_eu_decimal_comma():
+    # Fix follow-up: a German/EU decimal "4179,40" must parse to 4179.40 — not
+    # 417940 — i.e. the comma-as-decimal handling the first fix must not drop.
+    inv = ["H1-Close unter 4179,40"]
+    assert parse_sl_from_invalidations(inv, OrderSide.BUY, entry_price=4185.0) == 4179.40
+
+
 def test_parse_sl_rejects_levels_implausibly_far_from_entry():
     # Review #1: "ATR 1500 points" / fib "0.618"→618 are ≥ the floor but far from
     # entry → rejected by the ±25% band; only the real 4150 level remains.

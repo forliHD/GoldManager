@@ -264,6 +264,20 @@ def test_order_modify_refuses_on_empty_positions_snapshot():
     assert fake.last_order_request is None  # no (wrong) order_send was issued
 
 
+def test_order_modify_modifies_confirmed_pending_when_positions_empty():
+    """Fix follow-up: an EMPTY positions snapshot must still MODIFY a ticket the
+    bridge confirms IS a pending order — don't refuse a genuine pending order."""
+    fake = FakeMt5()
+    fake.orders_get = lambda **k: [SimpleNamespace(ticket=999)]  # 999 is pending
+    c = _conn(fake)
+    c.positions_get = lambda *a, **k: []  # no open positions
+    res = c.order_modify("999", price=4200.0, sl=4250.0)
+    assert res.accepted is True
+    req = fake.last_order_request
+    assert req["action"] == _CONSTS["TRADE_ACTION_MODIFY"]
+    assert req["order"] == 999 and "position" not in req
+
+
 def test_get_ticks_uses_time_msc():
     ticks = _conn().get_ticks(
         "XAUUSD+", datetime(2026, 6, 18, 15, 0, tzinfo=UTC),

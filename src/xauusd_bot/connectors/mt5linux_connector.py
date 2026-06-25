@@ -590,23 +590,26 @@ class Mt5LinuxConnector(IMarketConnector):
                 "sl": float(sl) if sl is not None else cur_sl,
                 "tp": float(tp) if tp is not None else cur_tp,
             }
-        elif not positions:
-            # positions_get() came back EMPTY — ambiguous (most likely a transient
-            # bridge read failure for a real position). The manage loop only ever
-            # trails OPEN positions, so refuse rather than fall through to the
-            # pending-order action against a live position ticket — that is exactly
-            # the silent SL-trail rejection this method was fixed to avoid. The
-            # manage loop retries next bar; the rejection is surfaced, not hidden.
-            return OrderResult(
-                accepted=False,
-                order_id=str(order_id),
-                error_code="POSITION_NOT_FOUND",
-                error_message="order_modify target not in positions snapshot (transient read?) — will retry",
-            )
         else:
-            # The snapshot listed other positions but not this ticket → it really
-            # is NOT an open position (a pending order or already closed) → use the
-            # pending-order MODIFY action.
+            # Not in the positions book. Only use the pending-order action if the
+            # bridge actually confirms a pending order with this ticket. If it does
+            # NOT and the positions snapshot was EMPTY, that is most likely a
+            # transient read failure for a real position — refuse rather than send
+            # the pending action to a live position (the silent SL-trail rejection
+            # this method was fixed to avoid). The manage loop retries next bar.
+            try:
+                is_pending = any(
+                    str(getattr(o, "ticket", "")) == str(order_id) for o in (mt5.orders_get() or [])
+                )
+            except Exception:  # noqa: BLE001 - orders read is best-effort
+                is_pending = False
+            if not positions and not is_pending:
+                return OrderResult(
+                    accepted=False,
+                    order_id=str(order_id),
+                    error_code="POSITION_NOT_FOUND",
+                    error_message="order_modify target not in positions/orders snapshot (transient read?) — will retry",
+                )
             req = {
                 "action": int(getattr(mt5, "TRADE_ACTION_MODIFY")),
                 "order": int(order_id),

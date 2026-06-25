@@ -49,17 +49,39 @@ log = structlog.get_logger(__name__)
 # Gold-plausible price band for extracting an SL level from the LLM's free-form
 # invalidation strings. Filters out fib ratios (0.382), R-multiples, pip counts,
 # etc. — only a real XAUUSD price (~hundreds to tens-of-thousands) qualifies.
-# A price token: a leading digit, optional US-style thousands commas, and an
-# optional decimal — but NOT preceded by a digit or '.', so we never grab the
-# fractional tail of a decimal ("momentum 0.4179" → "4179") or a sub-run of a
-# larger number. ("4,179.4" matches whole; commas are stripped before float.)
-_PRICE_RE = re.compile(r"(?<![\d.])\d[\d,]*(?:\.\d+)?")
+# A price token: a leading digit, optional thousands/decimal separators — but
+# NOT preceded by a digit or '.', so we never grab the fractional tail of a
+# decimal ("momentum 0.4179" → "4179") or a sub-run of a larger number.
+_PRICE_RE = re.compile(r"(?<![\d.])\d[\d,.]*\d|(?<![\d.])\d")
 _PRICE_MIN = 500.0
 _PRICE_MAX = 99_999.0
 # An invalidation level sits NEAR the trade. Reject anything implausibly far
 # from entry — fib ratios (0.618→618), "ATR 1500 points"→1500, RSI values — that
 # the digit scan would otherwise mistake for an SL price.
 _PRICE_ENTRY_BAND = 0.25  # keep only |level − entry| ≤ 25% of entry
+
+
+def _token_to_float(tok: str) -> float | None:
+    """Parse a numeric token to float, disambiguating US ("4,179.40") and EU
+    ("4179,40" / "4.179,40") thousands/decimal separators.
+
+    When both separators appear, the RIGHTMOST is the decimal point. With only
+    commas, a trailing group of ≤2 digits is a decimal (``4179,40``); otherwise
+    the commas are thousands (``4,179``).
+    """
+
+    if "." in tok and "," in tok:
+        if tok.rfind(",") > tok.rfind("."):  # EU: 4.179,40
+            tok = tok.replace(".", "").replace(",", ".")
+        else:  # US: 4,179.40
+            tok = tok.replace(",", "")
+    elif "," in tok:
+        frac = tok.rsplit(",", 1)[1]
+        tok = tok.replace(",", ".") if (len(frac) <= 2 and frac.isdigit()) else tok.replace(",", "")
+    try:
+        return float(tok)
+    except ValueError:
+        return None
 
 
 def parse_sl_from_invalidations(
@@ -81,9 +103,8 @@ def parse_sl_from_invalidations(
     candidates: list[float] = []
     for line in invalidations:
         for m in _PRICE_RE.findall(str(line)):
-            try:
-                val = float(m.replace(",", ""))  # strip US thousands separators
-            except ValueError:
+            val = _token_to_float(m)
+            if val is None:
                 continue
             if not (_PRICE_MIN <= val <= _PRICE_MAX):
                 continue
@@ -381,7 +402,7 @@ class StopManager:
             # gold spread. spread_points defaults to 0 (backtest sim) → unchanged
             # there; the live manage loop passes the real spread.
             buffer = (
-                Decimal(str(spread_points)) + Decimal(str(self._be_bonus_points))
+                Decimal(str(max(0.0, spread_points))) + Decimal(str(self._be_bonus_points))
             ) * self._spec.point
             be = entry_price + buffer if is_long else entry_price - buffer
             candidates.append(be)

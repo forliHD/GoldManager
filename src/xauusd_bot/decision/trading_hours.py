@@ -165,7 +165,7 @@ class TradingWindow:
         try:
             aware = ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
             utc = (aware - timedelta(minutes=float(broker_offset_minutes))).astimezone(UTC)
-        except (ValueError, OverflowError, OSError) as exc:
+        except (ValueError, OverflowError, OSError, TypeError, AttributeError) as exc:
             log.warning("weekend_flat_clock_failed", error=str(exc))
             return False  # fail-safe — do not take a destructive action on a bad clock
         weekday = utc.weekday()
