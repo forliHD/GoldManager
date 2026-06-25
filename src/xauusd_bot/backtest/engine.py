@@ -646,9 +646,16 @@ class BacktestEngine:
                 self._zones.note_price(float(bar.close))
             prev_bar = bar
 
-        # --- post-loop: mark-to-market the final bar, close any
-        # positions still open at end_date at the last close price.
-        final_bar = all_bars[end_idx]
+        # --- post-loop: close any positions still open at the LAST PROCESSED
+        # bar's close. This MUST be ``prev_bar`` (the last bar we actually
+        # walked), NOT ``all_bars[end_idx]``: when ``max_bars`` truncates the
+        # loop, ``end_idx`` is the *nominal* window end — up to days past the
+        # last walked bar — so pricing a forced exit there is lookahead the SL
+        # never got to veto, which manufactured impossible >1R "losses"
+        # (e.g. a short force-closed $100 above its stop). The exit-replay closes
+        # leftover positions at the tape's last bar (== prev_bar), so anchoring
+        # here also keeps the engine reconciled with the offline exit sweep.
+        final_bar = prev_bar if prev_bar is not None else all_bars[end_idx]
         self._connector.advance_time(final_bar.time)
         self._paper.update_marks(final_bar.close)
         for pid, state in list(open_positions.items()):
