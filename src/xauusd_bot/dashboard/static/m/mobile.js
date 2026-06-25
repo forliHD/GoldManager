@@ -224,6 +224,7 @@
         handleScale: true, handleScroll: true,
       });
       state.series = state.chart.addCandlestickSeries({ upColor: '#3fb950', downColor: '#f85149', borderVisible: false, wickUpColor: '#3fb950', wickDownColor: '#f85149', priceLineColor: '#58a6ff' });
+      state.vwapLines = {};  // VWAP curve line-series (desktop parity), recreated with the chart
       // FVG box overlay layer (HTML rectangles positioned via the coordinate API).
       const layer = document.createElement('div'); layer.className = 'fvg-layer'; el.appendChild(layer); state.fvgLayer = layer;
       state.chart.timeScale().subscribeVisibleTimeRangeChange(() => positionFvgBoxes());
@@ -234,9 +235,10 @@
       if (!state.symbol) { const h = await api('/api/health').catch(() => null); state.symbol = (h && h.symbol) || 'XAUUSD'; }
       const tf = state.timeframe || 'M5';
       const sym = encodeURIComponent(state.symbol);
-      const [candles, overlays] = await Promise.all([
+      const [candles, overlays, positions] = await Promise.all([
         api(`/api/chart/candles?symbol=${sym}&timeframe=${tf}&count=300`),
         api(`/api/chart/overlays?symbol=${sym}`).catch(() => null),
+        api('/api/positions/managed').catch(() => null),
       ]);
       if (Array.isArray(candles) && candles.length) {
         const mapped = candles.map(c => ({ time: Math.floor(new Date(c.time).getTime() / 1000), open: +c.open, high: +c.high, low: +c.low, close: +c.close }));
@@ -246,6 +248,7 @@
         $('#ch-last').textContent = num(mapped[mapped.length - 1].close);
         state.lastOverlays = overlays;
         applyChartOverlays(overlays);
+        renderTradeLevels(positions || []);  // draw the open position (entry/SL/TP) on the chart
         // Re-fit after the legend rendered (it shrinks the flex container a bit),
         // so the canvas matches the available space exactly — no inner scroll.
         try { state.chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }); } catch (e) {}
@@ -277,8 +280,12 @@
   }
   async function refreshOverlays() {
     if (!state.series) return;
-    const o = await api(`/api/chart/overlays?symbol=${encodeURIComponent(state.symbol || 'XAUUSD')}`).catch(() => null);
+    const [o, positions] = await Promise.all([
+      api(`/api/chart/overlays?symbol=${encodeURIComponent(state.symbol || 'XAUUSD')}`).catch(() => null),
+      api('/api/positions/managed').catch(() => null),
+    ]);
     if (o) { state.lastOverlays = o; applyChartOverlays(o); }
+    renderTradeLevels(positions || []);  // keep entry/SL/TP lines fresh (trail, TP-taken)
   }
   const CHART_DEFAULTS = { vwap: true, va: true, fvg: true, fvgMax: 6, fvgTf: { H1: true, M5: true, M1: true }, fvgType: { bullish: true, bearish: true }, fvgPartial: true };
   function chartSettings() {
@@ -290,35 +297,101 @@
     return state.cset;
   }
   function saveChartSettings() { try { localStorage.setItem('mChartCfg2', JSON.stringify(state.cset)); } catch (e) {} }
+  // VWAP evolving CURVES (desktop parity) — the backend sends a per-level point
+  // series; we bucket it onto the active timeframe grid (one point per bucket so
+  // an M1 point between M5 candles doesn't spread the candles apart).
+  const VW_COL = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
+  function vwapBucket(pts, tfSec) {
+    const m = new Map();
+    for (const p of (pts || [])) { if (!p || p.value == null) continue; m.set(Math.floor(p.time / tfSec) * tfSec, p.value); }
+    return Array.from(m, ([time, value]) => ({ time, value })).sort((a, b) => a.time - b.time);
+  }
+  function applyVwapCurves(series, on) {
+    state.vwapLines = state.vwapLines || {};
+    const tfSec = TF_SECONDS[state.timeframe || 'M5'] || 300;
+    for (const k of ['utc00', 'utc07', 'utc12']) {
+      if (!on) { if (state.vwapLines[k]) { try { state.vwapLines[k].setData([]); } catch (e) {} } continue; }
+      if (!state.vwapLines[k]) {
+        try { state.vwapLines[k] = state.chart.addLineSeries({ color: VW_COL[k], lineWidth: 2, priceLineVisible: false, lastValueVisible: true, title: 'VWAP ' + k.slice(3), crosshairMarkerVisible: false }); }
+        catch (e) { continue; }
+      }
+      try { state.vwapLines[k].setData(vwapBucket((series || {})[k], tfSec)); } catch (e) {}
+    }
+  }
+
   function applyChartOverlays(o) {
     (state.priceLines || []).forEach(pl => { try { state.series.removePriceLine(pl); } catch (e) {} });
     state.priceLines = [];
-    const legend = [];
-    if (!o || !window.LightweightCharts || !state.series) { $('#ch-legend').innerHTML = ''; return; }
+    if (!o || !window.LightweightCharts || !state.series) { state.hasVA = false; renderLegend(); return; }
     const s = chartSettings();
     const S = LightweightCharts.LineStyle;
     const add = (price, color, title, style, w) => {
       if (price == null || isNaN(+price)) return;
       try { state.priceLines.push(state.series.createPriceLine({ price: +price, color, lineWidth: w || 1, lineStyle: style, axisLabelVisible: true, title })); } catch (e) {}
     };
-    if (s.vwap) {
-      const vw = o.vwaps || o.vwap || {}; const vwCol = { utc00: '#3b82f6', utc07: '#f59e0b', utc12: '#ec4899' };
-      let any = false;
-      ['utc00', 'utc07', 'utc12'].forEach(k => { if (vw[k] != null) { add(vw[k], vwCol[k], 'VWAP ' + k.slice(3), S.Solid, 1); any = true; } });
-      if (any) legend.push(`<span><i style="background:#3b82f6"></i>VWAP</span>`);
-    }
+    // VWAP — evolving curves from vwap_series.
+    applyVwapCurves(o.vwap_series || {}, !!s.vwap);
+    // Volume Profile — LOCKED references only (the tradeable levels): month always
+    // (dashed), plus yesterday's profile (prev_day, solid) or — on Monday, with no
+    // completed prior day — the previous week (prev_week, dashed). VAH red / VPOC
+    // yellow / VAL green, matching the desktop.
+    const vp = o.volume_profile || {};
+    let vaAny = false;
     if (s.va) {
-      const w = (o.volume_profile || {}).weekly;
-      if (w) {
-        add(w.vah, '#ef4444', 'VAH', S.Dotted); add(w.vpoc, '#eab308', 'VPOC', S.Dotted); add(w.val, '#22c55e', 'VAL', S.Dotted);
-        legend.push(`<span><i style="background:#ef4444"></i>VAH</span><span><i style="background:#eab308"></i>VPOC</span><span><i style="background:#22c55e"></i>VAL</span>`);
-      }
+      const drawVA = (key, label, style, width) => {
+        const p = vp[key]; if (!p || p.vpoc == null) return false;
+        add(p.vah, '#ef4444', label + ' VAH', style, width);
+        add(p.vpoc, '#eab308', label + ' VPOC', style, width);
+        add(p.val, '#22c55e', label + ' VAL', style, width);
+        return true;
+      };
+      vaAny = drawVA('prev_month', 'M', S.Dashed, 2);
+      if (vp.prev_day && vp.prev_day.vpoc != null) vaAny = drawVA('prev_day', 'D', S.Solid, 2) || vaAny;
+      else vaAny = drawVA('prev_week', 'W', S.Dashed, 2) || vaAny;
     }
+    state.hasVA = vaAny;
     // FVG as HTML boxes (desktop parity) — store raw, curate, position.
     state.fvgRaw = (o.fvg_zones || o.fvgZones || []);
     renderFvgZones();
+    renderLegend();
+  }
+
+  // Open position(s) drawn ON the chart: entry + SL + TP1/2/3, labelled (desktop
+  // parity). Kept on a separate priceLine list so an overlay refresh doesn't wipe
+  // them and vice-versa.
+  function renderTradeLevels(positions) {
+    (state.tradeLines || []).forEach(pl => { try { state.series.removePriceLine(pl); } catch (e) {} });
+    state.tradeLines = [];
+    state.lastPositions = positions || [];
+    if (state.series && positions && positions.length) {
+      const S = LightweightCharts.LineStyle;
+      const tl = (price, color, title, style, w) => {
+        if (price == null || isNaN(+price)) return;
+        try { state.tradeLines.push(state.series.createPriceLine({ price: +price, color, lineWidth: w || 1, lineStyle: style, axisLabelVisible: true, title })); } catch (e) {}
+      };
+      for (const p of positions) {
+        const long = p.side === 'buy';
+        tl(p.open_price, long ? '#22c55e' : '#ef4444', (long ? '▲ LONG ' : '▼ SHORT ') + num(p.open_price), S.Solid, 2);
+        tl(p.sl, '#ef4444', 'SL', S.Dashed, 1);
+        const pl = p.plan;
+        if (pl) {
+          tl(pl.tp1, '#16a34a', 'TP1' + (pl.tp1_taken ? ' ✓' : ''), S.Dotted, 1);
+          tl(pl.tp2, '#16a34a', 'TP2' + (pl.tp2_taken ? ' ✓' : ''), S.Dotted, 1);
+          tl(pl.tp3, '#15803d', 'TP3', S.Dotted, 1);
+        } else if (p.tp != null) { tl(p.tp, '#16a34a', 'TP', S.Dotted, 1); }
+      }
+    }
+    renderLegend();
+  }
+
+  function renderLegend() {
+    const s = chartSettings();
+    const legend = [];
+    if (s.vwap) legend.push(`<span><i style="background:#3b82f6"></i>VWAP</span>`);
+    if (s.va && state.hasVA) legend.push(`<span><i style="background:#ef4444"></i>VAH</span><span><i style="background:#eab308"></i>VPOC</span><span><i style="background:#22c55e"></i>VAL</span>`);
     if (s.fvg && (state.fvgZones || []).length) legend.push(`<span><i style="background:#3fb950"></i>FVG↑</span><span><i style="background:#f85149"></i>FVG↓</span>`);
-    $('#ch-legend').innerHTML = legend.join('');
+    if ((state.lastPositions || []).length) legend.push(`<span><i style="background:#58a6ff"></i>Position E/SL/TP</span>`);
+    const el = $('#ch-legend'); if (el) el.innerHTML = legend.join('');
   }
   // ----- FVG boxes (HTML overlay) — mirrors desktop renderFvgZones/positionFvgZones -----
   const FVG_TF_SCALE = { H1: 80, M5: 30, M1: 12 };
@@ -366,7 +439,8 @@
       const bs = `1px ${partial ? 'dashed' : 'solid'} rgba(${col},0.85)`;
       box.style.borderTop = bs; box.style.borderBottom = bs;
       const tag = document.createElement('div'); tag.className = 'fvg-tag';
-      tag.textContent = `${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}`;
+      const extTag = z.extension_tf ? ` +${z.extension_tf}` : '';
+      tag.textContent = `${z.tf} ${bull ? '▲' : '▼'}${partial ? ' ◑' : ''}${extTag}`;
       tag.style.background = `rgba(${col},0.9)`;
       box.appendChild(tag); layer.appendChild(box);
     }
