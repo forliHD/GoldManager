@@ -44,6 +44,7 @@ from xauusd_bot.common.webpush import WebPushNotifier
 from xauusd_bot.common.schemas.journal import ExitReasonTag, TradeCloseUpdate
 from xauusd_bot.common.service import make_consumer, make_publisher, service_runtime
 from xauusd_bot.connectors.factory import make_connector
+from xauusd_bot.decision.trading_hours import TradingWindow
 from xauusd_bot.connectors.schemas import OrderSide
 from xauusd_bot.execution.pipeline import ExecutionPipeline
 from xauusd_bot.execution.position_manager import ManagedPosition, PositionManager
@@ -228,14 +229,26 @@ async def _load_managed_all(redis_client) -> dict[str, ManagedPosition]:
 
 
 async def _apply_action(connector, ticket: str, action) -> None:
+    # Check the broker's verdict and surface a rejection — a rejected SL-trail or
+    # partial-close must NOT log as a success (that masked the broken trail).
     if action.kind == "modify_sl":
-        await asyncio.to_thread(connector.order_modify, ticket, sl=float(action.price))
+        res = await asyncio.to_thread(connector.order_modify, ticket, sl=float(action.price))
     elif action.kind in ("partial_close", "close_all"):
         fn = getattr(connector, "close_position", None)
         if fn is None:
             log.warning("execution_close_not_supported", ticket=ticket)
             return
-        await asyncio.to_thread(fn, ticket, action.volume if action.kind == "partial_close" else None)
+        res = await asyncio.to_thread(fn, ticket, action.volume if action.kind == "partial_close" else None)
+    else:
+        return
+    if res is not None and getattr(res, "accepted", True) is False:
+        log.warning(
+            "execution_manage_action_rejected",
+            ticket=ticket,
+            kind=action.kind,
+            error_code=getattr(res, "error_code", None),
+            error_message=getattr(res, "error_message", None),
+        )
 
 
 def _r_multiple(side: OrderSide, entry: Decimal, sl: Decimal, exit_price: Decimal) -> float | None:
@@ -316,8 +329,44 @@ async def _journal_close(publisher, connector, mp: ManagedPosition, ticket, curr
             risk_mgr.record_pnl(pnl, datetime.now(tz=UTC))
             if redis_client is not None:
                 await _persist_risk(redis_client, risk_mgr)
+        return {
+            "exit_price": exit_price,
+            "pnl": pnl,
+            "r_multiple": update.r_multiple,
+            "exit_reason": update.exit_reason,
+        }
     except Exception as exc:  # noqa: BLE001 - journaling must never disturb management
         log.warning("execution_trade_close_journal_failed", ticket=ticket, error=str(exc))
+        return None
+
+
+async def _notify_close(notifier, settings, ticket, mp, summary) -> None:
+    """Best-effort alert when the broker closed a position (SL/TP/runner fill).
+
+    Covers the *silent* close path: when price hits a level the broker fills it
+    and the position simply vanishes from ``positions_get`` — there is no manage
+    action to alert on, so without this the close goes unannounced (entry +
+    trail get alerts, the exit did not). Never raises.
+    """
+    try:
+        side = getattr(mp.side, "name", str(mp.side))
+        if not summary:
+            await notifier.send(f"🏁 <b>CLOSE</b> {side} {settings.symbol} #{ticket}")
+            return
+        pnl = summary.get("pnl")
+        r = summary.get("r_multiple")
+        reason = summary.get("exit_reason") or "closed"
+        icon = "🏁" if pnl is None else ("✅" if pnl > 0 else "❌" if pnl < 0 else "🏁")
+        parts = [f"@ {summary.get('exit_price')}"]
+        if pnl is not None:
+            rs = f" ({r:+.2f}R)" if r is not None else ""
+            parts.append(f"{pnl:+.2f}{rs}")
+        parts.append(f"({reason})")
+        await notifier.send(
+            f"{icon} <b>CLOSE</b> {side} {settings.symbol} #{ticket} · " + " · ".join(parts)
+        )
+    except Exception as exc:  # noqa: BLE001 - alerting must never disturb management
+        log.warning("execution_close_notify_failed", ticket=ticket, error=str(exc))
 
 
 async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, current_price, notifier=None, publisher=None) -> None:
@@ -329,16 +378,28 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
     positions = await asyncio.to_thread(connector.positions_get, settings.symbol)
     open_tickets = {p.position_id for p in (positions or [])}
     price = Decimal(str(current_price))
+    # Live spread (points) so the break-even floor clears it; 0 on any failure
+    # (degrades to the bare bonus buffer — never blocks management).
+    spread_pts = 0.0
+    try:
+        acc = await asyncio.to_thread(connector.get_account)
+        if acc is not None and acc.current_spread is not None:
+            spread_pts = float(acc.current_spread)
+    except Exception:  # noqa: BLE001 - spread is best-effort; management proceeds without it
+        spread_pts = 0.0
     for ticket, mp in stored.items():
         if ticket not in open_tickets:
             # Position closed on the broker → finalise the journal trade, then
             # drop the management plan.
+            summary = None
             if publisher is not None:
-                await _journal_close(publisher, connector, mp, ticket, current_price, settings, pipeline.risk_mgr, redis_client)
+                summary = await _journal_close(publisher, connector, mp, ticket, current_price, settings, pipeline.risk_mgr, redis_client)
             await _delete_managed(redis_client, ticket)
             pipeline.on_position_closed(ticket)  # zone-lock: zone → 'used'
+            if notifier is not None and notifier.enabled:
+                await _notify_close(notifier, settings, ticket, mp, summary)
             continue
-        actions, mp2 = pos_mgr.plan(mp, bundle, price)
+        actions, mp2 = pos_mgr.plan(mp, bundle, price, current_spread_points=spread_pts)
         for a in actions:
             try:
                 await _apply_action(connector, ticket, a)
@@ -361,7 +422,19 @@ async def _manage_positions(pipeline, pos_mgr, redis_client, settings, bundle, c
 
 
 def _make_handler(pipeline: ExecutionPipeline, publisher: Publisher, redis_client, settings: Settings, notifier=None):
-    pos_mgr = PositionManager(pipeline.stop_mgr, pipeline.tp_mgr, pipeline.spec)
+    _trading_window = TradingWindow.from_settings(settings)
+    pos_mgr = PositionManager(
+        pipeline.stop_mgr,
+        pipeline.tp_mgr,
+        pipeline.spec,
+        trail_activate_r=settings.exec_trail_activate_r,
+        be_trigger_r=settings.exec_be_trigger_r,
+        weekend_flat=(
+            _trading_window.should_flatten_for_weekend
+            if settings.exec_weekend_flat_enabled
+            else None
+        ),
+    )
 
     async def handle(msg: StreamMessage) -> None:
         ev = msg.payload

@@ -86,10 +86,17 @@ class Settings(BaseSettings):
         description="Master switch for the AI decision layer. When False, the orchestrator always uses RuleBasedFallback.",
     )
     ai_layer_score_threshold: int = Field(
-        default=65,
+        default=55,
         ge=0,
         le=100,
-        description="Only call the LLM when score.total >= this threshold. Default 65 = 'prepare' band and above.",
+        description=(
+            "Score is a pure CANDIDATE TRIGGER, not a vote: call the LLM whenever "
+            "score.total >= this threshold and let the AI decide. Default 55 = the bottom "
+            "of the 'observe' band — anything that isn't outright noise reaches the AI. "
+            "(Was 65; the backtest showed the deterministic score caps ~73 and filters almost "
+            "nothing, so a high gate only starved the AI of candidates. The AI — not the score "
+            "— is the entry authority; it vetoes the weak ones.)"
+        ),
     )
     ai_layer_max_fvg_zones: int = Field(
         default=25,
@@ -377,6 +384,114 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Trading-hours window (Joshua) — only OPEN new entries inside the
+    # tradeable-volume window: from the Asian-session open (00:00 UTC) to just
+    # before the New-York close (22:55 UTC), after which there is no volume.
+    # Hard gate: blocks new entries only; a running trade may still be held
+    # overnight (but never over a weekend — see exec_weekend_flat_*). Times are
+    # in exec_trading_timezone (default UTC, as Joshua gave them); a non-UTC tz
+    # (e.g. Europe/Berlin) is DST-adjusted per-bar via zoneinfo.
+    exec_trading_window_enabled: bool = Field(
+        default=True,
+        description="Master switch for the trading-hours entry window. False = trade any hour (legacy).",
+    )
+    exec_trading_start_local: str = Field(
+        default="00:00",
+        description=(
+            "Earliest time (exec_trading_timezone) at which a NEW entry may open, 'HH:MM'. "
+            "Default 00:00 UTC = the Asian-session open (Joshua: 'frühestens mit dem Volumen')."
+        ),
+    )
+    exec_trading_end_local: str = Field(
+        default="22:55",
+        description=(
+            "Latest time (exec_trading_timezone) at which a NEW entry may open, 'HH:MM'. No new "
+            "entries at/after this. Default 22:55 UTC — just before the NY close, after which "
+            "Joshua: 'kein Volumen mehr am Markt … neue Entrys machen keinen Sinn'."
+        ),
+    )
+    exec_trading_timezone: str = Field(
+        default="UTC",
+        description=(
+            "IANA timezone the trading window is expressed in. Default UTC (Joshua's times). A "
+            "non-UTC name (e.g. Europe/Berlin) is DST-adjusted per-bar via zoneinfo; a bad/unknown "
+            "name fails OPEN with a logged warning so the decision loop never crashes."
+        ),
+    )
+    # Weekend flat: never carry risk over the weekend gap. On Friday at/after
+    # this UTC time the management loop force-closes any open position (while
+    # there is still liquidity, before the broker's Friday close).
+    exec_weekend_flat_enabled: bool = Field(
+        default=True,
+        description="Force-close open positions before the weekend (Joshua: 'über ein Weekend wird nicht gehalten').",
+    )
+    exec_weekend_flat_utc: str = Field(
+        default="20:55",
+        description=(
+            "Friday time in **UTC** (not exec_trading_timezone — the weekend gap is a "
+            "broker-clock event) at/after which open positions are flattened, 'HH:MM'. "
+            "Default 20:55 — set BEFORE your broker's Friday gold close so a flatten bar "
+            "still fires. Overnight (weekday) holds are unaffected; only the weekend gap is."
+        ),
+    )
+
+    # --- Exit management: let winners run (Phase D — fix the "baby trades").
+    # The old trail sat the SL 1×ATR ABOVE the protective swing, so a routine
+    # pullback to structure stopped the runner out near break-even (every winner
+    # closed at R 0.2–0.5). The trail now sits BEHIND the swing and only arms
+    # after the trade has earned a buffer, so a runner can ride to the HTF target.
+    exec_trail_buffer_atr: float = Field(
+        default=0.5,
+        ge=0,
+        description=(
+            "Trailing SL distance BEHIND the protective swing, in ATR multiples (long: "
+            "swing_low − buffer×ATR; short: swing_high + buffer×ATR). Gives the runner room "
+            "instead of choking it just above structure. The SL still only ratchets in the "
+            "trade's favour."
+        ),
+    )
+    exec_trail_activate_r: float = Field(
+        default=1.0,
+        ge=0,
+        description=(
+            "Only start structure-trailing once the trade is at least this many R in profit "
+            "(R = entry-time risk distance). Below it the initial SL stays put, so a trade "
+            "that hasn't proven itself is never tightened prematurely. 0 = trail immediately."
+        ),
+    )
+    exec_be_trigger_r: float = Field(
+        default=1.0,
+        ge=0,
+        description=(
+            "Break-even floor: once the trade's favorable excursion reaches this many R, the "
+            "trailing SL may never sit worse than entry (+ a small cost buffer). Stops a trade "
+            "that touched profit from becoming a loss — the fix for the backtest finding that a "
+            "+1R touch turned into −1R when no higher swing had printed yet. 0 = no BE floor."
+        ),
+    )
+    exec_chandelier_atr: float = Field(
+        default=3.0,
+        ge=0,
+        description=(
+            "Chandelier trail distance in ATR: once armed, the SL also rides this many ATR below "
+            "the highest-high-since-entry (long), ratcheting up CONTINUOUSLY as the trade extends "
+            "so a runner rides to its max while locking progressively more in. Looser = more room "
+            "(runs further, gives back more). 0 = chandelier off (structure-trail + BE floor only)."
+        ),
+    )
+    exec_tp1_pct: float = Field(
+        default=30.0, ge=0, le=100,
+        description="Fraction (%) of the position closed at TP1. Smaller = bigger runner.",
+    )
+    exec_tp2_pct: float = Field(
+        default=30.0, ge=0, le=100,
+        description="Fraction (%) of the position closed at TP2.",
+    )
+    exec_tp3_pct: float = Field(
+        default=40.0, ge=0, le=100,
+        description="Runner fraction (%) ridden to the HTF target. tp1+tp2+tp3 must sum to 100.",
+    )
+
     # --- Risk (fractions, e.g. 0.04 = 4%)
     risk_max_daily: float = Field(default=0.04, ge=0, le=1)
     risk_max_weekly: float = Field(default=0.08, ge=0, le=1)
@@ -474,6 +589,21 @@ class Settings(BaseSettings):
         daily = info.data.get("risk_max_daily", 0.0)
         if v < daily:
             raise ValueError(f"risk_max_weekly ({v}) must be >= risk_max_daily ({daily})")
+        return v
+
+    @field_validator("exec_tp3_pct")
+    @classmethod
+    def _tp_fractions_sum_to_100(cls, v: float, info) -> float:
+        # If tp1/tp2 failed their OWN validation they are absent from info.data;
+        # don't substitute a default (it could spuriously pass the sum check while
+        # masking the real value) — let their own errors surface instead.
+        if "exec_tp1_pct" not in info.data or "exec_tp2_pct" not in info.data:
+            return v
+        total = info.data["exec_tp1_pct"] + info.data["exec_tp2_pct"] + v
+        if abs(total - 100.0) > 1e-6:
+            raise ValueError(
+                f"exec_tp1_pct + exec_tp2_pct + exec_tp3_pct must sum to 100 (got {total})"
+            )
         return v
 
     def is_prod(self) -> bool:

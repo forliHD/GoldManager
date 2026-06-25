@@ -50,6 +50,10 @@ DEFAULT_TP1_PCT = 30.0
 DEFAULT_TP2_PCT = 30.0
 DEFAULT_TP3_PCT = 40.0
 
+# Sanity bound on an LLM-supplied TP R-multiple (Phase C). A wild value (e.g.
+# 500) is ignored and the deterministic target is used instead.
+_MAX_TP_RR = 20.0
+
 
 # ----------------------------------------------------------------- helpers
 
@@ -174,10 +178,15 @@ class TakeProfitManager:
         bundle: FeatureSnapshotBundle,
         *,
         now: datetime | None = None,
+        tp1_rr: float | None = None,
+        tp2_rr: float | None = None,
     ) -> StopsAndTPs:
         """Build the TP1 / TP2 / TP3 plan + the partial-close schedule.
 
-        SL price is used to compute the 1R distance.
+        SL price is used to compute the 1R distance. ``tp1_rr`` / ``tp2_rr``
+        (Phase C) are the LLM's R-multiple targets: when provided (and sane,
+        ``0 < rr <= _MAX_TP_RR``) the matching TP is placed at
+        ``entry ± rr × 1R`` instead of the deterministic liquidity/FVG search.
         """
 
         ts = (now or datetime.now(tz=UTC))
@@ -190,10 +199,26 @@ class TakeProfitManager:
         sl_distance = abs(entry_price - sl_price)
         one_r = entry_price + sl_distance if side == OrderSide.BUY else entry_price - sl_distance
 
-        # --- TP1: nearest liquidity zone on the right side, or 1R fallback.
+        def _rr_to_price(rr: float) -> Decimal:
+            dist = sl_distance * Decimal(str(rr))
+            return _round(entry_price + dist if side == OrderSide.BUY else entry_price - dist, self._spec)
+
+        ai_tp1 = tp1_rr if (tp1_rr is not None and 0 < tp1_rr <= _MAX_TP_RR) else None
+        ai_tp2 = tp2_rr if (tp2_rr is not None and 0 < tp2_rr <= _MAX_TP_RR) else None
+        # Guard against an inverted AI pair (tp1_rr > tp2_rr): TP1 must be the
+        # NEARER target so the partial-close + break-even sequence fires in order
+        # (else TP2 banks first and break-even only arms at the further TP1).
+        if ai_tp1 is not None and ai_tp2 is not None and ai_tp1 > ai_tp2:
+            ai_tp1, ai_tp2 = ai_tp2, ai_tp1
+            reasoning.append("AI tp1_rr>tp2_rr → swapped so TP1 is nearer")
+
+        # --- TP1: LLM R-target → nearest liquidity zone → 1R fallback.
         tp1: Decimal | None = None
         tp1_label = ""
-        if bundle.liquidity is not None:
+        if ai_tp1 is not None:
+            tp1 = _rr_to_price(ai_tp1)
+            tp1_label = f"ai_{ai_tp1:g}R"
+        elif bundle.liquidity is not None:
             zones = (
                 bundle.liquidity.tp_targets_above
                 if side == OrderSide.BUY
@@ -211,10 +236,13 @@ class TakeProfitManager:
             tp1_label = "1R"
         reasoning.append(f"TP1 = {tp1} ({tp1_label}, {self._tp1_pct:.0f}%)")
 
-        # --- TP2: next FVG / OB (we use the M5 FVG list).
+        # --- TP2: LLM R-target → next FVG / OB (we use the M5 FVG list) → 2R.
         tp2: Decimal | None = None
         tp2_label = ""
-        if bundle.fvg is not None:
+        if ai_tp2 is not None:
+            tp2 = _rr_to_price(ai_tp2)
+            tp2_label = f"ai_{ai_tp2:g}R"
+        elif bundle.fvg is not None:
             for zone in bundle.fvg.zones:
                 if side == OrderSide.BUY and zone.type.value == "bullish":
                     # Bullish FVG top is a magnet for continuation.

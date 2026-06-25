@@ -538,3 +538,13 @@ class FeatureSnapshotBundle(BaseModel):
         default=None,
         description="Latest M1 close at snapshot time — lets the AI layer judge 'are we in the zone?' precisely.",
     )
+    broker_offset_minutes: float = Field(
+        default=0.0,
+        description=(
+            "Broker-server → real-UTC offset in minutes that the feature-engine detected at "
+            "startup (e.g. +180 for an MT5 broker on UTC+3). `ts` is in BROKER time; subtract "
+            "this to recover real UTC. 0 in replay/backtest/tests where bar times are already the "
+            "comparison frame. Lets time-of-day gates (e.g. the trading-hours window) convert "
+            "broker-stamped bars to wall-clock time without re-detecting the offset."
+        ),
+    )

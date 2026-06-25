@@ -66,22 +66,26 @@ def _plan():
     )
 
 
-async def test_tp1_partial_close_applied_and_persisted_no_breakeven():
+async def test_tp1_partial_close_then_break_even_floor():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     conn = _FakeConnector([SimpleNamespace(position_id="111")])
     pipeline = SimpleNamespace(connector=conn, on_position_closed=lambda t: None, note_bar=lambda p, ts: None)
     settings = SimpleNamespace(symbol="XAUUSD+")
     await _store_managed(r, _plan())
 
-    bundle = FeatureSnapshotBundle(ts=datetime.now(tz=UTC))  # all engines None → trail/runner no-op
+    bundle = FeatureSnapshotBundle(ts=datetime.now(tz=UTC))  # no structure/ATR → only the BE floor applies
     await _manage_positions(pipeline, _pos_mgr(), r, settings, bundle, current_price=4256.0)
 
-    # New default (lever #1): a 30% partial close (0.03) fires; NO dead break-even
-    # SL move to entry — the runner is armed for structure-trailing instead.
+    # Phase D fix: a 30% partial (0.03) fires AND, now that the trade is proven
+    # (TP1 taken arms the break-even floor), the SL ratchets to entry + cost
+    # buffer — a +1R touch can no longer become a loss. Structure/chandelier are
+    # no-ops here (empty bundle), so the move is purely the BE floor.
     assert ("close", "111", 0.03) in conn.calls
-    assert not any(c[0] == "modify_sl" for c in conn.calls)
+    be_moves = [c for c in conn.calls if c[0] == "modify_sl"]
+    assert be_moves and abs(float(be_moves[0][2]) - 4250.05) < 0.01  # entry 4250 + 5×0.01
     stored = await _load_managed_all(r)
     assert stored["111"].tp1_taken is True and stored["111"].breakeven_done is True
+    assert stored["111"].sl_price >= stored["111"].entry_price  # never worse than entry now
 
 
 async def test_plan_dropped_when_position_closed():

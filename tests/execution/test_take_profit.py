@@ -195,6 +195,27 @@ def test_short_tp_plan_uses_liquidity_for_tp1() -> None:
     assert result.tp2_price == Decimal("2365.00")
 
 
+def test_inverted_ai_tp_rr_pair_is_swapped_so_tp1_is_nearer() -> None:
+    # Review #3: an inverted AI pair (tp1_rr > tp2_rr) must be swapped so TP1 is
+    # the NEARER target — else TP2 banks first and break-even arms only at the
+    # further TP1, leaving the runner unprotected in between.
+    spec = make_symbol_spec()
+    mgr = TakeProfitManager(spec=spec)
+    bundle = _bundle_with_long_targets(above_center=2378.0)  # AI R-targets override it
+    result = mgr.compute(
+        side=OrderSide.BUY,
+        entry_price=Decimal("2375.00"),
+        sl_price=Decimal("2370.00"),  # 1R = 5.00
+        bundle=bundle,
+        tp1_rr=3.0,   # inverted on purpose
+        tp2_rr=1.5,
+    )
+    # After the swap: TP1 = entry + 1.5R = 2382.50, TP2 = entry + 3.0R = 2390.00.
+    assert result.tp1_price == Decimal("2382.50")
+    assert result.tp2_price == Decimal("2390.00")
+    assert result.tp1_price < result.tp2_price
+
+
 # ----------------------------------------------------------------- 3. 1R fallback when no liquidity data
 
 

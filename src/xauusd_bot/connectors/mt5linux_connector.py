@@ -564,16 +564,62 @@ class Mt5LinuxConnector(IMarketConnector):
         tp: float | None = None,
     ) -> OrderResult:
         mt5 = self._ensure()
-        req: dict[str, Any] = {
-            "action": int(getattr(mt5, "TRADE_ACTION_MODIFY")),
-            "order": int(order_id),
-        }
-        if price is not None:
-            req["price"] = float(price)
-        if sl is not None:
-            req["sl"] = float(sl)
-        if tp is not None:
-            req["tp"] = float(tp)
+        # An OPEN position and a PENDING order need different MT5 actions:
+        #   - position SL/TP  → TRADE_ACTION_SLTP with `position`
+        #   - pending order   → TRADE_ACTION_MODIFY with `order`
+        # The manage loop only ever trails an open position's SL; the old code
+        # used TRADE_ACTION_MODIFY+order for it, which the broker rejects (that
+        # ticket is a position, not a pending order) → the trail silently never
+        # reached the broker. Detect the position case and use SLTP. Critically,
+        # an SLTP modify must carry BOTH legs — a missing `sl`/`tp` is read as 0
+        # and *removes* that level — so we preserve the un-passed leg from the
+        # live position (e.g. trailing the SL keeps the TP backstop intact).
+        positions = self.positions_get()
+        position = next(
+            (p for p in positions if str(p.position_id) == str(order_id)),
+            None,
+        )
+        req: dict[str, Any]
+        if position is not None:
+            cur_sl = float(position.sl) if position.sl is not None else 0.0
+            cur_tp = float(position.tp) if position.tp is not None else 0.0
+            req = {
+                "action": int(getattr(mt5, "TRADE_ACTION_SLTP")),
+                "position": int(order_id),
+                "symbol": position.symbol,
+                "sl": float(sl) if sl is not None else cur_sl,
+                "tp": float(tp) if tp is not None else cur_tp,
+            }
+        else:
+            # Not in the positions book. Only use the pending-order action if the
+            # bridge actually confirms a pending order with this ticket. If it does
+            # NOT and the positions snapshot was EMPTY, that is most likely a
+            # transient read failure for a real position — refuse rather than send
+            # the pending action to a live position (the silent SL-trail rejection
+            # this method was fixed to avoid). The manage loop retries next bar.
+            try:
+                is_pending = any(
+                    str(getattr(o, "ticket", "")) == str(order_id) for o in (mt5.orders_get() or [])
+                )
+            except Exception:  # noqa: BLE001 - orders read is best-effort
+                is_pending = False
+            if not positions and not is_pending:
+                return OrderResult(
+                    accepted=False,
+                    order_id=str(order_id),
+                    error_code="POSITION_NOT_FOUND",
+                    error_message="order_modify target not in positions/orders snapshot (transient read?) — will retry",
+                )
+            req = {
+                "action": int(getattr(mt5, "TRADE_ACTION_MODIFY")),
+                "order": int(order_id),
+            }
+            if price is not None:
+                req["price"] = float(price)
+            if sl is not None:
+                req["sl"] = float(sl)
+            if tp is not None:
+                req["tp"] = float(tp)
         try:
             result = mt5.order_send(req)
         except Exception as exc:  # noqa: BLE001

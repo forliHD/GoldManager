@@ -254,6 +254,35 @@ class Score(BaseModel):
 # ---------------------------------------------------------------- rule fallback
 
 
+class LLMIntent(BaseModel):
+    """The LLM's *intent* carried to the executor (Phase C — "AI leads SL/TP").
+
+    The AI is the brain: it proposes WHERE (entry zone), WHEN-it's-dead
+    (invalidation prices) and HOW-far (TP R-multiples + runner target).
+    The executor (the hands) turns that intent into concrete SL/TP prices
+    and lots, **always clamped by the Phase-A deterministic floors/caps**
+    (SL floor, max-risk cap). I-4 holds: the LLM never sets a lot size or
+    an absolute SL/TP that bypasses the floors.
+
+    All fields optional — a sparse LLM response (or the rule path) just
+    leaves them ``None`` and the executor falls back to its deterministic
+    structure SL + liquidity/R TP exactly as before.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_min: float | None = Field(default=None, description="LLM entry_zone.price_min (USD).")
+    entry_max: float | None = Field(default=None, description="LLM entry_zone.price_max (USD).")
+    invalidations: list[str] = Field(
+        default_factory=list,
+        description="Free-form 'trade is dead if X' strings; the executor extracts an SL price hint.",
+    )
+    tp1_rr: float | None = Field(default=None, description="LLM TP1 in R-multiples.")
+    tp2_rr: float | None = Field(default=None, description="LLM TP2 in R-multiples.")
+    runner_to: str | None = Field(default=None, description="LLM runner destination label (HTF level).")
+    confidence: int | None = Field(default=None, ge=0, le=100, description="LLM confidence (advisory).")
+
+
 class Decision(BaseModel):
     """Output of :class:`xauusd_bot.decision.rule_fallback.RuleBasedFallback`.
 
@@ -280,6 +309,14 @@ class Decision(BaseModel):
             "Which engine produced this decision — 'ai' when the LLM decided "
             "(orchestrator _llm_to_decision), 'rule' for the deterministic fallback. "
             "Propagated to the order tag so journal_trades.engine_source is accurate."
+        ),
+    )
+    llm_intent: LLMIntent | None = Field(
+        default=None,
+        description=(
+            "The LLM's entry-zone / invalidation / TP-R / runner intent (Phase C). "
+            "None for rule-path decisions. The executor consumes it within the "
+            "Phase-A floors/caps; it never overrides a safety floor."
         ),
     )
     timestamp: datetime
@@ -364,6 +401,7 @@ __all__ = [
     "DecisionAction",
     "EngineSubscore",
     "EntryType",
+    "LLMIntent",
     "Score",
     "ScoreBand",
     "TradeQualification",

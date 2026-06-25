@@ -10,7 +10,7 @@ import pytest
 
 from xauusd_bot.common.schemas.journal import ExitReasonTag
 from xauusd_bot.connectors.schemas import ClosedPositionInfo, OrderSide
-from xauusd_bot.execution_engine import _exit_reason, _journal_close, _r_multiple
+from xauusd_bot.execution_engine import _exit_reason, _journal_close, _notify_close, _r_multiple
 from xauusd_bot.execution.position_manager import ManagedPosition
 
 
@@ -104,6 +104,74 @@ async def test_journal_close_best_effort_without_deal_history() -> None:
     tc = published[0].trade_close
     assert tc.exit_price == Decimal("4226.0")  # fell back to last price
     assert tc.pnl_realized is None             # unknown without deal history
+
+
+@pytest.mark.asyncio
+async def test_journal_close_returns_summary_for_alert() -> None:
+    """The close summary (exit/pnl/R/reason) is returned for the CLOSE alert."""
+
+    class _Pub:
+        async def publish(self, topic, event): pass
+
+    class _Conn:
+        def closed_position_info(self, ticket):
+            return ClosedPositionInfo(
+                ticket=str(ticket), exit_price=Decimal("4226.50"),
+                pnl_realized=Decimal("103.40"),
+                close_time=datetime(2026, 6, 18, 21, 5, tzinfo=UTC), reason_code=5,
+            )
+
+    settings = SimpleNamespace(symbol="XAUUSD+")
+    summary = await _journal_close(_Pub(), _Conn(), _mp(), "T1", 4226.0, settings)
+    assert summary is not None
+    assert summary["exit_price"] == Decimal("4226.50")
+    assert summary["pnl"] == Decimal("103.40")
+    assert summary["exit_reason"] == ExitReasonTag.TP1_HIT
+    assert summary["r_multiple"] is not None
+
+
+class _RecNotifier:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    async def send(self, text: str) -> bool:
+        self.sent.append(text)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_notify_close_win_message() -> None:
+    n = _RecNotifier()
+    settings = SimpleNamespace(symbol="XAUUSD")
+    summary = {
+        "exit_price": Decimal("3990.35"), "pnl": Decimal("84.33"),
+        "r_multiple": Decimal("1.90"), "exit_reason": ExitReasonTag.TRAILED,
+    }
+    await _notify_close(n, settings, "1488207777", _mp(), summary)
+    assert len(n.sent) == 1
+    msg = n.sent[0]
+    assert msg.startswith("✅")
+    assert "CLOSE" in msg and "SELL" in msg and "#1488207777" in msg
+    assert "+84.33" in msg and "1.90R" in msg
+
+
+@pytest.mark.asyncio
+async def test_notify_close_loss_and_fallback() -> None:
+    settings = SimpleNamespace(symbol="XAUUSD")
+    n = _RecNotifier()
+    await _notify_close(n, settings, "T1", _mp(), {
+        "exit_price": Decimal("4000"), "pnl": Decimal("-12.50"),
+        "r_multiple": Decimal("-1.00"), "exit_reason": ExitReasonTag.SL_HIT,
+    })
+    assert n.sent[0].startswith("❌") and "-12.50" in n.sent[0]
+    # No summary (journaling failed / no deal history) → still a minimal alert.
+    n2 = _RecNotifier()
+    await _notify_close(n2, settings, "T1", _mp(), None)
+    assert n2.sent[0].startswith("🏁") and "#T1" in n2.sent[0]
 
 
 @pytest.mark.asyncio

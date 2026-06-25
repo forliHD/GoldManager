@@ -76,6 +76,7 @@ from xauusd_bot.common.schemas.decision import (
     Decision,
     DecisionAction,
     EntryType,
+    LLMIntent,
     Score,
     ScoreBand,
 )
@@ -99,6 +100,10 @@ from xauusd_bot.decision.openrouter_client import (
     LLMValidationError,
 )
 from xauusd_bot.decision.rule_fallback import RuleBasedFallback
+from xauusd_bot.decision.trading_hours import (
+    REASON_OUTSIDE_TRADING_HOURS,
+    TradingWindow,
+)
 from xauusd_bot.journal.store import JournalStore
 
 log = structlog.get_logger(__name__)
@@ -147,6 +152,9 @@ class AIDecisionOrchestrator:
         self._rule_fallback = rule_fallback
         self._settings = settings
         self._journal_store = journal_store
+        # Trading-hours window (Joshua): no NEW entries outside the wall-clock
+        # window. DST-aware via zoneinfo; built once from settings.
+        self._trading_window = TradingWindow.from_settings(settings)
         # In-memory cache of the most recent discrepancy (test helper).
         self.last_discrepancy: LLMFallbackDiscrepancy | None = None
         # Block-6 spec-exact variant of the same record.
@@ -172,6 +180,29 @@ class AIDecisionOrchestrator:
         """
 
         ts = score.timestamp
+
+        # ---- 0. Trading-hours window (hard gate, all modes): no NEW entries
+        #         outside the wall-clock window. Runs before everything else so
+        #         it applies whether the AI or the rule path would decide, and
+        #         so the journal records *outside_trading_hours* (not a score /
+        #         LLM reason) as the cause. Open-position management is separate
+        #         (execution engine) and is never gated here.
+        if not self._trading_window.allows(
+            feature_snapshot.ts, feature_snapshot.broker_offset_minutes
+        ):
+            log.debug(
+                "orchestrator_outside_trading_hours",
+                ts=feature_snapshot.ts.isoformat() if feature_snapshot.ts else None,
+                offset_min=feature_snapshot.broker_offset_minutes,
+            )
+            decision = self._rule_decision(
+                score, agg, account, reason=REASON_OUTSIDE_TRADING_HOURS
+            )
+            await self._log_discrepancy(
+                ts=ts, score=score, rule_decision=None, llm_decision=None,
+                reason=REASON_OUTSIDE_TRADING_HOURS, final_decision=decision, llm_raw=None,
+            )
+            return decision
 
         # ---- 1. Score gate: skip the LLM below the threshold.
         if not self._settings.ai_layer_enabled:
@@ -368,6 +399,22 @@ class AIDecisionOrchestrator:
         if action == DecisionAction.ENTER_LONG and llm.entry_side == "short":
             action = DecisionAction.ENTER_SHORT
 
+        # Phase C: carry the LLM's SL/TP intent to the executor (only on a real
+        # entry — no point attaching intent to a no_trade/watch). The executor
+        # uses it WITHIN the Phase-A floors/caps (I-4: the AI never sets lots or
+        # bypasses the SL floor).
+        intent: LLMIntent | None = None
+        if action != DecisionAction.NO_TRADE:
+            intent = LLMIntent(
+                entry_min=llm.entry_zone.price_min,
+                entry_max=llm.entry_zone.price_max,
+                invalidations=list(llm.invalidations),
+                tp1_rr=llm.management.tp1_rr,
+                tp2_rr=llm.management.tp2_rr,
+                runner_to=llm.management.runner_to,
+                confidence=llm.confidence,
+            )
+
         return Decision(
             action=action,
             entry_type=entry_type,
@@ -376,6 +423,7 @@ class AIDecisionOrchestrator:
             source_band=score.band,
             source_direction=score.direction,
             source_engine="ai",
+            llm_intent=intent,
             timestamp=score.timestamp,
         )
 
@@ -505,6 +553,8 @@ _V2_FALLBACK_REASON_MAP: dict[str, str] = {
     REASON_LLM_DISABLED: "openrouter_disabled",
     REASON_NO_API_KEY: "openrouter_disabled",
     REASON_NEWS_BLACKOUT: "hard_rule_violation",
+    # Trading-hours window is a deterministic hard gate, like the news blackout.
+    REASON_OUTSIDE_TRADING_HOURS: "hard_rule_violation",
 }
 
 

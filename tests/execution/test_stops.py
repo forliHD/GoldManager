@@ -168,13 +168,37 @@ def test_break_even_short_moves_sl_below_entry() -> None:
     assert result.sl_price == Decimal("2374.65")
 
 
+def test_trail_break_even_floor_covers_spread() -> None:
+    # Review #2: the trail's BE floor must include the spread (like
+    # move_to_break_even), else a "break-even" runner still nets a small loss on
+    # a wide gold spread. No swing/peak in the bundle → the BE floor is the only
+    # forward anchor, so the SL ratchets exactly to it.
+    spec = make_symbol_spec()
+    mgr = StopManager(spec=spec, be_bonus_points=5.0)
+    bundle = _empty_bundle(datetime(2026, 4, 15, 13, 30, tzinfo=UTC))
+    entry = Decimal("2375.00")
+    with_spread = mgr.trail(
+        OrderSide.BUY, current_sl=Decimal("2370.00"), entry_price=entry,
+        bundle=bundle, be_armed=True, spread_points=30.0,
+    )
+    assert with_spread.sl_price == Decimal("2375.35")  # entry + (30+5)pts
+    # Default (no spread, e.g. backtest) → bare bonus only = 2375.05 (unchanged).
+    no_spread = mgr.trail(
+        OrderSide.BUY, current_sl=Decimal("2370.00"), entry_price=entry,
+        bundle=bundle, be_armed=True,
+    )
+    assert no_spread.sl_price == Decimal("2375.05")
+    assert with_spread.sl_price > no_spread.sl_price
+
+
 # ----------------------------------------------------------------- 5. trail ratchet (long)
 
 
 def test_long_trail_ratchets_up_only() -> None:
     spec = make_symbol_spec()
-    mgr = StopManager(spec=spec, trail_min_atr=1.0)
-    # Swing low 2380, ATR 0.5 → candidate = 2380.5. Current SL 2370 → 2380.5 is higher.
+    mgr = StopManager(spec=spec, trail_buffer_atr=0.5)
+    # Phase D: SL sits BEHIND (below) the swing low. Swing 2380, ATR 0.5, buffer
+    # 0.5 → candidate = 2380 − 0.25 = 2379.75. Current SL 2370 → ratchets up.
     bundle = _bundle_with_low_swing(
         datetime(2026, 4, 15, 13, 30, tzinfo=UTC), swing_low=2380.0
     )
@@ -184,7 +208,8 @@ def test_long_trail_ratchets_up_only() -> None:
         entry_price=Decimal("2375.00"),
         bundle=bundle,
     )
-    assert result.sl_price == Decimal("2380.50")
+    assert result.sl_price == Decimal("2379.75")
+    assert result.sl_price < Decimal("2380.0")  # behind the swing, not above it
     assert result.trail_active is True
     assert result.trailing_mode == TrailingMode.STRUCTURE_TRAIL
 
@@ -210,8 +235,9 @@ def test_long_trail_does_not_lower_sl() -> None:
 
 def test_short_trail_ratchets_down_only() -> None:
     spec = make_symbol_spec()
-    mgr = StopManager(spec=spec, trail_min_atr=1.0)
-    # Swing high 2370, ATR 0.5 → candidate 2369.5. Current SL 2380 → 2369.5 is lower.
+    mgr = StopManager(spec=spec, trail_buffer_atr=0.5)
+    # Phase D: SL sits BEHIND (above) the swing high. Swing 2370, ATR 0.5, buffer
+    # 0.5 → candidate = 2370 + 0.25 = 2370.25. Current SL 2380 → ratchets down.
     bundle = _bundle_with_high_swing(
         datetime(2026, 4, 15, 13, 30, tzinfo=UTC), swing_high=2370.0
     )
@@ -221,7 +247,8 @@ def test_short_trail_ratchets_down_only() -> None:
         entry_price=Decimal("2375.00"),
         bundle=bundle,
     )
-    assert result.sl_price == Decimal("2369.50")
+    assert result.sl_price == Decimal("2370.25")
+    assert result.sl_price > Decimal("2370.0")  # behind the swing, not below it
 
 
 # ----------------------------------------------------------------- 7. trail without data
@@ -256,3 +283,38 @@ def test_compute_initial_returns_stopsandtps() -> None:
     )
     assert isinstance(result, StopsAndTPs)
     assert result.timestamp.tzinfo is not None
+
+
+# ----------------------------------------------------------------- Phase D: BE floor + chandelier
+
+
+_TS_PD = datetime(2026, 4, 15, 13, 30, tzinfo=UTC)
+
+
+def test_trail_break_even_floor_locks_no_loss() -> None:
+    # be_armed → the SL may not sit worse than entry + cost buffer, even though
+    # the structure swing (2369.75) is far below entry. Chandelier off.
+    mgr = StopManager(spec=make_symbol_spec(), trail_buffer_atr=0.5, chandelier_atr=0.0)
+    bundle = _bundle_with_low_swing(_TS_PD, swing_low=2370.0)  # atr 0.5
+    res = mgr.trail(OrderSide.BUY, Decimal("2369.00"), Decimal("2375.00"), bundle,
+                    now=_TS_PD, peak=None, be_armed=True)
+    assert res.sl_price == Decimal("2375.05")  # entry + 5×point — break-even floor
+
+
+def test_trail_chandelier_ratchets_from_peak() -> None:
+    # The chandelier (peak − 3×ATR) ratchets the SL up continuously, dominating
+    # the far structure swing.
+    mgr = StopManager(spec=make_symbol_spec(), trail_buffer_atr=0.5, chandelier_atr=3.0)
+    bundle = _bundle_with_low_swing(_TS_PD, swing_low=2370.0)  # atr 0.5
+    res = mgr.trail(OrderSide.BUY, Decimal("2369.00"), Decimal("2375.00"), bundle,
+                    now=_TS_PD, peak=Decimal("2400.00"), be_armed=False)
+    assert res.sl_price == Decimal("2398.50")  # 2400 − 3×0.5
+
+
+def test_trail_short_be_floor_and_chandelier() -> None:
+    mgr = StopManager(spec=make_symbol_spec(), trail_buffer_atr=0.5, chandelier_atr=3.0)
+    bundle = _bundle_with_high_swing(_TS_PD, swing_high=2380.0)  # atr 0.5
+    # Short entry 2375, peak (low) 2350 → chandelier = 2350 + 1.5 = 2351.5; BE = 2374.95.
+    res = mgr.trail(OrderSide.SELL, Decimal("2381.00"), Decimal("2375.00"), bundle,
+                    now=_TS_PD, peak=Decimal("2350.00"), be_armed=True)
+    assert res.sl_price == Decimal("2351.50")  # tightest protective (min) for a short

@@ -58,3 +58,6 @@ data/overlay/*.json
 # Tool state (not part of the project)
 .mavis/
 .opencode/
+
+# generated test fixture (tests/backtest/test_phase_d_exits.py recreates it)
+data/sample/_short_phd.parquet

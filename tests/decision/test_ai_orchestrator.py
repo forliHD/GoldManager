@@ -599,3 +599,50 @@ class TestLLMVeto:
         # LLM veto wins.
         assert decision.action == DecisionAction.NO_TRADE
         assert decision.block_reason == REASON_LLM_NO_TRADE
+
+
+# ---------------------------------------------------------------- Phase C: LLM intent
+
+
+class TestLLMIntent:
+    @pytest.mark.asyncio
+    async def test_entry_decision_carries_llm_intent(self):
+        llm = _valid_llm(
+            decision="scout",
+            entry_side="long",
+            entry_zone={"price_min": 2373.0, "price_max": 2375.0},
+            invalidations=["H1-Close unter 2370.0"],
+            management={
+                "tp1_rr": 1.0,
+                "tp2_rr": 2.0,
+                "runner_to": "prev_week.vah",
+                "protect_before_news_min": None,
+            },
+            confidence=72,
+        )
+        orch = _orchestrator(ai_layer=_mock_ai_layer(llm))
+        decision = await orch.decide(
+            feature_snapshot=make_bundle(), score=_score(total=70.0), agg=make_aggregated()
+        )
+        assert decision.action == DecisionAction.ENTER_LONG
+        assert decision.llm_intent is not None
+        assert decision.llm_intent.entry_min == 2373.0
+        assert decision.llm_intent.tp1_rr == 1.0
+        assert decision.llm_intent.runner_to == "prev_week.vah"
+        assert decision.llm_intent.invalidations == ["H1-Close unter 2370.0"]
+        assert decision.llm_intent.confidence == 72
+
+    @pytest.mark.asyncio
+    async def test_no_trade_has_no_intent(self):
+        llm = _valid_llm(
+            decision="no_trade",
+            entry_type=None,
+            entry_side=None,
+            entry_zone={"price_min": None, "price_max": None},
+        )
+        orch = _orchestrator(ai_layer=_mock_ai_layer(llm))
+        decision = await orch.decide(
+            feature_snapshot=make_bundle(), score=_score(total=70.0), agg=make_aggregated()
+        )
+        assert decision.action == DecisionAction.NO_TRADE
+        assert decision.llm_intent is None

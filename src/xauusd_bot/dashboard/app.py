@@ -273,7 +273,12 @@ def create_app(
     async def _no_cache_frontend(request, call_next):
         response = await call_next(request)
         path = request.url.path
-        if path == "/" or path.endswith((".html", ".js")):
+        # A directory path (e.g. "/" or "/m/") is served by StaticFiles(html=True)
+        # as that dir's index.html — but the path ends in "/", not ".html", so it
+        # would otherwise miss the no-cache rule and the iOS PWA heuristically
+        # caches a STALE shell (CSS/markup changes never reach the phone). Cover
+        # any directory-index request too.
+        if path.endswith("/") or path.endswith((".html", ".js")):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 

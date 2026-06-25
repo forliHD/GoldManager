@@ -121,6 +121,38 @@ class TestBacktestEngineHappyPath:
         assert 0.0 <= result.stats.winrate <= 1.0
         assert result.stats.max_drawdown >= 0
 
+    def test_orchestrator_is_consulted_when_provided(
+        self, connector: ReplayConnector
+    ) -> None:
+        # With an orchestrator wired, the engine must consult it (the LLM path)
+        # per decision bar instead of the bare rule fallback.
+        from xauusd_bot.common.schemas.decision import Decision, DecisionAction
+
+        calls = {"n": 0}
+
+        class _StubOrch:
+            async def decide(self, *, feature_snapshot, score, account, agg):  # noqa: ANN001
+                calls["n"] += 1
+                return Decision(
+                    action=DecisionAction.NO_TRADE,
+                    entry_type=None,
+                    block_reason="stub_llm",
+                    source_score=score.total_score,
+                    source_band=score.band,
+                    source_direction=score.direction,
+                    source_engine="ai",
+                    timestamp=score.timestamp,
+                )
+
+        engine = _make_engine(connector, orchestrator=_StubOrch())
+        engine.run(
+            start_date=datetime(2026, 4, 1, 0, 0, tzinfo=UTC),
+            end_date=datetime(2026, 4, 1, 0, 30, tzinfo=UTC),
+            warmup_bars=50,
+            max_bars=20,
+        )
+        assert calls["n"] == 20  # consulted once per processed decision bar
+
     def test_r_distribution_has_all_seven_buckets(
         self, connector: ReplayConnector
     ) -> None:

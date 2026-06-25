@@ -60,7 +60,7 @@ from xauusd_bot.execution import (
     TakeProfitManager,
 )
 from xauusd_bot.execution.position_manager import ManagedPosition
-from xauusd_bot.execution.take_profit import DEFAULT_TP1_PCT, DEFAULT_TP2_PCT
+from xauusd_bot.execution.stops import parse_sl_from_invalidations
 from xauusd_bot.execution.zone_lock import ZoneRegistry, band_from_price
 
 log = structlog.get_logger(__name__)
@@ -104,8 +104,15 @@ class ExecutionPipeline:
             spec=self.spec,
             min_sl_atr=settings.exec_min_sl_atr,
             min_sl_points=settings.exec_min_sl_points,
+            trail_buffer_atr=settings.exec_trail_buffer_atr,
+            chandelier_atr=settings.exec_chandelier_atr,
         )
-        self.tp_mgr = TakeProfitManager(spec=self.spec)
+        self.tp_mgr = TakeProfitManager(
+            spec=self.spec,
+            tp1_pct=settings.exec_tp1_pct,
+            tp2_pct=settings.exec_tp2_pct,
+            tp3_pct=settings.exec_tp3_pct,
+        )
         self.emergency = EmergencyStopManager(
             settings=settings,
             connector_positions=lambda: connector.positions_get(self.symbol),
@@ -196,11 +203,30 @@ class ExecutionPipeline:
         if not risk_verdict.approved:
             return ExecutionOutcome(submitted=False, blocked_reason=risk_verdict.blocked_reason)
 
-        # --- Stops + take-profits (the "hands" compute SL/TP, never the LLM).
-        stops = self.stop_mgr.compute_initial(side, entry_price, bundle, now=now)
+        # --- Stops + take-profits. Phase C: the AI proposes the SL anchor
+        # (invalidation level) and TP R-targets; the deterministic managers
+        # turn them into prices, ALWAYS clamped by the Phase-A SL floor and the
+        # max-risk cap below (I-4: the AI never sets lots or bypasses a floor).
+        intent = decision.llm_intent
+        sl_hint: Decimal | None = None
+        if intent is not None and intent.invalidations:
+            level = parse_sl_from_invalidations(intent.invalidations, side, float(entry_price))
+            if level is not None:
+                sl_hint = Decimal(str(level))
+        stops = self.stop_mgr.compute_initial(
+            side, entry_price, bundle, now=now, sl_hint=sl_hint
+        )
         if stops.sl_price is None or stops.sl_price == 0:
             return ExecutionOutcome(submitted=False, blocked_reason="no_stop_loss")
-        tp_plan = self.tp_mgr.compute(side, entry_price, stops.sl_price, bundle, now=now)
+        tp_plan = self.tp_mgr.compute(
+            side,
+            entry_price,
+            stops.sl_price,
+            bundle,
+            now=now,
+            tp1_rr=(intent.tp1_rr if intent is not None else None),
+            tp2_rr=(intent.tp2_rr if intent is not None else None),
+        )
         stops = stops.model_copy(
             update={
                 "tp1_price": tp_plan.tp1_price,
@@ -230,6 +256,12 @@ class ExecutionPipeline:
             return ExecutionOutcome(submitted=False, blocked_reason=reason)
 
         # --- Submit the order.
+        # Broker backstop TP = the FURTHEST target (tp3 → tp2 → tp1). Attaching
+        # tp1 for the full volume made the broker auto-close 100% at TP1, which
+        # pre-empted the bot-side 30/30/40 partials + runner (PositionManager
+        # banks TP1/TP2 along the way and trails the runner to tp3). The far
+        # backstop only fires if the engine is down or price gaps past the plan.
+        backstop_tp = stops.tp3_price or stops.tp2_price or stops.tp1_price
         order_env = self.order_mgr.send(
             OrderRequest(
                 symbol=self.symbol,
@@ -237,7 +269,7 @@ class ExecutionPipeline:
                 type=OrderType.MARKET,
                 volume=sizing.volume_lots,
                 sl=stops.sl_price,
-                tp=stops.tp1_price,
+                tp=backstop_tp,
             ),
             setup_id=qualification.qualification_id,
             engine_source=(
@@ -364,8 +396,12 @@ class ExecutionPipeline:
                 tp1_price=stops.tp1_price,
                 tp2_price=stops.tp2_price,
                 tp3_price=stops.tp3_price,
-                tp1_pct=DEFAULT_TP1_PCT,
-                tp2_pct=DEFAULT_TP2_PCT,
+                tp1_pct=self.settings.exec_tp1_pct,
+                tp2_pct=self.settings.exec_tp2_pct,
+                # Entry-time risk distance — gates Phase-D structure-trailing on a
+                # real ≥R profit buffer. Use the realized fill→SL distance.
+                initial_risk=abs(fill_price - stops.sl_price),
+                peak=fill_price,  # chandelier seed
             )
         return ExecutionOutcome(submitted=True, trade=trade, order=order, managed=managed)
 

@@ -39,6 +39,7 @@ _CONSTS = {
     "TIMEFRAME_M5": 5,
     "TIMEFRAME_H1": 16385,
     "TRADE_ACTION_DEAL": 1,
+    "TRADE_ACTION_SLTP": 6,
     "TRADE_ACTION_PENDING": 5,
     "TRADE_ACTION_MODIFY": 7,
     "TRADE_ACTION_REMOVE": 8,
@@ -210,6 +211,71 @@ def test_positions_get_maps_side_from_type():
     positions = _conn().positions_get()
     assert positions[0].side == OrderSide.BUY and positions[0].sl == Decimal("4240.0")
     assert positions[1].side == OrderSide.SELL and positions[1].sl is None  # 0.0 → None
+
+
+def test_order_modify_open_position_uses_sltp_and_preserves_tp():
+    """Trailing an open position's SL must use TRADE_ACTION_SLTP + position and
+    re-send the existing TP (a missing leg is read as 0 = removed by MT5)."""
+    fake = FakeMt5()
+    c = _conn(fake)
+    # Ticket 111 is an open position (sl=4240, tp=4260). Trail only the SL.
+    res = c.order_modify("111", sl=4245.0)
+    assert res.accepted is True
+    req = fake.last_order_request
+    assert req["action"] == _CONSTS["TRADE_ACTION_SLTP"]
+    assert req["position"] == 111
+    assert "order" not in req
+    assert req["sl"] == 4245.0
+    assert req["tp"] == 4260.0  # preserved from the live position, NOT wiped
+
+
+def test_order_modify_position_without_tp_keeps_zero():
+    """A position with no TP (ticket 112, sl=0/tp=0) stays TP-less on an SL trail."""
+    fake = FakeMt5()
+    res = _conn(fake).order_modify("112", sl=4250.0)
+    assert res.accepted is True
+    req = fake.last_order_request
+    assert req["action"] == _CONSTS["TRADE_ACTION_SLTP"]
+    assert req["position"] == 112 and req["sl"] == 4250.0 and req["tp"] == 0.0
+
+
+def test_order_modify_pending_order_uses_modify_action():
+    """A ticket that is NOT an open position is a pending order → MODIFY."""
+    fake = FakeMt5()
+    res = _conn(fake).order_modify("999", price=4200.0, sl=4250.0)
+    assert res.accepted is True
+    req = fake.last_order_request
+    assert req["action"] == _CONSTS["TRADE_ACTION_MODIFY"]
+    assert req["order"] == 999
+    assert "position" not in req
+    assert req["price"] == 4200.0 and req["sl"] == 4250.0
+
+
+def test_order_modify_refuses_on_empty_positions_snapshot():
+    """Review #4: an EMPTY positions_get() (likely a transient bridge read) must
+    NOT fall through to the pending-order action on a real position ticket — that
+    is the silent SL-trail rejection. Refuse so the manage loop retries."""
+    fake = FakeMt5()
+    c = _conn(fake)
+    c.positions_get = lambda *a, **k: []  # simulate a transient empty read
+    res = c.order_modify("111", sl=4245.0)
+    assert res.accepted is False
+    assert res.error_code == "POSITION_NOT_FOUND"
+    assert fake.last_order_request is None  # no (wrong) order_send was issued
+
+
+def test_order_modify_modifies_confirmed_pending_when_positions_empty():
+    """Fix follow-up: an EMPTY positions snapshot must still MODIFY a ticket the
+    bridge confirms IS a pending order — don't refuse a genuine pending order."""
+    fake = FakeMt5()
+    fake.orders_get = lambda **k: [SimpleNamespace(ticket=999)]  # 999 is pending
+    c = _conn(fake)
+    c.positions_get = lambda *a, **k: []  # no open positions
+    res = c.order_modify("999", price=4200.0, sl=4250.0)
+    assert res.accepted is True
+    req = fake.last_order_request
+    assert req["action"] == _CONSTS["TRADE_ACTION_MODIFY"]
+    assert req["order"] == 999 and "position" not in req
 
 
 def test_get_ticks_uses_time_msc():
