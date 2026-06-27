@@ -37,7 +37,7 @@ import contextlib
 import json
 import os
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -84,15 +84,19 @@ def _cull_chart_fvg_zones(
     max_dist = (
         _FVG_MAX_DIST_ATR * atr if (atr and atr > 0) else _FVG_MAX_DIST_FALLBACK
     )
+    # Normalize ts to tz-aware ONCE so the age subtraction never raises on a
+    # naive/aware mix (e.g. a naive ts paired with aware bar-times, or vice versa).
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
     kept_by_tf: dict[str, list[Any]] = {}
     for z in zones:
         if z.status.value == "mitigated":
             continue
         created = z.created_at
         if getattr(created, "tzinfo", None) is None:
-            created = created.replace(tzinfo=ts.tzinfo)
+            created = created.replace(tzinfo=UTC)
         age_h = (ts - created).total_seconds() / 3600.0
-        if age_h > _FVG_MAX_AGE_H.get(z.tf, 24.0):
+        if age_h > _FVG_MAX_AGE_H.get(z.tf, 48.0):  # unknown tf → generous H1 cap
             continue
         if current_price is not None:
             bull = z.type.value == "bullish"

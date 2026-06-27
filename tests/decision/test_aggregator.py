@@ -250,6 +250,25 @@ def test_htf_zone_bias_zero_outside_zone() -> None:
     assert _htf_zone_bias(_demand_fvg(), None)[0] == 0
 
 
+def test_htf_zone_bias_conflict_returns_neutral() -> None:
+    """Price inside BOTH a live H1 demand and supply → ambiguous → neutral (no
+    confident one-directional bias, no momentum suppression)."""
+    from xauusd_bot.common.schemas.features import FVGOutput, FVGStatus, FVGType, FVGZone
+    from xauusd_bot.decision.aggregator import _htf_zone_bias
+
+    zones = [
+        FVGZone(tf="H1", type=FVGType.BULLISH, top=4000.0, bottom=3990.0, size_points=10.0,
+                created_at=datetime(2026, 6, 26, 8, 0, tzinfo=UTC), age_seconds=600,
+                displacement_atr=1.0, status=FVGStatus.OPEN, mitigation_pct=0.0, rank_score=5.0),
+        FVGZone(tf="H1", type=FVGType.BEARISH, top=4002.0, bottom=3992.0, size_points=10.0,
+                created_at=datetime(2026, 6, 26, 8, 0, tzinfo=UTC), age_seconds=600,
+                displacement_atr=1.0, status=FVGStatus.OPEN, mitigation_pct=0.0, rank_score=4.0),
+    ]
+    # 3995 ∈ demand [3990,4000] AND ∈ supply [3992,4002] → conflict.
+    bias, reason = _htf_zone_bias(FVGOutput(zones=zones, top_zones=[]), Decimal("3995"))
+    assert bias == 0 and "conflict" in reason
+
+
 def test_score_h1_zone_in_demand_sets_long_over_count() -> None:
     from xauusd_bot.decision.aggregator import _score_h1_zone
 

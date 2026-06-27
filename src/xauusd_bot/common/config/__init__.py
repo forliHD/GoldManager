@@ -134,14 +134,15 @@ class Settings(BaseSettings):
         ),
     )
     ai_layer_max_tokens: int = Field(
-        default=2000,
+        default=4096,
         ge=256,
         le=8192,
         description=(
             "max_tokens (completion budget) on the OpenRouter call. The default provider cap "
             "was occasionally truncating the decision JSON mid-field (a long `comment` → invalid "
-            "JSON → forced no_trade). 2000 leaves ample room for the decision JSON + a concise "
-            "comment. NOTE minimax-m3 may ignore this; the prompt also caps comment length and "
+            "JSON → forced no_trade). 4096 leaves room for the decision JSON + a concise comment "
+            "EVEN with reasoning enabled (~3.6k CoT tokens count against this on providers that "
+            "honor it). NOTE minimax-m3 may ignore this; the prompt also caps comment length and "
             "the retry above is the backstop."
         ),
     )

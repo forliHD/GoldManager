@@ -186,17 +186,28 @@ def _htf_zone_bias(fvg: Any, price: Any) -> tuple[int, str]:
     if fvg is None or price is None:
         return 0, ""
     px = float(price)
+    demand: str | None = None
+    supply: str | None = None
     for z in fvg.zones:
         if z.tf != "H1" or z.status.value not in ("open", "partially_mitigated"):
             continue
         if z.type.value == "bullish":
             low = z.extended_bottom if z.extended_bottom is not None else z.bottom
             if low <= px <= z.top:
-                return 1, f"price_in_H1_demand[{low:.2f},{z.top:.2f}]"
+                demand = f"price_in_H1_demand[{low:.2f},{z.top:.2f}]"
         else:
             high = z.extended_top if z.extended_top is not None else z.top
             if z.bottom <= px <= high:
-                return -1, f"price_in_H1_supply[{z.bottom:.2f},{high:.2f}]"
+                supply = f"price_in_H1_supply[{z.bottom:.2f},{high:.2f}]"
+    # Price inside BOTH a demand and a supply zone is genuinely ambiguous → no
+    # confident one-directional bias (and no momentum suppression). Let the
+    # zone COUNT / other engines decide rather than picking the first match.
+    if demand and supply:
+        return 0, "in_zone_conflict(demand+supply)"
+    if demand:
+        return 1, demand
+    if supply:
+        return -1, supply
     return 0, ""
 
 
