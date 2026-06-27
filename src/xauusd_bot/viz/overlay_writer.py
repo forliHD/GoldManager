@@ -37,7 +37,7 @@ import contextlib
 import json
 import os
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,72 @@ from xauusd_bot.common.schemas.features import (
 )
 
 log = structlog.get_logger(__name__)
+
+# --- Chart FVG relevance horizon -------------------------------------------
+# The FVG engine never expires a zone (mitigation is one-directional: a bullish
+# demand only dies on a close BELOW it, so when price rallies far above and never
+# returns it stays "open" forever). For the CHART that means dozens of stale
+# bands stretching a day+ back, far from price ("viel zu weit nach hinten, wo
+# nichts ist"). We trim what the chart shows here. This is CHART-ONLY: the
+# decision engine reads ``bundle.fvg`` directly, so culling never changes a trade.
+_FVG_MAX_AGE_H: dict[str, float] = {"H1": 48.0, "M5": 12.0, "M1": 4.0}
+_FVG_MAX_PER_TF = 8
+_FVG_MAX_DIST_ATR = 25.0  # drop zones whose nearest edge is > this×ATR from price
+_FVG_MAX_DIST_FALLBACK = 60.0  # points, used when ATR is unavailable
+
+
+def _cull_chart_fvg_zones(
+    zones: list[Any],
+    *,
+    ts: datetime,
+    current_price: float | None,
+    atr: float | None,
+) -> list[Any]:
+    """Trim the FVG zones shown on the chart to the relevant, recent ones.
+
+    Drops (1) fully-mitigated zones, (2) zones older than the per-TF age horizon,
+    (3) zones whose nearest edge is implausibly far from the current price, then
+    keeps the top-``_FVG_MAX_PER_TF`` per timeframe by ``rank_score``. Returns the
+    surviving :class:`FVGZone` objects (chart-only — does not touch the decision
+    path, which reads ``bundle.fvg``).
+    """
+
+    max_dist = (
+        _FVG_MAX_DIST_ATR * atr if (atr and atr > 0) else _FVG_MAX_DIST_FALLBACK
+    )
+    # Normalize ts to tz-aware ONCE so the age subtraction never raises on a
+    # naive/aware mix (e.g. a naive ts paired with aware bar-times, or vice versa).
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    kept_by_tf: dict[str, list[Any]] = {}
+    for z in zones:
+        if z.status.value == "mitigated":
+            continue
+        created = z.created_at
+        if getattr(created, "tzinfo", None) is None:
+            created = created.replace(tzinfo=UTC)
+        age_h = (ts - created).total_seconds() / 3600.0
+        if age_h > _FVG_MAX_AGE_H.get(z.tf, 48.0):  # unknown tf → generous H1 cap
+            continue
+        if current_price is not None:
+            low, high = z.effective_range
+            if low > high:
+                low, high = high, low
+            if current_price > high:
+                dist = current_price - high
+            elif current_price < low:
+                dist = low - current_price
+            else:
+                dist = 0.0
+            if dist > max_dist:
+                continue
+        kept_by_tf.setdefault(z.tf, []).append(z)
+
+    out: list[Any] = []
+    for tf_zones in kept_by_tf.values():
+        tf_zones.sort(key=lambda z: z.rank_score, reverse=True)
+        out.extend(tf_zones[:_FVG_MAX_PER_TF])
+    return out
 
 
 def _profile_to_dict(profile: VolumeProfileOutput | None) -> dict[str, Any] | None:
@@ -73,11 +139,18 @@ def build_overlay_payload(
     vwap: TripleVWAPOutput,
     volume_range: VolumeRangeOutput,
     fvg: FVGOutput,
+    current_price: float | None = None,
+    atr: float | None = None,
 ) -> dict[str, Any]:
     """Assemble the overlay JSON payload from engine outputs.
 
     The schema is stable — adding new fields is fine, removing or
     renaming breaks ``BotOverlay.mq5`` and requires a sync release.
+
+    ``current_price``/``atr`` (when provided) drive the chart FVG relevance
+    horizon — stale/far zones are trimmed via :func:`_cull_chart_fvg_zones` so
+    the chart shows the same compact, near-price boxes a trader expects rather
+    than dozens of day-old bands. Chart-only; the decision path is untouched.
     """
 
     vwap_section: dict[str, float | None] = {}
@@ -97,9 +170,9 @@ def build_overlay_payload(
     }
 
     fvg_zones: list[dict[str, Any]] = []
-    for z in fvg.zones:
-        if z.status.value == "mitigated":
-            continue  # dead zones don't show on the chart
+    for z in _cull_chart_fvg_zones(
+        fvg.zones, ts=ts, current_price=current_price, atr=atr
+    ):
         fvg_zones.append(
             {
                 "tf": z.tf,

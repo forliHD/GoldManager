@@ -110,6 +110,8 @@ async def _publish_overlay_snapshot(
             vwap=bundle.vwap,
             volume_range=bundle.volume_range,
             fvg=bundle.fvg,
+            current_price=float(ev.bar.close),
+            atr=(float(bundle.atr) if bundle.atr is not None else None),
         )
         record = FeatureSnapshotRecord(
             timestamp=datetime.now(tz=UTC),

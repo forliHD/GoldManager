@@ -14,6 +14,9 @@ from xauusd_bot.common.schemas import (
     Decision,
     DecisionAction,
     FeatureSnapshot,
+    FVGStatus,
+    FVGType,
+    FVGZone,
     JournalEntry,
     MarketData,
     OrderEvent,
@@ -331,3 +334,59 @@ def test_schema_version_default() -> None:
     )
     assert d.schema_version == SCHEMA_VERSION
     assert SCHEMA_VERSION >= 1
+
+
+# ---------------------------------------------------------------- FVGZone effective range
+
+
+def _fvg_zone(**overrides: object) -> FVGZone:
+    base: dict[str, object] = {
+        "tf": "H1",
+        "type": FVGType.BULLISH,
+        "top": 4000.0,
+        "bottom": 3990.0,
+        "size_points": 10.0,
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "age_seconds": 0,
+        "status": FVGStatus.OPEN,
+    }
+    base.update(overrides)
+    return FVGZone(**base)
+
+
+def test_fvgzone_effective_range_bullish_extends_down() -> None:
+    """Demand (bullish) reaches DOWN to extended_bottom; the top is untouched."""
+
+    z = _fvg_zone(type=FVGType.BULLISH, extended_bottom=3980.0)
+    assert z.effective_low == 3980.0
+    assert z.effective_high == 4000.0
+    assert z.effective_range == (3980.0, 4000.0)
+
+
+def test_fvgzone_effective_range_bearish_extends_up() -> None:
+    """Supply (bearish) reaches UP to extended_top; the bottom is untouched."""
+
+    z = _fvg_zone(type=FVGType.BEARISH, extended_top=4015.0)
+    assert z.effective_low == 3990.0
+    assert z.effective_high == 4015.0
+    assert z.effective_range == (3990.0, 4015.0)
+
+
+def test_fvgzone_effective_range_no_extension_uses_raw_edges() -> None:
+    """With no extension the effective range is just (bottom, top)."""
+
+    assert _fvg_zone(type=FVGType.BULLISH).effective_range == (3990.0, 4000.0)
+    assert _fvg_zone(type=FVGType.BEARISH).effective_range == (3990.0, 4000.0)
+
+
+def test_fvgzone_effective_range_is_type_gated() -> None:
+    """An off-type extension is IGNORED — this is what makes the property
+    type-gated rather than an unconditional or-fallback. A bullish zone never
+    widens UP via extended_top; a bearish zone never widens DOWN via
+    extended_bottom (the schema never sets those, but the property must not rely
+    on that invariant)."""
+
+    bull = _fvg_zone(type=FVGType.BULLISH, extended_top=4050.0)
+    assert bull.effective_high == 4000.0  # extended_top ignored for a demand zone
+    bear = _fvg_zone(type=FVGType.BEARISH, extended_bottom=3900.0)
+    assert bear.effective_low == 3990.0  # extended_bottom ignored for a supply zone

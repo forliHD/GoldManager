@@ -122,14 +122,28 @@ class Settings(BaseSettings):
         ),
     )
     ai_layer_max_attempts: int = Field(
-        default=1,
+        default=2,
         ge=1,
         le=6,
         description=(
             "Total LLM attempts per decision before falling back to the rule. Retries cover "
-            "transient validation/empty-body/timeout errors (same provider — no ZDR change). "
-            "1 = no retry. Kept at 1 so a 30s timeout never compounds to >60s and backs up the "
-            "1-bar/min decision loop."
+            "transient validation/empty-body/zone errors (same provider — no ZDR change) — e.g. "
+            "an intermittently TRUNCATED JSON response (~2% of m3 calls) that would otherwise be "
+            "forced to no_trade. TIMEOUTS are NOT retried (they bubble straight to the rule "
+            "fallback) so a slow call never compounds past the 1-bar/min decision loop."
+        ),
+    )
+    ai_layer_max_tokens: int = Field(
+        default=4096,
+        ge=256,
+        le=8192,
+        description=(
+            "max_tokens (completion budget) on the OpenRouter call. The default provider cap "
+            "was occasionally truncating the decision JSON mid-field (a long `comment` → invalid "
+            "JSON → forced no_trade). 4096 leaves room for the decision JSON + a concise comment "
+            "EVEN with reasoning enabled (~3.6k CoT tokens count against this on providers that "
+            "honor it). NOTE minimax-m3 may ignore this; the prompt also caps comment length and "
+            "the retry above is the backstop."
         ),
     )
     ai_layer_retry_backoff_seconds: float = Field(

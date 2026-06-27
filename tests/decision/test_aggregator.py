@@ -200,6 +200,123 @@ def make_bundle_full():
 # ---------------------------------------------------------------- tests
 
 
+# ----- demand-proximity bias: blockers ② (re-entry) + ③ (direction into demand)
+
+
+def _demand_fvg(*, status: str = "open", ext_bottom=None):
+    from xauusd_bot.common.schemas.features import FVGOutput, FVGStatus, FVGType, FVGZone
+
+    return FVGOutput(
+        zones=[
+            FVGZone(
+                tf="H1", type=FVGType.BULLISH, top=4001.0, bottom=3988.0, size_points=13.0,
+                created_at=datetime(2026, 6, 26, 8, 0, tzinfo=UTC), age_seconds=600,
+                displacement_atr=1.5, status=FVGStatus(status),
+                mitigation_pct=(0.0 if status == "open" else 50.0), rank_score=5.0,
+                extended_bottom=ext_bottom,
+            ),
+        ],
+        top_zones=[],
+    )
+
+
+def test_htf_zone_bias_long_when_price_in_demand() -> None:
+    from xauusd_bot.decision.aggregator import _htf_zone_bias
+
+    bias, reason = _htf_zone_bias(_demand_fvg(), Decimal("3990"))
+    assert bias == 1 and "demand" in reason
+
+
+def test_htf_zone_bias_counts_partially_mitigated_zone() -> None:
+    """Blocker ②: a tapped-but-alive demand still gives a long bias (re-entry)."""
+    from xauusd_bot.decision.aggregator import _htf_zone_bias
+
+    assert _htf_zone_bias(_demand_fvg(status="partially_mitigated"), Decimal("3990"))[0] == 1
+
+
+def test_htf_zone_bias_uses_extended_edge() -> None:
+    from xauusd_bot.decision.aggregator import _htf_zone_bias
+
+    # 3985 is below the raw bottom 3988 but inside the extended demand [3980, 4001].
+    assert _htf_zone_bias(_demand_fvg(ext_bottom=3980.0), Decimal("3985"))[0] == 1
+    # Without the extension, 3985 sits outside [3988, 4001] → no bias.
+    assert _htf_zone_bias(_demand_fvg(), Decimal("3985"))[0] == 0
+
+
+def test_htf_zone_bias_zero_outside_zone() -> None:
+    from xauusd_bot.decision.aggregator import _htf_zone_bias
+
+    assert _htf_zone_bias(_demand_fvg(), Decimal("4050"))[0] == 0
+    assert _htf_zone_bias(_demand_fvg(), None)[0] == 0
+
+
+def test_htf_zone_bias_conflict_returns_neutral() -> None:
+    """Price inside BOTH a live H1 demand and supply → ambiguous → neutral (no
+    confident one-directional bias, no momentum suppression)."""
+    from xauusd_bot.common.schemas.features import FVGOutput, FVGStatus, FVGType, FVGZone
+    from xauusd_bot.decision.aggregator import _htf_zone_bias
+
+    zones = [
+        FVGZone(tf="H1", type=FVGType.BULLISH, top=4000.0, bottom=3990.0, size_points=10.0,
+                created_at=datetime(2026, 6, 26, 8, 0, tzinfo=UTC), age_seconds=600,
+                displacement_atr=1.0, status=FVGStatus.OPEN, mitigation_pct=0.0, rank_score=5.0),
+        FVGZone(tf="H1", type=FVGType.BEARISH, top=4002.0, bottom=3992.0, size_points=10.0,
+                created_at=datetime(2026, 6, 26, 8, 0, tzinfo=UTC), age_seconds=600,
+                displacement_atr=1.0, status=FVGStatus.OPEN, mitigation_pct=0.0, rank_score=4.0),
+    ]
+    # 3995 ∈ demand [3990,4000] AND ∈ supply [3992,4002] → conflict.
+    bias, reason = _htf_zone_bias(FVGOutput(zones=zones, top_zones=[]), Decimal("3995"))
+    assert bias == 0 and "conflict" in reason
+
+
+def test_score_h1_zone_in_demand_sets_long_over_count() -> None:
+    from xauusd_bot.decision.aggregator import _score_h1_zone
+
+    _score, reason, direction = _score_h1_zone(_demand_fvg(), Decimal("3990"))
+    assert direction == 1 and "demand" in reason
+
+
+def test_aggregate_suppresses_momentum_short_into_demand() -> None:
+    """Blocker ③ end-to-end: a strong down-close INTO an H1 demand must not read
+    as short — the momentum bias is suppressed and h1_zone frames the long."""
+    from xauusd_bot.common.schemas.features import (
+        CandleMomentumOutput,
+        CandleMomentumPerBar,
+        FVGOutput,
+        FVGStatus,
+        FVGType,
+        FVGZone,
+    )
+
+    demand = FVGZone(
+        tf="H1", type=FVGType.BULLISH, top=4001.0, bottom=3988.0, size_points=13.0,
+        created_at=datetime(2026, 6, 26, 8, 0, tzinfo=UTC), age_seconds=600,
+        displacement_atr=1.6, status=FVGStatus.PARTIALLY_MITIGATED, mitigation_pct=50.0,
+        rank_score=5.0,
+    )
+    # close_position 0.1 + body > 0.5 → momentum SHORT bias.
+    momo = CandleMomentumOutput(
+        by_tf={
+            "M5": CandleMomentumPerBar(
+                body_size_atr=1.2, wick_body_ratio=0.3, close_position=0.1, displacement=True,
+                impulsive_follow_through=3, tick_volume_percentile=70.0,
+            )
+        },
+        score=60.0,
+    )
+    bundle = make_bundle_full().model_copy(
+        update={
+            "fvg": FVGOutput(zones=[demand], top_zones=[]),
+            "price": Decimal("3990.0"),
+            "momentum": momo,
+        }
+    )
+    out = FeatureAggregator().aggregate(bundle)
+    assert out.subscores["momentum"].direction_bias == 0
+    assert "suppressed_in_zone" in out.subscores["momentum"].reasoning
+    assert out.subscores["h1_zone"].direction_bias == 1
+
+
 class TestPercentileRank:
     def test_empty_history_is_neutral(self) -> None:
         assert _percentile_rank([], 50.0) == 50.0

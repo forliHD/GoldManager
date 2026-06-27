@@ -360,40 +360,76 @@ def _score_to_payload(score: Score) -> dict[str, Any]:
 # ---------------------------------------------------------------- zone validation
 
 
+# Anti-fabrication tolerance for an entry placed at a REFERENCE LEVEL (not inside
+# an FVG): a bound within max(points, atr×mult) of a provided VP-level/VWAP counts
+# as "at that level". Generous enough for an Archetyp B/C entry (DVPOC / VWAP
+# rejection), still tight enough to reject a fabricated price hundreds off.
+_ZONE_LEVEL_TOL_POINTS = 5.0
+_ZONE_LEVEL_TOL_ATR = 1.5
+
+
+def _reference_levels(bundle: FeatureSnapshotBundle) -> list[float]:
+    """Provided NON-FVG anchor levels an entry may legitimately sit at:
+    the locked VP levels (DVPOC/DVAH/DVAL of prev day/week/month) and the
+    Session-VWAPs. Used so Archetyp B/C entries (VWAP rejection / DVPOC
+    reaction) aren't rejected just because they're not inside an FVG."""
+
+    levels: list[float] = []
+    vr = bundle.volume_range
+    if vr is not None:
+        for prof in (vr.prev_day, vr.prev_week, vr.prev_month):
+            if prof is None:
+                continue
+            for v in (prof.vpoc, prof.vah, prof.val):
+                if v is not None:
+                    levels.append(float(v))
+    vw = bundle.vwap
+    if vw is not None:
+        for key in ("utc00", "utc07", "utc12"):
+            lvl = vw.levels.get(key)
+            if lvl is not None and lvl.value is not None:
+                levels.append(float(lvl.value))
+    return levels
+
+
 def _zone_within_snapshot(
     *,
     price_min: float | None,
     price_max: float | None,
     bundle: FeatureSnapshotBundle,
 ) -> bool:
-    """Return True iff at least one of (price_min, price_max) is inside
-    one of the snapshot's :class:`FVGZone` ranges.
+    """Return True iff at least one of (price_min, price_max) sits at a provided
+    anchor: inside an :class:`FVGZone` range OR within tolerance of a reference
+    level (locked VP-level / Session-VWAP).
 
     Rules
     -----
-    * If both bounds are None: trivially valid (LLM is signaling "no
-      specific zone", which is allowed).
-    * If only one bound is set: that bound must be inside some zone.
-    * If both bounds are set: at least one of them must be inside
-      some zone.
-    * "Inside" = ``low <= price <= high`` where the zone's effective edges
-      honour the M5-fractal extension: a demand zone reaches down to
-      ``extended_bottom`` and a supply zone up to ``extended_top`` when set.
+    * If both bounds are None: trivially valid (LLM signals "no specific zone").
+    * Otherwise at least one bound must be inside some FVG zone (effective range,
+      honouring the M5-fractal extension) OR within tolerance of a reference level
+      — the latter so an Archetyp B/C entry (DVPOC reaction / VWAP rejection) that
+      is not inside an FVG is still accepted. Pure fabrication (a bound far from
+      EVERY zone and level) is still a violation.
     """
 
     if price_min is None and price_max is None:
         return True
-    if bundle.fvg is None or not bundle.fvg.zones:
-        # No zones in the snapshot → the LLM cannot pick a valid
-        # entry_zone. This is a violation.
-        return False
-    for zone in bundle.fvg.zones:
-        low = zone.extended_bottom if zone.extended_bottom is not None else zone.bottom
-        high = zone.extended_top if zone.extended_top is not None else zone.top
-        if price_min is not None and low <= price_min <= high:
-            return True
-        if price_max is not None and low <= price_max <= high:
-            return True
+    if bundle.fvg is not None and bundle.fvg.zones:
+        for zone in bundle.fvg.zones:
+            low, high = zone.effective_range
+            if price_min is not None and low <= price_min <= high:
+                return True
+            if price_max is not None and low <= price_max <= high:
+                return True
+    # Reference-level fallback (Archetyp B/C): a bound at a provided VP-level/VWAP.
+    levels = _reference_levels(bundle)
+    if levels:
+        tol = max(_ZONE_LEVEL_TOL_POINTS, _ZONE_LEVEL_TOL_ATR * float(bundle.atr or 0.0))
+        for bound in (price_min, price_max):
+            if bound is None:
+                continue
+            if any(abs(bound - lvl) <= tol for lvl in levels):
+                return True
     return False
 
 

@@ -78,8 +78,8 @@ def _settings(**overrides) -> Settings:
         "ai_layer_enabled": True,
         "ai_layer_score_threshold": 65,
         "ai_layer_zdr": True,
-        # Keep the retry tests at the historical 2 attempts (1 retry) and no
-        # backoff sleep; production now defaults to 3.
+        # Pin the retry tests to 2 attempts (1 retry) and no backoff sleep —
+        # matches the production default (ai_layer_max_attempts=2).
         "ai_layer_max_attempts": 2,
         "ai_layer_retry_backoff_seconds": 0.0,
     }
@@ -363,17 +363,21 @@ class TestRetryAndFallback:
         assert decision.action == DecisionAction.ENTER_LONG
 
     @pytest.mark.asyncio
-    async def test_timeout_triggers_retry_then_falls_back(self):
-        # Per the Block-6 spec: "LLM-Call 1. Versuch Timeout → 1 Retry".
-        # The orchestrator retries once on TimeoutError, then falls
-        # back to RuleBasedFallback.
+    async def test_timeout_falls_back_immediately_without_retry(self):
+        # A timeout is NOT retried (a retry would compound past the 1-bar/min
+        # decision loop). It bubbles straight to the rule fallback. Only fast
+        # validation/zone errors retry — see _call_with_retry.
         layer = AsyncMock(spec=AIDecisionLayer)
         layer.decide.side_effect = LLMTimeoutError("timeout")
-        orch = _orchestrator(ai_layer=layer, journal_store=InMemoryJournalStore())
+        orch = _orchestrator(
+            ai_layer=layer,
+            settings=_settings(ai_layer_max_attempts=2, ai_layer_retry_backoff_seconds=0.0),
+            journal_store=InMemoryJournalStore(),
+        )
         decision = await orch.decide(
             feature_snapshot=make_bundle(), score=_score(total=70.0), agg=make_aggregated()
         )
-        assert layer.decide.await_count == 2  # 1 retry
+        assert layer.decide.await_count == 1  # no retry on timeout
         assert decision.action == DecisionAction.NO_TRADE
         assert decision.block_reason == REASON_TIMEOUT
         assert orch.last_discrepancy is not None

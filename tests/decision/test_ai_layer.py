@@ -324,6 +324,28 @@ class TestZoneValidation:
         d = await layer.decide(feature_snapshot=make_bundle(), score=_score())
         assert d.decision == "watch"
 
+    def test_zone_within_snapshot_accepts_entry_at_dvpoc_without_fvg(self):
+        """Blocker fix (Archetyp C): an entry at a locked VP level (DVPOC) is valid
+        even with NO FVG there; a price far from every zone/level still fails."""
+        from tests.decision.conftest import make_volume_profile
+
+        from xauusd_bot.common.schemas.features import (
+            FVGOutput,
+            VolumeProfileState,
+            VolumeRangeOutput,
+        )
+        from xauusd_bot.decision.ai_layer import _zone_within_snapshot
+
+        pd = make_volume_profile(state=VolumeProfileState.LOCKED)
+        vr = VolumeRangeOutput(
+            weekly=make_volume_profile(), monthly=make_volume_profile(),
+            yearly=make_volume_profile(), prev_day=pd, cluster_within_atr=0.5,
+        )
+        bundle = make_bundle(fvg=FVGOutput(zones=[], top_zones=[]), volume_range=vr)
+        # Entry AT the DVPOC passes (no FVG present); 500 pts away still fails.
+        assert _zone_within_snapshot(price_min=float(pd.vpoc), price_max=None, bundle=bundle) is True
+        assert _zone_within_snapshot(price_min=float(pd.vpoc) - 500, price_max=None, bundle=bundle) is False
+
 
 class TestNewsBlackoutHardRule:
     @pytest.mark.asyncio

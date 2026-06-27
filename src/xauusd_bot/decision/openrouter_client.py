@@ -398,6 +398,9 @@ class OpenRouterClient:
             "model": self._settings.openrouter_model,
             "stream": False,
             "response_format": {"type": "json_object"},
+            # Completion budget: without this the provider default cap occasionally
+            # truncated the decision JSON mid-field → invalid JSON → forced no_trade.
+            "max_tokens": int(self._settings.ai_layer_max_tokens),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(user_payload, default=str)},
@@ -445,8 +448,9 @@ class OpenRouterClient:
                 f"{response.text[:200]}"
             )
         if response.status_code >= 400:
-            # 4xx other than auth: likely malformed request or rate-limit.
-            # Surface as a generic LLMCallError — the orchestrator will retry once.
+            # 4xx other than auth: likely malformed request or rate-limit. Surface
+            # as a generic LLMCallError — the orchestrator does NOT retry these
+            # (only fast validation/zone errors retry; LLMCallError → rule fallback).
             raise LLMCallError(
                 f"OpenRouter client error {response.status_code}: "
                 f"{response.text[:200]}"

@@ -226,6 +226,18 @@ class TestClientHeaders:
         assert body.get("stream") is False
 
     @pytest.mark.asyncio
+    async def test_sends_max_tokens_completion_budget(self, fake_http, tmp_path):
+        # A completion budget must be sent so the provider default cap doesn't
+        # truncate the decision JSON mid-field (→ invalid JSON → forced no_trade).
+        fake_http()
+        client = OpenRouterClient(
+            settings=_make_settings(ai_layer_max_tokens=1234), prompt_path=_prompt_path(tmp_path)
+        )
+        await client.complete(system_prompt="sys", user_payload={"x": 1})
+        body = _FakeAsyncClient.calls[0]["json"]
+        assert body.get("max_tokens") == 1234
+
+    @pytest.mark.asyncio
     async def test_zdr_set_when_enabled(self, fake_http, tmp_path):
         fake_http()
         client = OpenRouterClient(
