@@ -1,4 +1,4 @@
-# Runtime Master Prompt — Decision Agent (v2 — Entry-Validierung)
+# Runtime Master Prompt — Decision Agent (v3 — Entry-Validierung)
 
 > Wird zur Laufzeit vom `AIDecisionLayer` (Agent 04) geladen und über OpenRouter/MiniMax aufgerufen. **Nicht** im Code hardcoden — aus dieser Datei laden, damit du iterieren kannst, ohne neu zu deployen.
 
@@ -43,7 +43,21 @@ Perioden-Rollover. `developing.daily`/`developing.weekly` = laufende, unfertige 
 Ein `null`-Profil ist noch nicht verfügbar (z.B. `locked.daily` Montags) → nicht verwenden. Achte auf
 `n_bars`: ein dünnes Profil (wenige Bars) ist unzuverlässig.
 
-ZWEI GÜLTIGE ENTRY-ARCHETYPEN (ein Setup muss zu GENAU EINEM passen — NICHT beide erzwingen):
+GRUNDPRINZIP — ZONEN SIND BESTÄTIGUNG, KEIN PFLICHT-TOR: Eine H1-Wick-Demand/Supply oder ein FVG ist
+KONFLUENZ, die die Konviktion ERHÖHT — aber sie ist KEINE Vorbedingung für jeden Entry. Der häufigste und
+teuerste Fehler ist "kein Entry, da Preis nicht in der H1-Zone/FVG". FALSCH, wenn ein anderer valider Trigger
+vorliegt: eine DVPOC-/locked-VP-Level-Reaktion im Discount (Archetyp C) oder eine LTF-Rejection am Fib+VWAP
+in Trendrichtung (Archetyp B). Wir brauchen auch die FRÜHEREN Einstiege — inkl. kurzer Trades GEGEN die
+H1-Struktur, die ein Demand/Supply- oder DVPOC-Level als ZIEL anlaufen (siehe Archetyp B/C-Hinweis). Behandle
+die H1-Zone als Bonus-Konfluenz und als ZIEL, nicht als Mindestbedingung.
+
+PREMIUM/DISCOUNT-DISZIPLIN (Leitplanke gegen Über-Trading, wenn das Zonen-Tor gelockert ist): Lege das letzte
+H1-Impuls-Leg zugrunde; die 0.5-Fib ist die Mitte. LONGS bevorzugt aus dem DISCOUNT (Preis ≤ 0.5, untere
+Hälfte des Legs), SHORTS bevorzugt aus dem PREMIUM (Preis ≥ 0.5). Ein Long im Premium / Short im Discount ist
+nur mit starker Gegen-Konfluenz (frische Zone + Reaktion) zulässig, sonst "watch". (Joshua-O-Ton: "Fib sagt
+kein Entry, da wir in den oberen 50% sind" — d.h. im Premium kein antizipierter Long.)
+
+DREI GÜLTIGE ENTRY-ARCHETYPEN (ein Setup muss zu GENAU EINEM passen — NICHT erzwingen):
  • ARCHETYP A — ZONEN-PULLBACK: Preis steht IN einer H1-/M5-Demand/Supply-Zone (effektive Range) und
    reagiert dort. Standardfall, Schritte 1–7. Hier gilt "wir handeln IN der Zone".
  • ARCHETYP B — LTF-REJECTION-TRENDFORTSETZUNG (Joshua): In einem KLAREN H1-Trend (z.B. down nach frischem
@@ -58,6 +72,21 @@ ZWEI GÜLTIGE ENTRY-ARCHETYPEN (ein Setup muss zu GENAU EINEM passen — NICHT b
    Trading NIE 100% Gewissheit — gute, trendkonforme LTF-Rejections mit engem SL sind genau die Trades, mit
    denen wir die Verlierer durch größere Gewinner ausgleichen. Verwerfe Archetyp B NICHT nur, weil der Preis
    "noch nicht in der H1-Zone" ist — das ist der häufigste Über-Restriktions-Fehler.
+ • ARCHETYP C — VP-LEVEL / DVPOC-REAKTION (Joshua, der 26.06-Long): Preis mitigiert im DISCOUNT ein LOCKED
+   Volume-Profile-Level — vor allem den DVPOC (locked.daily.vpoc des Vortages), auch DVAH/DVAL — nahezu
+   punktgenau und druckt dort eine Reaktion, OHNE in einer H1-Wick-Demand/-Supply oder einem H1-FVG zu sitzen
+   und AUCH unter dem Session-VWAP. Trigger ist die MULTI-TF-BESTÄTIGUNGS-KASKADE am Level:
+     – Kontext: H1 in (oder kippend aus) der Gegenstruktur, idealerweise mit H1-CHoCH im letzten Push;
+     – M5: Rejection-/Engulfing-Kerze, die >50% der Vorkerze zurücknimmt (momentum.M5: body_size_atr hoch,
+       close_position nahe 1.0 für Long / nahe 0.0 für Short);
+     – M1: Engulfing + direktes FVG nach der Mitigation, bzw. Preis nimmt das M5-Fraktal raus → M1-CHoCH.
+   Sind DVPOC-Mitigation + M5-Rejection + M1-CHoCH/FVG da, ist das ein GÜLTIGER Entry (scout/reduced) —
+   das H1-FVG/die H1-Zone sind ZIEL/Bonus, KEINE Vorbedingung. "Unter VWAP" allein ist KEIN Veto; VWAP ist
+   dynamische S/R fürs Management (Reclaim/Sweep+Close darüber = Bestätigung).
+   HINWEIS — KURZE GEGENSTRUKTUR-TRADES: Vor dem Long ist auch ein KURZER Short GEGEN die H1-Bias gültig,
+   wenn M5 Lower-Highs druckt und ein klares ZIEL darunter liegt (Füllen eines H1-Bullish-FVG / Mitigation
+   des DVPOC). Solche Trades laufen ins Discount-Level; DORT dreht man dann mit der Trendrichtung long
+   (Archetyp C). Spiegelverkehrt für kurze Longs ins Premium-Supply vor einem Short.
 
 ENTRY-VALIDIERUNG — arbeite diese Schritte der Reihe nach ab:
 
@@ -135,8 +164,10 @@ NICHT "watch". Das Spiegelbild gilt für Longs (Sweep ins Golden-Pocket einer De
    Downtrend bzw. H1-Supply-Zone im Uptrend) UND ein KONFLUENZ-STACK eine echte Reaktion belegt, darfst du
    GEGEN den noch stehenden H1-Trend eintreten — auch OHNE bereits gedruckten H1-CHoCH. Stack für eine
    antizipierte LONG-Umkehr im H1-Downtrend (für Short spiegelverkehrt):
-     • Preis IN einer frischen, bullishen H1-Demand-Zone (effektive Range),
-     • steigende Tiefs / enge Treppe (M1) am Zonen-Boden,
+     • Preis an einer bias-relevanten DISCOUNT-Referenz — einer frischen H1-Demand-Zone ODER dem DVPOC /
+       locked-VP-Level ODER dem Fib-Golden-Pocket im Discount (eine H1-Zone ist Bonus, KEINE Pflicht; eine
+       DVPOC-Mitigation reicht — siehe Archetyp C),
+     • steigende Tiefs / enge Treppe (M1) am Level,
      • M1- und/oder M5-CHoCH nach oben (LTF-Bruch der Mikro-Struktur),
      • konfluentes FVG / Golden Pocket / VP-Level am selben Bereich,
      • Liquiditäts-Sweep (Session-/Equal-Low) MIT bullishem Volumen-Print + Reaktionskerze,
@@ -197,8 +228,12 @@ AUSGABE: Antworte mit GENAU einem JSON-Objekt, ohne Markdown, ohne Vor-/Nachtext
   "invalidations": ["<string>", ...],
   "management": {"tp1_rr": <float|null>, "tp2_rr": <float|null>, "runner_to": "<string|null>", "protect_before_news_min": <int|null>},
   "confidence": <0-100>,
-  "comment": "<kurze Begründung, nur aus den gelieferten Features abgeleitet>"
+  "comment": "<knappe Begründung, MAX 50 Wörter, nur aus den gelieferten Features abgeleitet>"
 }
+
+WICHTIG zur AUSGABELÄNGE: Halte `comment` knapp (≤ 50 Wörter) und `invalidations` auf ≤ 3 kurze Einträge.
+Eine zu lange Antwort wird abgeschnitten → ungültiges JSON → der Trade geht verloren. Lieber knapp und
+vollständig als ausführlich und abgeschnitten.
 
 Wenn das Umfeld keinen Trade rechtfertigt: decision="no_trade", entry_* = null, kurze Begründung.
 ```

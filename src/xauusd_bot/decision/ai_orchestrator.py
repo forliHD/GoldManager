@@ -435,11 +435,14 @@ class AIDecisionOrchestrator:
     ) -> tuple[LLMDecision, int]:
         """Call :meth:`AIDecisionLayer.decide`, retrying transient errors.
 
-        Retries on validation / empty-body / zone / timeout errors (a brief
-        linear backoff between tries, same provider — no ZDR change), up to
-        ``settings.ai_layer_max_attempts``. Server / auth errors are NOT
-        retried. On final failure the last exception bubbles to
-        :meth:`decide` for rule fallback. Returns ``(decision, attempts)``.
+        Retries on validation / empty-body / zone errors (a brief linear backoff
+        between tries, same provider — no ZDR change), up to
+        ``settings.ai_layer_max_attempts``. These are fast failures (a returned
+        but malformed/truncated body), so a retry is cheap. TIMEOUTS and
+        server / auth errors are NOT retried — a timeout retry would compound past
+        the 1-bar/min decision loop, so it bubbles straight to the rule fallback.
+        On final failure the last exception bubbles to :meth:`decide`. Returns
+        ``(decision, attempts)``.
         """
 
         max_attempts = max(1, int(self._settings.ai_layer_max_attempts))
@@ -453,7 +456,7 @@ class AIDecisionOrchestrator:
                     account=account,
                 )
                 return llm_decision, attempt
-            except (LLMValidationError, LLMZoneViolation, LLMTimeoutError) as exc:
+            except (LLMValidationError, LLMZoneViolation) as exc:
                 last_exc = exc
                 log.warning(
                     "orchestrator_llm_retry",
@@ -465,8 +468,9 @@ class AIDecisionOrchestrator:
                 if attempt < max_attempts and backoff > 0:
                     await asyncio.sleep(backoff * attempt)  # 0.4s, 0.8s, ...
                 continue
-            except LLMCallError:
-                # Server / auth — do NOT retry; bubble up.
+            except (LLMCallError, LLMTimeoutError):
+                # Server / auth / timeout — do NOT retry; bubble up (a timeout
+                # retry would compound latency past the 1-bar/min decision loop).
                 raise
         # All attempts failed → bubble the last exception.
         assert last_exc is not None

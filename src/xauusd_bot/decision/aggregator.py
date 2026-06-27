@@ -171,21 +171,52 @@ def _score_liquidity(liquidity: Any) -> tuple[float, str, int]:
     return score, reasoning, direction
 
 
-def _score_h1_zone(fvg: Any) -> tuple[float, str, int]:
+def _htf_zone_bias(fvg: Any, price: Any) -> tuple[int, str]:
+    """Direction bias from price sitting INSIDE a live H1 zone's effective range.
+
+    Josh's "POC bounce": a fall INTO an unmitigated/reacting H1 demand is a LONG
+    setup (the bounce), but the momentum engine reads the down-close as short and
+    no engine produces a long bias → the AI is only ever handed a short candidate.
+    This gives "price in H1 demand" an explicit +1 (mirror −1 for supply) so the
+    score can frame the demand-bounce long. A zone counts while ``open`` OR
+    ``partially_mitigated`` (tapped-but-alive); the effective range uses the
+    leg-extended edge. Returns ``(0, "")`` when price is in no live H1 zone.
+    """
+
+    if fvg is None or price is None:
+        return 0, ""
+    px = float(price)
+    for z in fvg.zones:
+        if z.tf != "H1" or z.status.value not in ("open", "partially_mitigated"):
+            continue
+        if z.type.value == "bullish":
+            low = z.extended_bottom if z.extended_bottom is not None else z.bottom
+            if low <= px <= z.top:
+                return 1, f"price_in_H1_demand[{low:.2f},{z.top:.2f}]"
+        else:
+            high = z.extended_top if z.extended_top is not None else z.top
+            if z.bottom <= px <= high:
+                return -1, f"price_in_H1_supply[{z.bottom:.2f},{high:.2f}]"
+    return 0, ""
+
+
+def _score_h1_zone(fvg: Any, price: Any = None) -> tuple[float, str, int]:
     """Map FVG H1 zones → (0-100, reasoning, direction_bias).
 
-    Plan §8: H1 is the primary zone timeframe. Open + non-mitigated
-    zones are the "real" ones. Bullish zones → long bias, bearish
-    → short bias.
+    Plan §8: H1 is the primary zone timeframe. ``open`` AND ``partially_mitigated``
+    (tapped-but-alive — see fvg.py mitigation) zones are the "real" ones. When
+    price sits inside a live zone that location drives the direction (a
+    demand-bounce long / supply-rejection short); otherwise the bull/bear count
+    of live zones is the bias.
     """
 
     if fvg is None:
         return 50.0, "no_data", 0
 
     h1_zones = [z for z in fvg.zones if z.tf == "H1"]
-    open_zones = [z for z in h1_zones if z.status.value == "open"]
-    bull = [z for z in open_zones if z.type.value == "bullish"]
-    bear = [z for z in open_zones if z.type.value == "bearish"]
+    live_zones = [z for z in h1_zones if z.status.value in ("open", "partially_mitigated")]
+    bull = [z for z in live_zones if z.type.value == "bullish"]
+    bear = [z for z in live_zones if z.type.value == "bearish"]
     top = fvg.top_zones
     top_h1 = [z for z in top if z.tf == "H1"]
 
@@ -193,22 +224,30 @@ def _score_h1_zone(fvg: Any) -> tuple[float, str, int]:
     if not h1_zones:
         base = 40.0
     else:
-        base += min(len(open_zones) * 5, 15)
+        base += min(len(live_zones) * 5, 15)
         # Big displacement = high quality zone.
-        if open_zones and max(z.displacement_atr for z in open_zones) >= 1.5:
+        if live_zones and max(z.displacement_atr for z in live_zones) >= 1.5:
             base += 10
         # Top-3 contains an H1 zone = strong confluence.
         if top_h1:
             base += 10
 
-    direction = 0
-    if len(bull) > len(bear):
-        direction = 1
-    elif len(bear) > len(bull):
-        direction = -1
+    # Price inside a live H1 zone is the strongest directional signal — it sets
+    # the bias and adds in-zone confluence, overriding the raw zone count.
+    zbias, zreason = _htf_zone_bias(fvg, price)
+    if zbias != 0:
+        direction = zbias
+        base += 10
+    else:
+        direction = 0
+        if len(bull) > len(bear):
+            direction = 1
+        elif len(bear) > len(bull):
+            direction = -1
+        zreason = "no_in_zone"
 
     score = _clamp(base)
-    reasoning = f"h1_open={len(open_zones)} bull={len(bull)} bear={len(bear)} top_h1={len(top_h1)}"
+    reasoning = f"h1_live={len(live_zones)} bull={len(bull)} bear={len(bear)} top_h1={len(top_h1)} {zreason}"
     return score, reasoning, direction
 
 
@@ -513,7 +552,7 @@ class FeatureAggregator:
         ts = bundle.ts
         # 1. Per-engine raw subscore, reasoning, direction_bias.
         raw_subscores: dict[str, tuple[float, str, int]] = {
-            "h1_zone": _score_h1_zone(bundle.fvg),
+            "h1_zone": _score_h1_zone(bundle.fvg, bundle.price),
             "m5_zone": _score_m5_zone(bundle.fvg),
             "triple_vwap": _score_triple_vwap(bundle.vwap),
             "htf_volume_profile": _score_htf_volume_profile(bundle.volume_range),
@@ -535,6 +574,16 @@ class FeatureAggregator:
             combined_dir = sess_dir if sess_dir != 0 else liq_dir
             combined_reason = f"session({sess_reason}) | liquidity({liq_reason})"
             raw_subscores["session_liquidity"] = (combined_score, combined_reason, combined_dir)
+
+        # 1b. Momentum suppression: a down-close INTO an H1 demand (or up-close
+        # into supply) is the SETUP, not a reversal — don't let momentum's bias
+        # fight a demand-bounce. When price is inside a live H1 zone, zero the
+        # momentum direction if it opposes the in-zone bias.
+        zbias, _zreason = _htf_zone_bias(bundle.fvg, bundle.price)
+        if zbias != 0:
+            m_score, m_reason, m_dir = raw_subscores["momentum"]
+            if m_dir == -zbias:
+                raw_subscores["momentum"] = (m_score, m_reason + " [suppressed_in_zone]", 0)
 
         # 2. Detect conflicts.
         conflicts = _detect_conflicts(bundle, raw_subscores)

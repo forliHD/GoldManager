@@ -140,25 +140,37 @@ def _refine_mitigation(
             out.append(zone)
             continue
 
-        # Mitigation: for a bullish zone, "filled from above" = a close
-        # <= zone.bottom. For a bearish zone, "filled from below" = a
-        # close >= zone.top. A zone is "fully mitigated" only if the
-        # close has crossed the *opposite* side.
+        # Mitigation is measured against the zone's EFFECTIVE far edge — the
+        # impulse origin (``extended_bottom``/``extended_top``) when the zone was
+        # leg-extended, else the raw gap edge. A zone is "fully mitigated" (dead)
+        # only when a close crosses THROUGH that origin; a mere tap into the gap
+        # that holds above the origin is a *reaction* → ``partially_mitigated``,
+        # which stays tradeable for a re-entry. This matches the prompt's own
+        # invalidation rule (a demand is invalid only after an H1 close below the
+        # effective edge), which the old raw-edge test contradicted by killing a
+        # zone on the first tap. With no extension the behaviour is unchanged.
+        far_edge = (
+            zone.extended_bottom
+            if (zone.type == FVGType.BULLISH and zone.extended_bottom is not None)
+            else zone.extended_top
+            if (zone.type == FVGType.BEARISH and zone.extended_top is not None)
+            else (zone.bottom if zone.type == FVGType.BULLISH else zone.top)
+        )
         fully_mitigated = False
         partial_mitigation = False
         for b in subsequent:
             c = float(b.close)
             if zone.type == FVGType.BULLISH:
-                if c <= zone.bottom:
+                if c <= far_edge:
                     fully_mitigated = True
                     break
-                if zone.bottom <= c <= zone.top:
+                if c <= zone.top:
                     partial_mitigation = True
             else:  # BEARISH
-                if c >= zone.top:
+                if c >= far_edge:
                     fully_mitigated = True
                     break
-                if zone.bottom <= c <= zone.top:
+                if c >= zone.bottom:
                     partial_mitigation = True
 
         if fully_mitigated:

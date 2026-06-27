@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from xauusd_bot.common.schemas.features import (
@@ -189,6 +189,91 @@ def test_missing_prev_profile_omitted() -> None:
     )
     assert payload["volume_profile"]["prev_year"] is None
     assert payload["volume_profile"]["prev_week"] is not None
+
+
+# ---------------------------------------------------------------- chart FVG cull
+#
+# The engine never expires a zone (one-directional mitigation), so the chart used
+# to draw dozens of day-old bands far from price. build_overlay_payload trims to
+# the recent, near-price zones. CHART-ONLY — the decision path reads bundle.fvg.
+
+_NOW = datetime(2026, 1, 6, 12, 0, tzinfo=UTC)
+
+
+def _zone(
+    tf: str,
+    *,
+    created_at: datetime,
+    type: FVGType = FVGType.BULLISH,
+    top: float = 4000.0,
+    bottom: float = 3999.0,
+    rank: float = 1.0,
+    status: FVGStatus = FVGStatus.OPEN,
+    ext_bottom: float | None = None,
+    ext_top: float | None = None,
+) -> FVGZone:
+    return FVGZone(
+        tf=tf, type=type, top=top, bottom=bottom, size_points=max(0.01, top - bottom),
+        created_at=created_at, age_seconds=0, displacement_atr=1.0, status=status,
+        mitigation_pct=0.0, rank_score=rank, extended_bottom=ext_bottom, extended_top=ext_top,
+    )
+
+
+def _payload_zones(fvg: FVGOutput, *, price: float | None, atr: float | None) -> list[dict]:
+    return build_overlay_payload(
+        ts=_NOW, vwap=_vwap(), volume_range=_volume_range(), fvg=fvg,
+        current_price=price, atr=atr,
+    )["fvg_zones"]
+
+
+def test_chart_cull_drops_stale_m1_keeps_old_h1() -> None:
+    """A 5h-old M1 zone exceeds the 4h M1 horizon (dropped); a 5h-old H1 is < 48h (kept)."""
+    fvg = FVGOutput(zones=[
+        _zone("M1", created_at=_NOW - timedelta(hours=5), top=4000.5, bottom=4000.0),
+        _zone("H1", created_at=_NOW - timedelta(hours=5), top=4001.0, bottom=4000.0),
+    ], top_zones=[])
+    tfs = [z["tf"] for z in _payload_zones(fvg, price=4000.5, atr=2.0)]
+    assert "M1" not in tfs and "H1" in tfs
+
+
+def test_chart_cull_drops_far_zone_by_distance() -> None:
+    """Price 4100, zone ~4000 → ~100 pts > 25×ATR(2)=50 → dropped."""
+    fvg = FVGOutput(zones=[_zone("H1", created_at=_NOW, top=4001.0, bottom=4000.0, rank=9)], top_zones=[])
+    assert _payload_zones(fvg, price=4100.0, atr=2.0) == []
+
+
+def test_chart_cull_keeps_near_recent_zone() -> None:
+    fvg = FVGOutput(zones=[_zone("H1", created_at=_NOW, top=4001.0, bottom=4000.0, rank=9)], top_zones=[])
+    assert len(_payload_zones(fvg, price=4002.0, atr=2.0)) == 1
+
+
+def test_chart_cull_caps_per_tf_by_rank() -> None:
+    """10 near M1 zones → keep the top _FVG_MAX_PER_TF by rank_score."""
+    from xauusd_bot.viz.overlay_writer import _FVG_MAX_PER_TF
+    zones = [
+        _zone("M1", created_at=_NOW, top=4000.0 + i * 0.1 + 0.05, bottom=4000.0 + i * 0.1, rank=float(i))
+        for i in range(10)
+    ]
+    kept = _payload_zones(FVGOutput(zones=zones, top_zones=[]), price=4000.5, atr=5.0)
+    assert len(kept) == _FVG_MAX_PER_TF
+    kept_ranks = sorted((z["rank_score"] for z in kept), reverse=True)
+    assert kept_ranks == [9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0]
+
+
+def test_chart_cull_distance_uses_extended_bottom() -> None:
+    """Distance is measured to the EFFECTIVE demand edge (extended_bottom), not raw bottom."""
+    # price 3995 is inside [extended_bottom 3990, top 4000] → dist 0 → kept. Against the
+    # raw bottom 3999 it would be 4 pts away > 25×ATR(0.1)=2.5 → would be dropped.
+    fvg = FVGOutput(zones=[
+        _zone("H1", created_at=_NOW, top=4000.0, bottom=3999.0, ext_bottom=3990.0, rank=9),
+    ], top_zones=[])
+    assert len(_payload_zones(fvg, price=3995.0, atr=0.1)) == 1
+
+
+def test_chart_cull_noop_without_price() -> None:
+    """No current_price → distance cull skipped (age/count still apply); recent zone kept."""
+    fvg = FVGOutput(zones=[_zone("H1", created_at=_NOW, top=4001.0, bottom=4000.0)], top_zones=[])
+    assert len(_payload_zones(fvg, price=None, atr=None)) == 1
 
 
 # ---------------------------------------------------------------- write
