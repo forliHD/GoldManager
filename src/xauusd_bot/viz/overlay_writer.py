@@ -99,9 +99,7 @@ def _cull_chart_fvg_zones(
         if age_h > _FVG_MAX_AGE_H.get(z.tf, 48.0):  # unknown tf → generous H1 cap
             continue
         if current_price is not None:
-            bull = z.type.value == "bullish"
-            low = z.extended_bottom if (bull and z.extended_bottom is not None) else z.bottom
-            high = z.extended_top if (not bull and z.extended_top is not None) else z.top
+            low, high = z.effective_range
             if low > high:
                 low, high = high, low
             if current_price > high:

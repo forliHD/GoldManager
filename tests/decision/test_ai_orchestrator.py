@@ -78,8 +78,8 @@ def _settings(**overrides) -> Settings:
         "ai_layer_enabled": True,
         "ai_layer_score_threshold": 65,
         "ai_layer_zdr": True,
-        # Keep the retry tests at the historical 2 attempts (1 retry) and no
-        # backoff sleep; production now defaults to 3.
+        # Pin the retry tests to 2 attempts (1 retry) and no backoff sleep —
+        # matches the production default (ai_layer_max_attempts=2).
         "ai_layer_max_attempts": 2,
         "ai_layer_retry_backoff_seconds": 0.0,
     }

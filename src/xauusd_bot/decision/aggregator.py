@@ -191,14 +191,13 @@ def _htf_zone_bias(fvg: Any, price: Any) -> tuple[int, str]:
     for z in fvg.zones:
         if z.tf != "H1" or z.status.value not in ("open", "partially_mitigated"):
             continue
+        low, high = z.effective_range
+        if not low <= px <= high:
+            continue
         if z.type.value == "bullish":
-            low = z.extended_bottom if z.extended_bottom is not None else z.bottom
-            if low <= px <= z.top:
-                demand = f"price_in_H1_demand[{low:.2f},{z.top:.2f}]"
+            demand = f"price_in_H1_demand[{low:.2f},{high:.2f}]"
         else:
-            high = z.extended_top if z.extended_top is not None else z.top
-            if z.bottom <= px <= high:
-                supply = f"price_in_H1_supply[{z.bottom:.2f},{high:.2f}]"
+            supply = f"price_in_H1_supply[{low:.2f},{high:.2f}]"
     # Price inside BOTH a demand and a supply zone is genuinely ambiguous → no
     # confident one-directional bias (and no momentum suppression). Let the
     # zone COUNT / other engines decide rather than picking the first match.
@@ -211,7 +210,9 @@ def _htf_zone_bias(fvg: Any, price: Any) -> tuple[int, str]:
     return 0, ""
 
 
-def _score_h1_zone(fvg: Any, price: Any = None) -> tuple[float, str, int]:
+def _score_h1_zone(
+    fvg: Any, price: Any = None, zone_bias: tuple[int, str] | None = None
+) -> tuple[float, str, int]:
     """Map FVG H1 zones → (0-100, reasoning, direction_bias).
 
     Plan §8: H1 is the primary zone timeframe. ``open`` AND ``partially_mitigated``
@@ -219,6 +220,10 @@ def _score_h1_zone(fvg: Any, price: Any = None) -> tuple[float, str, int]:
     price sits inside a live zone that location drives the direction (a
     demand-bounce long / supply-rejection short); otherwise the bull/bear count
     of live zones is the bias.
+
+    ``zone_bias`` is the precomputed :func:`_htf_zone_bias` result; pass it to
+    avoid recomputing when the caller already needs it (see ``aggregate``). When
+    ``None`` it is computed here.
     """
 
     if fvg is None:
@@ -245,7 +250,7 @@ def _score_h1_zone(fvg: Any, price: Any = None) -> tuple[float, str, int]:
 
     # Price inside a live H1 zone is the strongest directional signal — it sets
     # the bias and adds in-zone confluence, overriding the raw zone count.
-    zbias, zreason = _htf_zone_bias(fvg, price)
+    zbias, zreason = zone_bias if zone_bias is not None else _htf_zone_bias(fvg, price)
     if zbias != 0:
         direction = zbias
         base += 10
@@ -561,9 +566,12 @@ class FeatureAggregator:
         """
 
         ts = bundle.ts
+        # In-zone H1 bias is needed twice (the h1_zone score below + the momentum
+        # suppression further down). Compute it once and thread it through.
+        zone_bias = _htf_zone_bias(bundle.fvg, bundle.price)
         # 1. Per-engine raw subscore, reasoning, direction_bias.
         raw_subscores: dict[str, tuple[float, str, int]] = {
-            "h1_zone": _score_h1_zone(bundle.fvg, bundle.price),
+            "h1_zone": _score_h1_zone(bundle.fvg, bundle.price, zone_bias=zone_bias),
             "m5_zone": _score_m5_zone(bundle.fvg),
             "triple_vwap": _score_triple_vwap(bundle.vwap),
             "htf_volume_profile": _score_htf_volume_profile(bundle.volume_range),
@@ -590,7 +598,7 @@ class FeatureAggregator:
         # into supply) is the SETUP, not a reversal — don't let momentum's bias
         # fight a demand-bounce. When price is inside a live H1 zone, zero the
         # momentum direction if it opposes the in-zone bias.
-        zbias, _zreason = _htf_zone_bias(bundle.fvg, bundle.price)
+        zbias, _zreason = zone_bias
         if zbias != 0:
             m_score, m_reason, m_dir = raw_subscores["momentum"]
             if m_dir == -zbias:

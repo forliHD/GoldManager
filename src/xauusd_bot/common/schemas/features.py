@@ -269,6 +269,37 @@ class FVGZone(BaseModel):
         ),
     )
 
+    @property
+    def effective_low(self) -> float:
+        """Lower edge of the zone's tradeable range, honouring the leg extension.
+
+        A demand zone (bullish) reaches DOWN to ``extended_bottom`` when set; a
+        supply zone (bearish) keeps its raw ``bottom`` (it extends UP, not down).
+        """
+        if self.type == FVGType.BULLISH and self.extended_bottom is not None:
+            return self.extended_bottom
+        return self.bottom
+
+    @property
+    def effective_high(self) -> float:
+        """Upper edge of the zone's tradeable range, honouring the leg extension.
+
+        A supply zone (bearish) reaches UP to ``extended_top`` when set; a demand
+        zone (bullish) keeps its raw ``top`` (it extends DOWN, not up).
+        """
+        if self.type == FVGType.BEARISH and self.extended_top is not None:
+            return self.extended_top
+        return self.top
+
+    @property
+    def effective_range(self) -> tuple[float, float]:
+        """``(effective_low, effective_high)`` — the type-gated tradeable range.
+
+        Bullish demand: ``[extended_bottom or bottom, top]``.
+        Bearish supply: ``[bottom, extended_top or top]``.
+        """
+        return self.effective_low, self.effective_high
+
 
 class FVGOutput(BaseModel):
     """Output of :class:`xauusd_bot.features.fvg.FVGEngine`."""

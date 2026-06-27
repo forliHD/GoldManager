@@ -448,8 +448,9 @@ class OpenRouterClient:
                 f"{response.text[:200]}"
             )
         if response.status_code >= 400:
-            # 4xx other than auth: likely malformed request or rate-limit.
-            # Surface as a generic LLMCallError — the orchestrator will retry once.
+            # 4xx other than auth: likely malformed request or rate-limit. Surface
+            # as a generic LLMCallError — the orchestrator does NOT retry these
+            # (only fast validation/zone errors retry; LLMCallError → rule fallback).
             raise LLMCallError(
                 f"OpenRouter client error {response.status_code}: "
                 f"{response.text[:200]}"

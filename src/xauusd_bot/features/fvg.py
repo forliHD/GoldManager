@@ -149,12 +149,10 @@ def _refine_mitigation(
         # invalidation rule (a demand is invalid only after an H1 close below the
         # effective edge), which the old raw-edge test contradicted by killing a
         # zone on the first tap. With no extension the behaviour is unchanged.
+        # The "far edge" is the type-gated extended edge: effective_low for a
+        # demand (bullish) zone, effective_high for a supply (bearish) zone.
         far_edge = (
-            zone.extended_bottom
-            if (zone.type == FVGType.BULLISH and zone.extended_bottom is not None)
-            else zone.extended_top
-            if (zone.type == FVGType.BEARISH and zone.extended_top is not None)
-            else (zone.bottom if zone.type == FVGType.BULLISH else zone.top)
+            zone.effective_low if zone.type == FVGType.BULLISH else zone.effective_high
         )
         fully_mitigated = False
         partial_mitigation = False
