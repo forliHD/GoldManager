@@ -11,6 +11,15 @@ place for components that cannot yet be patched.
 `mt5linux`. Tracked in
 [#8](https://github.com/forliHD/GoldManager/issues/8).
 
+> **2026-06-28 — Dependabot alert #1 dismissed as `tolerable_risk`.** Re-verified
+> the blocker still holds: `mt5linux` is at `1.0.3` and still hard-pins
+> `rpyc==5.2.3`; no `rpyc>=6`-compatible release exists. The vulnerable side is
+> the bundled *server*, so a client-side bump cannot fix it and would break the
+> 5↔6-incompatible bridge protocol. Loopback-only publish
+> (`127.0.0.1:8001:8001`) confirmed in `docker-compose.mt5.yml`. The alert will
+> be re-opened and rpyc bumped in lockstep (see Resolution path below) once
+> upstream ships `rpyc>=6` support.
+
 ### The advisory
 
 [GHSA-h5cg-53g7-gqjw](https://github.com/tomerfiliba-org/rpyc/security/advisories/GHSA-h5cg-53g7-gqjw)
