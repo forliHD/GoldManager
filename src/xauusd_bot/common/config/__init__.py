@@ -521,6 +521,19 @@ class Settings(BaseSettings):
         ge=0,
         description="Half-width of the zone band as a multiple of ATR (when no explicit entry zone).",
     )
+    entry_zone_gate_enabled: bool = Field(
+        default=True,
+        description="Honour the LLM's proposed entry zone (LLMIntent.entry_min/entry_max): refuse a "
+        "long above entry_max (premium chase) or a short below entry_min, letting a later bar fill "
+        "once price reaches the zone. Only ever blocks an entry — never moves price or size. "
+        "Execution previously ignored the zone and filled at the signal-bar close.",
+    )
+    entry_zone_gate_tol_atr_mult: float = Field(
+        default=0.0,
+        ge=0,
+        description="Tolerance for the entry-zone gate as a multiple of ATR: a fill this far past the "
+        "rejected bound is still allowed (0 = enforce the zone bound exactly).",
+    )
     # --- Spread block threshold (pips). RuleBasedFallback blocks entries
     # when AccountInfo.current_spread > spread_max_pips * 10 (XAUUSD pip = 10 points).
     spread_max_pips: float = Field(default=3.0, ge=0, description="Max spread in pips before blocking new entries.")

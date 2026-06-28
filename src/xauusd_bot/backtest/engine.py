@@ -61,30 +61,27 @@ import asyncio
 import json
 import math
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from decimal import ROUND_DOWN, Decimal
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 import structlog
-from pydantic import ConfigDict
 
 from xauusd_bot.backtest.models import FixedSlippage, FixedSpread, SlippageModel, SpreadModel
 from xauusd_bot.common.config import Settings
 from xauusd_bot.common.schemas.backtest import (
-    BacktestResult,
-    BacktestStats,
-    BreakdownEntry,
     _BAND_ORDER,
     _ENTRY_TYPE_ORDER,
     _SESSION_ORDER,
+    BacktestResult,
+    BacktestStats,
+    BreakdownEntry,
 )
 from xauusd_bot.common.schemas.decision import (
     DecisionAction,
     EntryType,
-    ScoreBand,
     TradeQualification,
 )
 from xauusd_bot.common.schemas.execution import (
@@ -106,13 +103,10 @@ from xauusd_bot.common.schemas.journal import (
 from xauusd_bot.connectors.paper_broker import PaperBroker
 from xauusd_bot.connectors.replay import ReplayConnector
 from xauusd_bot.connectors.schemas import (
-    AccountInfo,
     Bar,
-    OrderRequest,
     OrderResult,
     OrderSide,
     OrderType,
-    SymbolSpec,
 )
 from xauusd_bot.decision import (
     FeatureAggregator,
@@ -128,6 +122,7 @@ from xauusd_bot.execution import (
     StopManager,
     TakeProfitManager,
 )
+from xauusd_bot.execution.entry_gate import check_entry_zone
 from xauusd_bot.execution.zone_lock import ZoneRegistry, band_from_price
 from xauusd_bot.features._indicators import atr as compute_atr
 from xauusd_bot.features._indicators import bars_to_df
@@ -151,7 +146,6 @@ from xauusd_bot.journal import (
     compute_session_stats,
     compute_setup_breakdown,
     compute_sharpe,
-    compute_sortino,
 )
 
 log = structlog.get_logger(__name__)
@@ -310,6 +304,10 @@ class BacktestEngine:
         self._zones = ZoneRegistry()
         self._journal: JournalStore | JournalSink = journal or InMemoryJournalStore()
         self._settings = settings or Settings()  # type: ignore[call-arg]
+        # Entry-zone gate: honour the AI's proposed entry zone instead of
+        # chasing at the bar close (mirrors the live ExecutionPipeline).
+        self._entry_gate = bool(getattr(self._settings, "entry_zone_gate_enabled", True))
+        self._entry_gate_tol_mult = float(getattr(self._settings, "entry_zone_gate_tol_atr_mult", 0.0))
         self._slippage = slippage_model or FixedSlippage(Decimal("0.50"))
         self._spread = spread_model or FixedSpread(Decimal("0.30"))
         self._periods_per_year = periods_per_year
@@ -847,6 +845,33 @@ class BacktestEngine:
         )
         entry_price_close = bar.close
 
+        # --- entry-zone gate: honour the AI's proposed entry zone instead of
+        # chasing at the bar close. Logs the zone-vs-price eval for every entry
+        # attempt (gated or not) so the backtest reveals how often / by how much
+        # the signal-bar price sat outside the proposed zone.
+        intent = getattr(decision, "llm_intent", None)
+        if self._entry_gate and intent is not None:
+            tol = self._entry_gate_tol_mult * (float(bundle.atr) if bundle.atr else 0.0)
+            gate_reason = check_entry_zone(
+                is_long=(side == OrderSide.BUY),
+                price=float(entry_price_close),
+                entry_min=intent.entry_min,
+                entry_max=intent.entry_max,
+                tol=tol,
+            )
+            log.info(
+                "backtest_entry_zone_eval",
+                ts=bar.time.isoformat(),
+                side=("long" if side == OrderSide.BUY else "short"),
+                price=float(entry_price_close),
+                entry_min=intent.entry_min,
+                entry_max=intent.entry_max,
+                gated=bool(gate_reason),
+                reason=gate_reason,
+            )
+            if gate_reason is not None:
+                return
+
         # --- zone-lock: one entry per zone/setup (block stacked entries).
         zside = "long" if side == OrderSide.BUY else "short"
         z_low, z_high = band_from_price(
@@ -868,7 +893,6 @@ class BacktestEngine:
         # clamped by the Phase-A floor, exactly like the live ExecutionPipeline).
         from xauusd_bot.execution.stops import parse_sl_from_invalidations
 
-        intent = getattr(decision, "llm_intent", None)
         sl_hint: Decimal | None = None
         if intent is not None and intent.invalidations:
             lvl = parse_sl_from_invalidations(

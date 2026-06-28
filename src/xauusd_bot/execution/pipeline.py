@@ -59,6 +59,7 @@ from xauusd_bot.execution import (
     StopManager,
     TakeProfitManager,
 )
+from xauusd_bot.execution.entry_gate import check_entry_zone
 from xauusd_bot.execution.position_manager import ManagedPosition
 from xauusd_bot.execution.stops import parse_sl_from_invalidations
 from xauusd_bot.execution.zone_lock import ZoneRegistry, band_from_price
@@ -131,6 +132,8 @@ class ExecutionPipeline:
         # at worst permits one extra entry; persist to Redis later if needed.
         self._zone_lock = bool(getattr(settings, "zone_lock_enabled", True))
         self._zone_atr_mult = float(getattr(settings, "zone_lock_atr_mult", 0.5))
+        self._entry_gate = bool(getattr(settings, "entry_zone_gate_enabled", True))
+        self._entry_gate_tol_mult = float(getattr(settings, "entry_zone_gate_tol_atr_mult", 0.0))
         self.zones = ZoneRegistry()
         self._zone_by_ticket: dict[str, int] = {}
         self._last_bar_ts: datetime | None = None
@@ -188,6 +191,23 @@ class ExecutionPipeline:
         )
         entry_price = Decimal(ref_price)
 
+        # --- Entry-zone gate: honour the AI's proposed entry zone instead of
+        # chasing at the signal-bar price (a long above entry_max / a short
+        # below entry_min is refused; a later bar fills once price reaches the
+        # zone). Only ever blocks — never moves price or size.
+        intent = decision.llm_intent
+        if self._entry_gate and intent is not None:
+            tol = self._entry_gate_tol_mult * float(bundle.atr or 0.0)
+            gate_reason = check_entry_zone(
+                is_long=(side == OrderSide.BUY),
+                price=float(entry_price),
+                entry_min=intent.entry_min,
+                entry_max=intent.entry_max,
+                tol=tol,
+            )
+            if gate_reason is not None:
+                return ExecutionOutcome(submitted=False, blocked_reason=gate_reason)
+
         # --- Zone-lock: one entry per zone/setup (block stacked entries).
         zside = "long" if side == OrderSide.BUY else "short"
         z_low, z_high = band_from_price(
@@ -207,7 +227,6 @@ class ExecutionPipeline:
         # (invalidation level) and TP R-targets; the deterministic managers
         # turn them into prices, ALWAYS clamped by the Phase-A SL floor and the
         # max-risk cap below (I-4: the AI never sets lots or bypasses a floor).
-        intent = decision.llm_intent
         sl_hint: Decimal | None = None
         if intent is not None and intent.invalidations:
             level = parse_sl_from_invalidations(intent.invalidations, side, float(entry_price))
