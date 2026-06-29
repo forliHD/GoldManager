@@ -962,10 +962,12 @@ class BacktestEngine:
         self._risk.record_trade(now=bar.time)
 
         # --- Persist the synthetic market order.
-        # Broker backstop TP = furthest target (tp3 → tp2 → tp1); the bot-side
+        # Broker backstop TP = the actually-furthest target (max long / min
+        # short), NOT blindly tp3 — robust to a mis-ordered TP tier. The bot-side
         # partials/runner in _walk_open_positions handle TP1/TP2 (mirrors live,
         # where attaching tp1 for full volume pre-empted the scale-out).
-        backstop_tp = stops.tp3_price or stops.tp2_price or stops.tp1_price
+        _tps = [p for p in (stops.tp1_price, stops.tp2_price, stops.tp3_price) if p is not None]
+        backstop_tp = (max(_tps) if side == OrderSide.BUY else min(_tps)) if _tps else None
         order_env = self._make_market_order(
             side=side,
             volume=sizing.volume_lots,
