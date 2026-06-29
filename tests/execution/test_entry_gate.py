@@ -35,6 +35,8 @@ from xauusd_bot.execution.entry_gate import (
     ENTRY_ABOVE_ZONE,
     ENTRY_BELOW_ZONE,
     check_entry_zone,
+    pending_limit_for,
+    pending_should_fill,
 )
 from xauusd_bot.execution.pipeline import ExecutionPipeline
 
@@ -93,6 +95,35 @@ def test_tolerance_allows_a_hair_past_the_bound():
 
 def test_negative_tolerance_is_treated_as_zero():
     assert check_entry_zone(is_long=True, price=4185.4, entry_min=4180.0, entry_max=4185.0, tol=-5.0) == ENTRY_ABOVE_ZONE
+
+
+# ============================================================ defer predicates
+
+
+def test_pending_limit_is_entry_max_for_long():
+    assert pending_limit_for(is_long=True, entry_min=4180.0, entry_max=4185.0) == 4185.0
+
+
+def test_pending_limit_is_entry_min_for_short():
+    assert pending_limit_for(is_long=False, entry_min=4180.0, entry_max=4185.0) == 4180.0
+
+
+def test_pending_limit_none_when_bound_open_ended():
+    # Long with no entry_max → no concrete level to rest a limit at.
+    assert pending_limit_for(is_long=True, entry_min=4180.0, entry_max=None) is None
+    assert pending_limit_for(is_long=False, entry_min=None, entry_max=4185.0) is None
+
+
+def test_long_limit_fills_when_bar_trades_down_to_it():
+    assert pending_should_fill(is_long=True, limit=4185.0, bar_low=4184.0, bar_high=4188.0) is True
+    assert pending_should_fill(is_long=True, limit=4185.0, bar_low=4186.0, bar_high=4190.0) is False
+    # Exactly touching the limit fills.
+    assert pending_should_fill(is_long=True, limit=4185.0, bar_low=4185.0, bar_high=4187.0) is True
+
+
+def test_short_limit_fills_when_bar_trades_up_to_it():
+    assert pending_should_fill(is_long=False, limit=4185.0, bar_low=4183.0, bar_high=4186.0) is True
+    assert pending_should_fill(is_long=False, limit=4185.0, bar_low=4180.0, bar_high=4184.0) is False
 
 
 # ============================================================ pipeline wiring

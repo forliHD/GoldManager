@@ -534,6 +534,18 @@ class Settings(BaseSettings):
         description="Tolerance for the entry-zone gate as a multiple of ATR: a fill this far past the "
         "rejected bound is still allowed (0 = enforce the zone bound exactly).",
     )
+    entry_zone_defer_enabled: bool = Field(
+        default=True,
+        description="When the entry-zone gate blocks a chase, arm a resting limit at the proposed bound "
+        "(entry_max for a long / entry_min for a short) instead of dropping the entry, so a later bar "
+        "fills at the discount once price pulls back. Requires entry_zone_gate_enabled.",
+    )
+    entry_zone_defer_minutes: int = Field(
+        default=60,
+        ge=1,
+        description="Validity window (minutes) for a deferred entry: the armed limit expires this long "
+        "after it was armed if price never reaches the zone.",
+    )
     # --- Spread block threshold (pips). RuleBasedFallback blocks entries
     # when AccountInfo.current_spread > spread_max_pips * 10 (XAUUSD pip = 10 points).
     spread_max_pips: float = Field(default=3.0, ge=0, description="Max spread in pips before blocking new entries.")

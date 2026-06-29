@@ -69,3 +69,26 @@ def check_entry_zone(
         if entry_min is not None and price < entry_min - tol:
             return ENTRY_BELOW_ZONE
     return None
+
+
+def pending_limit_for(
+    *, is_long: bool, entry_min: float | None, entry_max: float | None
+) -> float | None:
+    """The limit price at which a deferred entry should fill.
+
+    A gated long wants the *worst acceptable* discount, ``entry_max`` (fill
+    anywhere from there down). A gated short wants ``entry_min`` (fill from
+    there up). Returns ``None`` when the relevant bound is open-ended — there
+    is then no concrete level to rest a limit at, so the entry is simply
+    dropped rather than deferred.
+    """
+    return entry_max if is_long else entry_min
+
+
+def pending_should_fill(*, is_long: bool, limit: float, bar_low: float, bar_high: float) -> bool:
+    """Whether a resting limit at ``limit`` fills within this bar's range.
+
+    Long  → fills when the bar trades down to/through the limit (``bar_low <= limit``).
+    Short → fills when the bar trades up to/through the limit (``bar_high >= limit``).
+    """
+    return bar_low <= limit if is_long else bar_high >= limit

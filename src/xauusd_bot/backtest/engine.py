@@ -61,6 +61,7 @@ import asyncio
 import json
 import math
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
@@ -122,7 +123,11 @@ from xauusd_bot.execution import (
     StopManager,
     TakeProfitManager,
 )
-from xauusd_bot.execution.entry_gate import check_entry_zone
+from xauusd_bot.execution.entry_gate import (
+    check_entry_zone,
+    pending_limit_for,
+    pending_should_fill,
+)
 from xauusd_bot.execution.zone_lock import ZoneRegistry, band_from_price
 from xauusd_bot.features._indicators import atr as compute_atr
 from xauusd_bot.features._indicators import bars_to_df
@@ -162,6 +167,25 @@ _PERIODS_PER_YEAR_DEFAULT = 252 * 28
 # Fixed ATR floor for the volatility test inside the bundle build
 # helper. Same convention as the journal_smoke CLI.
 _BUNDLE_ATR_FLOOR = 0.5
+
+
+@dataclass
+class PendingEntry:
+    """A deferred entry armed when the entry-zone gate blocked a chase.
+
+    Holds the LLM decision/qualification captured at arm time plus a resting
+    limit price; a later bar that trades into the zone fills it at ``limit``
+    (SL/TP re-derived from that fill), and it expires at ``deadline`` if price
+    never reaches the zone.
+    """
+
+    side: OrderSide
+    limit: Decimal
+    decision: Any
+    score: Any
+    qualification: TradeQualification
+    deadline: datetime
+    zone: tuple[float | None, float | None]
 
 
 # ----------------------------------------------------------------- protocols
@@ -308,6 +332,9 @@ class BacktestEngine:
         # chasing at the bar close (mirrors the live ExecutionPipeline).
         self._entry_gate = bool(getattr(self._settings, "entry_zone_gate_enabled", True))
         self._entry_gate_tol_mult = float(getattr(self._settings, "entry_zone_gate_tol_atr_mult", 0.0))
+        self._entry_defer = bool(getattr(self._settings, "entry_zone_defer_enabled", True))
+        self._defer_minutes = int(getattr(self._settings, "entry_zone_defer_minutes", 60))
+        self._pending: PendingEntry | None = None
         self._slippage = slippage_model or FixedSlippage(Decimal("0.50"))
         self._spread = spread_model or FixedSpread(Decimal("0.30"))
         self._periods_per_year = periods_per_year
@@ -533,6 +560,7 @@ class BacktestEngine:
         # Track per-position state for the close logic.
         open_positions: dict[str, dict[str, Any]] = {}
         self._zones.reset()  # zone-lock state is per-run (WalkForward reuses the engine)
+        self._pending = None  # deferred-entry state is per-run too
         prev_bar: Bar | None = None
         for j in range(start_idx, end_idx + 1):
             if max_bars is not None and n_bars_processed >= max_bars:
@@ -625,6 +653,13 @@ class BacktestEngine:
                 open_positions=open_positions,
                 bundle=bundle,
                 in_news_blackout=bool(bundle.news.in_blackout_flag) if bundle.news else False,
+            )
+
+            # 3b. Fill or expire a deferred (limit) entry the gate armed on an
+            # earlier bar — before considering a fresh entry, so the older
+            # in-zone intent gets priority over a new chase.
+            self._check_pending_fill(
+                bar=bar, bundle=bundle, snapshot_id=snapshot_id, open_positions=open_positions
             )
 
             # 4. Try to open a trade if qualified (managed from the next bar on).
@@ -829,6 +864,48 @@ class BacktestEngine:
 
     # ----------------------------------------------------------- internals: trade lifecycle
 
+    def _check_pending_fill(
+        self,
+        *,
+        bar: Bar,
+        bundle: FeatureSnapshotBundle,
+        snapshot_id: Any,
+        open_positions: dict[str, dict[str, Any]],
+    ) -> None:
+        """Fill or expire a deferred (limit) entry on this bar.
+
+        Armed by the entry-zone gate when it blocked a chase: a later bar that
+        trades into the proposed zone fills at the limit (SL/TP re-derived from
+        the fill in :meth:`_try_open_trade`); otherwise the intent expires at
+        its deadline. Called after the open-position walk so a freshly filled
+        entry is first managed on the NEXT bar (no same-bar lookahead).
+        """
+        p = self._pending
+        if p is None:
+            return
+        is_long = p.side == OrderSide.BUY
+        sstr = "long" if is_long else "short"
+        if bar.time > p.deadline:
+            log.info("backtest_entry_pending_expired", ts=bar.time.isoformat(), side=sstr, limit=float(p.limit))
+            self._pending = None
+            return
+        if pending_should_fill(
+            is_long=is_long, limit=float(p.limit), bar_low=float(bar.low), bar_high=float(bar.high)
+        ):
+            log.info("backtest_entry_pending_filled", ts=bar.time.isoformat(), side=sstr, limit=float(p.limit))
+            self._pending = None
+            self._try_open_trade(
+                bar=bar,
+                bundle=bundle,
+                decision=p.decision,
+                score=p.score,
+                qualification=p.qualification,
+                snapshot_id=snapshot_id,
+                open_positions=open_positions,
+                entry_price_override=p.limit,
+                skip_gate=True,
+            )
+
     def _try_open_trade(
         self,
         *,
@@ -839,21 +916,27 @@ class BacktestEngine:
         qualification: TradeQualification,
         snapshot_id: Any,
         open_positions: dict[str, dict[str, Any]],
+        entry_price_override: Decimal | None = None,
+        skip_gate: bool = False,
     ) -> None:
         side = (
             OrderSide.BUY if qualification.final_action == DecisionAction.ENTER_LONG else OrderSide.SELL
         )
-        entry_price_close = bar.close
+        # entry_price_override is set when a deferred (limit) entry fills at a
+        # later bar; otherwise we use this bar's close (market entry).
+        entry_price_close = bar.close if entry_price_override is None else entry_price_override
+        is_long = side == OrderSide.BUY
 
         # --- entry-zone gate: honour the AI's proposed entry zone instead of
         # chasing at the bar close. Logs the zone-vs-price eval for every entry
         # attempt (gated or not) so the backtest reveals how often / by how much
-        # the signal-bar price sat outside the proposed zone.
+        # the signal-bar price sat outside the proposed zone. skip_gate is set
+        # for a deferred fill (it IS the in-zone entry the gate asked for).
         intent = getattr(decision, "llm_intent", None)
-        if self._entry_gate and intent is not None:
+        if not skip_gate and self._entry_gate and intent is not None:
             tol = self._entry_gate_tol_mult * (float(bundle.atr) if bundle.atr else 0.0)
             gate_reason = check_entry_zone(
-                is_long=(side == OrderSide.BUY),
+                is_long=is_long,
                 price=float(entry_price_close),
                 entry_min=intent.entry_min,
                 entry_max=intent.entry_max,
@@ -862,7 +945,7 @@ class BacktestEngine:
             log.info(
                 "backtest_entry_zone_eval",
                 ts=bar.time.isoformat(),
-                side=("long" if side == OrderSide.BUY else "short"),
+                side=("long" if is_long else "short"),
                 price=float(entry_price_close),
                 entry_min=intent.entry_min,
                 entry_max=intent.entry_max,
@@ -870,6 +953,30 @@ class BacktestEngine:
                 reason=gate_reason,
             )
             if gate_reason is not None:
+                # Defer: arm a resting limit at the proposed bound so a later
+                # bar fills the discount, instead of dropping the entry.
+                limit = (
+                    pending_limit_for(is_long=is_long, entry_min=intent.entry_min, entry_max=intent.entry_max)
+                    if self._entry_defer
+                    else None
+                )
+                if limit is not None:
+                    self._pending = PendingEntry(
+                        side=side,
+                        limit=Decimal(str(limit)),
+                        decision=decision,
+                        score=score,
+                        qualification=qualification,
+                        deadline=bar.time + timedelta(minutes=self._defer_minutes),
+                        zone=(intent.entry_min, intent.entry_max),
+                    )
+                    log.info(
+                        "backtest_entry_deferred",
+                        ts=bar.time.isoformat(),
+                        side=("long" if is_long else "short"),
+                        limit=float(limit),
+                        deadline=self._pending.deadline.isoformat(),
+                    )
                 return
 
         # --- zone-lock: one entry per zone/setup (block stacked entries).
