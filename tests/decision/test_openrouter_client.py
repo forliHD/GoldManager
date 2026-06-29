@@ -454,6 +454,24 @@ class TestClientErrorPaths:
             await client.complete(system_prompt="sys", user_payload={"x": 1})
 
     @pytest.mark.asyncio
+    async def test_raises_validation_error_on_null_content(self, fake_http, tmp_path):
+        # Some models / reasoning-only / refusal turns return "content": null.
+        # Must raise the handled LLMValidationError, not crash on None.strip().
+        body = {"choices": [{"message": {"role": "assistant", "content": None}}]}
+        fake_http(response=_FakeResponse(200, json_data=body))
+        client = OpenRouterClient(settings=_make_settings(), prompt_path=_prompt_path(tmp_path))
+        with pytest.raises(LLMValidationError):
+            await client.complete(system_prompt="sys", user_payload={"x": 1})
+
+    @pytest.mark.asyncio
+    async def test_raises_validation_error_on_empty_content(self, fake_http, tmp_path):
+        body = {"choices": [{"message": {"content": "   "}}]}
+        fake_http(response=_FakeResponse(200, json_data=body))
+        client = OpenRouterClient(settings=_make_settings(), prompt_path=_prompt_path(tmp_path))
+        with pytest.raises(LLMValidationError):
+            await client.complete(system_prompt="sys", user_payload={"x": 1})
+
+    @pytest.mark.asyncio
     async def test_raises_validation_error_on_pydantic_failure(self, fake_http, tmp_path):
         body = {
             "choices": [{"message": {"content": json.dumps({"decision": "garbage", "confidence": 70, "comment": ""})}}],
