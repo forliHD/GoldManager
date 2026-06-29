@@ -471,6 +471,15 @@ class OpenRouterClient:
                 f"OpenRouter response missing choices[0].message.content: {data}"
             ) from exc
 
+        # ``content`` can be present but null/empty: some models (and reasoning-
+        # only / refusal turns) return ``"content": null``. Treat that as a
+        # validation failure so the caller retries / falls back, instead of an
+        # AttributeError on ``None.strip()`` that crashes the whole decision.
+        if not content_str or not content_str.strip():
+            raise LLMValidationError(
+                f"OpenRouter message content is empty/null: {str(data)[:200]}"
+            )
+
         try:
             content_obj = _loads_lenient(content_str)
         except json.JSONDecodeError as exc:

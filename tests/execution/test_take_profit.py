@@ -239,7 +239,9 @@ def test_long_tp1_falls_back_to_1r_when_no_liquidity() -> None:
 def test_long_tp3_uses_weekly_vah_over_yearly() -> None:
     spec = make_symbol_spec()
     mgr = TakeProfitManager(spec=spec)
-    bundle = _bundle_with_htf_vah(vah=2385.0)
+    # Weekly VAH must sit BEYOND TP2 (=2R=2385) to be used as the runner, so the
+    # fixture places it at 2390 (the old 2385 == TP2 is now correctly rejected).
+    bundle = _bundle_with_htf_vah(vah=2390.0)
     bundle.liquidity = LiquidityEngineOutput(
         tp_targets_above=[
             LiquidityZone(
@@ -254,7 +256,7 @@ def test_long_tp3_uses_weekly_vah_over_yearly() -> None:
         sl_price=Decimal("2370.00"),
         bundle=bundle,
     )
-    assert result.tp3_price == Decimal("2385.00")
+    assert result.tp3_price == Decimal("2390.00")  # weekly VAH (beyond TP2), over yearly
     assert any("weekly_vah" in r for r in result.reasoning)
 
 
@@ -381,3 +383,79 @@ def test_result_contains_reasoning_lines() -> None:
     assert len(result.reasoning) >= 3
     for line in result.reasoning:
         assert "TP" in line
+
+
+# ----------------------------------------------------------------- TP3 must be beyond TP2
+
+
+def _bundle_htf_all(*, vah: float, val: float, vpoc: float) -> FeatureSnapshotBundle:
+    """A bundle whose weekly/monthly/yearly VP profiles all carry the SAME
+    (vah, val, vpoc) — so the weekly profile decides TP3 with no cross-profile
+    interference. No liquidity / FVG → TP1=1R, TP2=2R deterministically.
+    """
+
+    def _prof(name: VolumeProfileName, n: int) -> VolumeProfileOutput:
+        return VolumeProfileOutput(
+            name=name,
+            state=VolumeProfileState.DEVELOPING,
+            period_start=datetime(2026, 4, 13, tzinfo=UTC),
+            period_end=datetime(2026, 4, 20, tzinfo=UTC),
+            bin_size=1.0,
+            vah=vah, vpoc=vpoc, val=val,
+            value_area_pct=0.70,
+            value_status=ValueAreaStatus.WITHIN_VALUE,
+            n_bars=n,
+        )
+
+    return FeatureSnapshotBundle(
+        ts=datetime(2026, 4, 15, 13, 30, tzinfo=UTC),
+        atr=0.5,
+        volume_range=VolumeRangeOutput(
+            weekly=_prof(VolumeProfileName.WEEKLY, 1440),
+            monthly=_prof(VolumeProfileName.MONTHLY, 40000),
+            yearly=_prof(VolumeProfileName.YEARLY, 200000),
+            cluster_within_atr=0.5,
+        ),
+    )
+
+
+# SHORT: entry 4058, sl 4066 → 1R=4050 (TP1), 2R=4042 (TP2), 3R=4034.
+
+
+def test_tp3_short_rejects_htf_inside_tp2_falls_back_to_3r() -> None:
+    # Reproduces the live bug: a weekly VAL at 4057.5 sits between entry and TP1
+    # (NOT beyond TP2). It must be rejected → TP3 = 3R (4034), strictly beyond TP2.
+    mgr = TakeProfitManager(spec=make_symbol_spec())
+    bundle = _bundle_htf_all(vah=4070.0, val=4057.5, vpoc=4055.0)
+    res = mgr.compute(OrderSide.SELL, Decimal("4058.00"), Decimal("4066.00"), bundle)
+    assert res.tp2_price == Decimal("4042.00")
+    assert res.tp3_price == Decimal("4034.00")  # 3R, NOT 4057.5
+    assert res.tp3_price < res.tp2_price  # strictly beyond TP2 for a short
+
+
+def test_tp3_short_uses_htf_when_beyond_tp2() -> None:
+    mgr = TakeProfitManager(spec=make_symbol_spec())
+    bundle = _bundle_htf_all(vah=4070.0, val=4030.0, vpoc=4055.0)  # VAL 4030 < TP2 4042
+    res = mgr.compute(OrderSide.SELL, Decimal("4058.00"), Decimal("4066.00"), bundle)
+    assert res.tp3_price == Decimal("4030.00")
+    assert res.tp3_price < res.tp2_price
+
+
+# LONG: entry 2375, sl 2370 → 1R=2380 (TP1), 2R=2385 (TP2), 3R=2390.
+
+
+def test_tp3_long_rejects_htf_inside_tp2_falls_back_to_3r() -> None:
+    mgr = TakeProfitManager(spec=make_symbol_spec())
+    bundle = _bundle_htf_all(vah=2378.0, val=2360.0, vpoc=2375.0)  # VAH 2378 < TP2 2385
+    res = mgr.compute(OrderSide.BUY, Decimal("2375.00"), Decimal("2370.00"), bundle)
+    assert res.tp2_price == Decimal("2385.00")
+    assert res.tp3_price == Decimal("2390.00")  # 3R, NOT 2378
+    assert res.tp3_price > res.tp2_price
+
+
+def test_tp3_long_uses_htf_when_beyond_tp2() -> None:
+    mgr = TakeProfitManager(spec=make_symbol_spec())
+    bundle = _bundle_htf_all(vah=2395.0, val=2360.0, vpoc=2375.0)  # VAH 2395 > TP2 2385
+    res = mgr.compute(OrderSide.BUY, Decimal("2375.00"), Decimal("2370.00"), bundle)
+    assert res.tp3_price == Decimal("2395.00")
+    assert res.tp3_price > res.tp2_price

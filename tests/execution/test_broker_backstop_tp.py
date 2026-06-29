@@ -129,3 +129,27 @@ def test_broker_tp_is_tp3_not_tp1():
     assert rec.request.tp == tp_plan.tp3_price
     assert tp_plan.tp3_price != tp_plan.tp1_price
     assert rec.request.tp > tp_plan.tp1_price  # long → furthest target is higher
+
+
+def test_backstop_is_furthest_even_if_tp3_is_misordered():
+    # Defensive: if a TP tier comes back mis-ordered (a near-entry tp3, the live
+    # bug shape), the broker backstop must still be the actually-furthest target
+    # (max for a long), never the near-entry tp3 that price would hit instantly.
+    pipeline = ExecutionPipeline(make_settings(), _FakeConnector())
+    rec = _RecordingOrderMgr()
+    pipeline.order_mgr = rec
+
+    entry = Decimal("4189.00")
+    bundle = _bundle()
+    real = pipeline.tp_mgr.compute(OrderSide.BUY, entry, Decimal("4185.00"), bundle, now=_TS)
+    # Force tp3 to sit just above entry — nearer than tp1/tp2.
+    bad = real.model_copy(update={"tp3_price": Decimal("4189.50")})
+    pipeline.tp_mgr.compute = lambda *a, **k: bad  # type: ignore[assignment]
+
+    outcome = pipeline.process(
+        _decision(), _score(), make_qualification(), bundle, ref_price=entry, now=_TS,
+    )
+    assert outcome.submitted is True
+    # Furthest = max(tp1, tp2, 4189.50) = tp2, NOT the near-entry tp3.
+    assert rec.request.tp == max(bad.tp1_price, bad.tp2_price)
+    assert rec.request.tp != bad.tp3_price

@@ -90,7 +90,11 @@ def _nearest_zone_below(
 
 
 def _htf_level(
-    bundle: FeatureSnapshotBundle, side: OrderSide, current_price: float
+    bundle: FeatureSnapshotBundle,
+    side: OrderSide,
+    current_price: float,
+    *,
+    beyond_price: float | None = None,
 ) -> tuple[float | None, str]:
     """Return the nearest HTF volume-profile level for the runner.
 
@@ -101,7 +105,9 @@ def _htf_level(
     3. **Yearly** profile: same.
 
     Within the chosen primary level, pick the **nearest** price on the
-    correct side of the current price.
+    correct side of ``beyond_price`` (the threshold the runner target must sit
+    past — e.g. TP2 — so TP3 is never nearer than TP2). Defaults to
+    ``current_price`` when not given.
 
     Returns
     -------
@@ -111,6 +117,8 @@ def _htf_level(
     if bundle.volume_range is None:
         return (None, "")
     vr = bundle.volume_range
+    # The runner level must sit BEYOND this threshold in the trade direction.
+    threshold = current_price if beyond_price is None else float(beyond_price)
 
     # Iterate profiles in priority order (weekly → monthly → yearly).
     # The first profile that has a usable level wins; if it has
@@ -122,14 +130,14 @@ def _htf_level(
         primary = profile.vah if side == OrderSide.BUY else profile.val
         candidates: list[tuple[float, str]] = []
         if primary is not None:
-            on_right = (side == OrderSide.BUY and primary > current_price) or (
-                side == OrderSide.SELL and primary < current_price
+            on_right = (side == OrderSide.BUY and primary > threshold) or (
+                side == OrderSide.SELL and primary < threshold
             )
             if on_right:
                 candidates.append((primary, primary_label))
         if profile.vpoc is not None:
-            on_right_vpoc = (side == OrderSide.BUY and profile.vpoc > current_price) or (
-                side == OrderSide.SELL and profile.vpoc < current_price
+            on_right_vpoc = (side == OrderSide.BUY and profile.vpoc > threshold) or (
+                side == OrderSide.SELL and profile.vpoc < threshold
             )
             if on_right_vpoc:
                 candidates.append((profile.vpoc, f"{profile.name.value}_vpoc"))
@@ -264,16 +272,26 @@ class TakeProfitManager:
             tp2_label = "2R"
         reasoning.append(f"TP2 = {tp2} ({tp2_label}, {self._tp2_pct:.0f}%)")
 
-        # --- TP3 / Runner: HTF volume level.
-        htf_price, htf_label = _htf_level(bundle, side, float(entry_price))
+        # --- TP3 / Runner: HTF volume level, but ALWAYS the furthest target.
+        # The runner level must sit BEYOND TP2 — otherwise the nearest HTF level
+        # can land between entry and TP1 (a short whose weekly VAL is 0.5pt below
+        # entry → TP3≈entry), and the broker backstop (= furthest target) then
+        # attaches a near-entry TP that price hits instantly. Pass TP2 as the
+        # floor so only a level past it qualifies; else fall back to 3R.
+        three_r = entry_price + (sl_distance * 3) if side == OrderSide.BUY else entry_price - (sl_distance * 3)
+        htf_price, htf_label = _htf_level(bundle, side, float(entry_price), beyond_price=float(tp2))
         if htf_price is not None:
             tp3 = _round(Decimal(str(htf_price)), self._spec)
-            reasoning.append(f"TP3 / runner = {tp3} ({htf_label}, {self._tp3_pct:.0f}%)")
+            reasoning.append(f"TP3 / runner = {tp3} ({htf_label} beyond TP2, {self._tp3_pct:.0f}%)")
         else:
-            # Fall back to 3R.
-            three_r = entry_price + (sl_distance * 3) if side == OrderSide.BUY else entry_price - (sl_distance * 3)
             tp3 = _round(three_r, self._spec)
             reasoning.append(f"TP3 / runner = {tp3} (3R fallback, {self._tp3_pct:.0f}%)")
+        # Defensive clamp: never let TP3 sit at/inside TP2 (e.g. a far-FVG TP2
+        # beyond 3R). Push it one R past TP2 so the tier order always holds.
+        if (side == OrderSide.BUY and tp3 <= tp2) or (side == OrderSide.SELL and tp3 >= tp2):
+            bumped = tp2 + sl_distance if side == OrderSide.BUY else tp2 - sl_distance
+            tp3 = _round(bumped, self._spec)
+            reasoning.append(f"TP3 clamped one R beyond TP2 → {tp3}")
 
         plan = [
             {"level": "tp1", "price": str(tp1), "pct": self._tp1_pct / 100.0},

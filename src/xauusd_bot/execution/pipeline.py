@@ -256,12 +256,16 @@ class ExecutionPipeline:
             return ExecutionOutcome(submitted=False, blocked_reason=reason)
 
         # --- Submit the order.
-        # Broker backstop TP = the FURTHEST target (tp3 → tp2 → tp1). Attaching
-        # tp1 for the full volume made the broker auto-close 100% at TP1, which
-        # pre-empted the bot-side 30/30/40 partials + runner (PositionManager
-        # banks TP1/TP2 along the way and trails the runner to tp3). The far
-        # backstop only fires if the engine is down or price gaps past the plan.
-        backstop_tp = stops.tp3_price or stops.tp2_price or stops.tp1_price
+        # Broker backstop TP = the actually-FURTHEST target (max for a long /
+        # min for a short), NOT blindly tp3. Attaching tp1 for the full volume
+        # made the broker auto-close 100% at TP1, which pre-empted the bot-side
+        # 30/30/40 partials + runner (PositionManager banks TP1/TP2 and trails
+        # the runner to tp3). Picking by direction (not the tp3 slot) is robust
+        # even if a TP tier is mis-ordered — a near-entry tp3 must never become
+        # the broker stop. The far backstop only fires if the engine is down or
+        # price gaps past the plan.
+        _tps = [p for p in (stops.tp1_price, stops.tp2_price, stops.tp3_price) if p is not None]
+        backstop_tp = (max(_tps) if side == OrderSide.BUY else min(_tps)) if _tps else None
         order_env = self.order_mgr.send(
             OrderRequest(
                 symbol=self.symbol,
