@@ -407,9 +407,15 @@
       const yBot = series.priceToCoordinate(Number(z.bottom));
       if (yTop == null || yBot == null) continue;
       const top = Math.min(yTop, yBot), h = Math.max(4, Math.abs(yBot - yTop));
-      // Left edge = where the gap formed; clamp into view, extend to the right edge.
-      let xl = ts.timeToCoordinate(Math.floor(new Date(z.created_at).getTime() / 1000));
-      if (xl == null || xl < 0) xl = 0;          // formed off-screen left → from edge
+      // Left edge = where the gap formed, extended to the right edge. Snap
+      // created_at to the ACTIVE chart-tf grid first: an M1 zone forms at e.g.
+      // 09:37, which is not an M5 bar, so the raw time has no match on the M5
+      // axis → timeToCoordinate returns null → the box would pin full-width left.
+      const tfSec = TF_SECONDS[state.timeframe] || 60;
+      const ct = Math.floor((new Date(z.created_at).getTime() / 1000) / tfSec) * tfSec;
+      let xl = ts.timeToCoordinate(ct);
+      if (xl == null) continue;                   // still off the loaded axis (data gap) → don't pin full-width to the left
+      if (xl < 0) xl = 0;                          // formed off visible-left but active → span from the edge
       if (xl > paneW) continue;                   // formed beyond the view → skip
       const bull = (z.type === 'bullish');
       const partial = (z.status === 'partially_mitigated');

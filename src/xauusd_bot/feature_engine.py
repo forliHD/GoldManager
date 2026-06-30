@@ -42,6 +42,31 @@ log = structlog.get_logger(__name__)
 
 GROUP = "feature-engine-v1"
 
+# Plausible broker→UTC clock-offset band. This broker runs UTC+2/+3 (DST), so a
+# FRESH M1 bar's broker-labelled close time is 2–3h AHEAD of real UTC. We bound
+# generously to [+1h, +4h] and require a positive sign: a STALE bar — e.g.
+# Friday's close fetched during a market-closed weekend restart — yields a
+# negative/wildly-off value and must be REJECTED, not pinned for the process
+# lifetime. (Incident 2026-06-27: a Saturday restart pinned offset=-540 for 3
+# days, shifting VWAP/session/trading-hours anchors by ~12h.)
+_CLOCK_OFFSET_MIN_MINUTES = 60
+_CLOCK_OFFSET_MAX_MINUTES = 240
+
+
+def _detect_clock_offset(latest: datetime, now: datetime) -> int | None:
+    """Broker→UTC offset (minutes, rounded to the hour) from a bar's labelled time.
+
+    Returns ``None`` when the result is implausible — i.e. the bar is stale
+    (market-closed restart) or otherwise not a fresh real-time bar — so the
+    caller keeps the previous offset instead of pinning a bogus one.
+    """
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=UTC)
+    offset_min = round((latest - now).total_seconds() / 3600.0) * 60
+    if not (_CLOCK_OFFSET_MIN_MINUTES <= offset_min <= _CLOCK_OFFSET_MAX_MINUTES):
+        return None
+    return int(offset_min)
+
 
 def _make_handler(
     settings: Settings,
@@ -49,9 +74,13 @@ def _make_handler(
     publisher: Publisher,
     buffer: list[Bar],
     vp_buffer: list[Bar],
+    *,
+    initial_offset_min: int = 0,
 ):
     max_hist = settings.max_history_bars
     vp_max = settings.volume_profile_history_bars
+    live = settings.is_live_connector()
+    offset_state = {"min": initial_offset_min}  # last applied broker→UTC offset
 
     async def handle(msg: StreamMessage) -> None:
         ev = msg.payload
@@ -68,6 +97,21 @@ def _make_handler(
             if len(vp_buffer) > vp_max:
                 del vp_buffer[: len(vp_buffer) - vp_max]
             vp_bars = vp_buffer
+        # Re-detect the broker→UTC clock offset from each FRESH live bar so a
+        # market-closed restart (which seeds a stale/implausible warmup offset)
+        # self-heals on the first real bar, and DST shifts are tracked. Live
+        # only — in replay/backtest bar.time is historical, so the detection is
+        # implausible (and gated off) and the anchored engines stay at offset 0.
+        if live:
+            off = _detect_clock_offset(ev.bar.time, datetime.now(UTC))
+            if off is not None and off != offset_state["min"]:
+                pipeline.set_clock_offset(off)
+                log.info(
+                    "feature_engine_broker_clock_offset_redetected",
+                    offset_minutes=off,
+                    previous=offset_state["min"],
+                )
+                offset_state["min"] = off
         full_bundle = pipeline.assemble(buffer, ev.bar.time, vp_bars=vp_bars)
         # Emit the chart-overlay snapshot (VWAP / value area / FVG) to the
         # journal from the FULL bundle, before compaction strips the rich
@@ -143,6 +187,7 @@ async def _run(settings: Settings) -> int:
     await publisher.connect()
     buffer: list[Bar] = []
     vp_buffer: list[Bar] = []  # deep history for the Volume Profile only
+    applied_offset_min = 0  # broker→UTC offset actually applied at warmup (0 if none/stale)
 
     # Live mode: seed the buffer with warmup history so the first
     # streamed bar already has context. Replay mode fills from the
@@ -163,17 +208,26 @@ async def _run(settings: Settings) -> int:
                 buffer.extend(warm)
             log.info("feature_engine_warmup_loaded", bars=len(buffer), vp_bars=len(vp_buffer))
             # Detect the broker→UTC clock offset from the freshest bar so the
-            # news blackout aligns broker-time bars with UTC calendar events.
+            # news blackout / session / VWAP anchors align broker-time bars with
+            # the UTC calendar. Guarded: a stale warmup bar (market-closed
+            # restart) yields an implausible value — we then leave the offset at
+            # 0 and let the first fresh streamed bar self-heal it (see handler).
             if warm:
-                latest = warm[-1].time
-                if latest.tzinfo is None:
-                    latest = latest.replace(tzinfo=UTC)
-                offset_min = round((latest - datetime.now(UTC)).total_seconds() / 3600.0) * 60
-                # Fan the offset out to ALL time-of-day-anchored engines
-                # (session / VWAP / volume-range / news), not just news —
-                # otherwise sessions and VWAP anchors are broker-time-shifted.
-                pipeline.set_clock_offset(offset_min)
-                log.info("feature_engine_broker_clock_offset", offset_minutes=offset_min)
+                now = datetime.now(UTC)
+                offset_min = _detect_clock_offset(warm[-1].time, now)
+                if offset_min is not None:
+                    # Fan the offset out to ALL time-of-day-anchored engines
+                    # (session / VWAP / news), not just news — otherwise
+                    # sessions and VWAP anchors are broker-time-shifted.
+                    pipeline.set_clock_offset(offset_min)
+                    applied_offset_min = offset_min
+                    log.info("feature_engine_broker_clock_offset", offset_minutes=offset_min)
+                else:
+                    log.warning(
+                        "feature_engine_clock_offset_implausible_warmup",
+                        latest_bar=warm[-1].time.isoformat(),
+                        now=now.isoformat(),
+                    )
         except Exception as exc:  # noqa: BLE001 - warmup is best-effort
             log.warning("feature_engine_warmup_failed", error=str(exc))
         finally:
@@ -182,7 +236,9 @@ async def _run(settings: Settings) -> int:
             with contextlib.suppress(Exception):
                 connector.shutdown()
 
-    handler = _make_handler(settings, pipeline, publisher, buffer, vp_buffer)
+    handler = _make_handler(
+        settings, pipeline, publisher, buffer, vp_buffer, initial_offset_min=applied_offset_min
+    )
     return await run_consumer_service(
         ServiceRole.FEATURE_ENGINE,
         settings,
