@@ -409,7 +409,8 @@
       const top = Math.min(yTop, yBot), h = Math.max(4, Math.abs(yBot - yTop));
       // Left edge = where the gap formed; clamp into view, extend to the right edge.
       let xl = ts.timeToCoordinate(Math.floor(new Date(z.created_at).getTime() / 1000));
-      if (xl == null || xl < 0) xl = 0;          // formed off-screen left → from edge
+      if (xl == null) continue;                   // formation not on the loaded axis → don't pin full-width to the left
+      if (xl < 0) xl = 0;                          // formed off visible-left but active → span from the edge
       if (xl > paneW) continue;                   // formed beyond the view → skip
       const bull = (z.type === 'bullish');
       const partial = (z.status === 'partially_mitigated');
