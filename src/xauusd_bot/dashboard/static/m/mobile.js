@@ -432,8 +432,13 @@
       const yTop = series.priceToCoordinate(+z.top), yBot = series.priceToCoordinate(+z.bottom);
       if (yTop == null || yBot == null) continue;
       const top = Math.min(yTop, yBot), h = Math.max(4, Math.abs(yBot - yTop));
-      let xl = ts.timeToCoordinate(Math.floor(new Date(z.created_at).getTime() / 1000));
-      if (xl == null) continue;                    // formation not on the loaded axis → don't pin full-width to the left
+      // Snap created_at to the active chart-tf grid so an off-grid formation
+      // (e.g. an M1 zone at 09:37 on the M5 chart) lands on a real bar instead
+      // of returning null on the axis → full-width-left band.
+      const tfSec = TF_SECONDS[state.timeframe || 'M5'] || 300;
+      const ct = Math.floor((new Date(z.created_at).getTime() / 1000) / tfSec) * tfSec;
+      let xl = ts.timeToCoordinate(ct);
+      if (xl == null) continue;                    // still off the loaded axis (data gap) → don't pin full-width to the left
       if (xl < 0) xl = 0;                           // formed off visible-left but active → span from the edge
       if (xl > paneW) continue;                    // formed beyond the view → skip
       const bull = z.type === 'bullish', partial = z.status === 'partially_mitigated';
